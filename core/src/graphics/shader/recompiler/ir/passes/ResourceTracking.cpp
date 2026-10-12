@@ -1217,23 +1217,13 @@ private:
 		return visit(visit, block, 0u);
 	}
 
-	bool HasEntryGuard(const Block* block, const auto& accepts, const Block* definition = nullptr) const {
-		// Each unique predecessor must execute before this use. Stop at joins and
-		// definitions so a guard from an earlier iteration cannot bound a new value.
-		for (size_t depth = 0; block != nullptr && depth < m_program.blocks.size(); ++depth) {
-			if (block == definition || block->ImmPredecessors().size() != 1u) {
-				return false;
-			}
-			const auto* previous = block->ImmPredecessors()[0];
-			const auto edge = ConditionalEdge(previous, block);
-			if (edge && edge->lanes == LaneQuantifier::All && accepts(*edge)) return true;
-			block = previous;
-		}
-		return false;
-	}
-
 	bool NonzeroOnEntry(Value value, const Block* block) const {
-		return HasEntryGuard(block, [&](const EdgePredicate& edge) {
+		if (block == nullptr) return false;
+		bool witnessed = false;
+		const bool guarded = GuardedOnEntry(block, [](const Block* current) {
+			return current->ImmPredecessors().size() != 1u;
+		}, [&](const EdgePredicate& edge) {
+			if (edge.lanes != LaneQuantifier::All) return false;
 			const auto* test = edge.condition.TryInstruction();
 			if (test != nullptr && test->NumArgs() == 2u &&
 			    ((test->GetOpcode() == ValueOpcode::INotEqual32 && edge.positive) ||
@@ -1241,11 +1231,12 @@ private:
 				for (uint32_t arg = 0; arg < 2u; ++arg) {
 					uint32_t immediate;
 					if (ImmediateU32(test->Arg(arg), immediate) && immediate == 0u &&
-					    EquivalentValue(m_program, test->Arg(arg ^ 1u), value)) return true;
+					    EquivalentValue(m_program, test->Arg(arg ^ 1u), value)) return witnessed = true;
 				}
 			}
 			return false;
 		});
+		return guarded && witnessed;
 	}
 
 	uint32_t WorkgroupAxis(Value key) const {
@@ -1866,11 +1857,18 @@ private:
 	Value UnsignedBoundOnEntry(Value key, const Block* block) const {
 		const auto* definition = key.Resolve().TryInstruction();
 		Value bound;
-		const bool found = HasEntryGuard(block, [&](const EdgePredicate& edge) {
-			bound = UnsignedBound(edge.condition, key, edge.positive);
-			return !bound.IsEmpty() && ValidateRuntimeValue(m_program, bound, RuntimeValueType::Integer);
-		}, definition != nullptr ? definition->Parent() : nullptr);
-		return found ? bound : Value {};
+		const bool guarded = GuardedOnEntry(block, [&](const Block* current) {
+			return definition != nullptr && current == definition->Parent();
+		}, [&](const EdgePredicate& edge) {
+			if (edge.lanes != LaneQuantifier::All) return false;
+			const auto candidate = UnsignedBound(edge.condition, key, edge.positive);
+			if (candidate.IsEmpty() ||
+			    !ValidateRuntimeValue(m_program, candidate, RuntimeValueType::Integer)) return false;
+			if (bound.IsEmpty()) bound = candidate;
+			// Every incoming path must prove the same bound for this key definition.
+			return EquivalentValue(m_program, candidate, bound);
+		});
+		return guarded ? bound : Value {};
 	}
 
 	Value SharedLoadBound(Value value, Value active) {
