@@ -2120,7 +2120,7 @@ private:
 	bool MatchScalarMaterialKey(Value key, DescriptorSource::IndirectDescriptor& indirect,
 	                            DescriptorSource& material_source) {
 		const auto* read = key.Resolve().TryInstruction();
-		if (read == nullptr || read->GetOpcode() != ValueOpcode::ReadConstBuffer) return false;
+		if (read == nullptr) return false;
 		uint32_t memory_index = 0;
 		const auto* memory = ScalarReadMemory(*read, memory_index);
 		Value index;
@@ -2128,8 +2128,8 @@ private:
 		DescriptorSource count_source;
 		uint32_t row_stride = 0;
 		uint32_t offset = 0, stride = 0;
-		if (memory == nullptr || memory->kind != ResourceKind::ScalarBuffer ||
-		    memory->offset > INT32_MAX || !MemoryIndexBelongsTo(memory_index, *read)) return false;
+		if (memory == nullptr || memory->offset > INT32_MAX ||
+		    !MemoryIndexBelongsTo(memory_index, *read)) return false;
 		if (MatchTableOffset(read->Arg(1), index, offset, stride) &&
 		    ((offset | stride | memory->offset) & 3u) == 0u &&
 		    uint64_t {offset} + memory->offset <= UINT32_MAX) {
@@ -2138,6 +2138,8 @@ private:
 				count = bound->Arg(1);
 			}
 		}
+		// Raw pointers have no V# bounds for enumerating an unbounded selector domain.
+		if (memory->kind == ResourceKind::ScalarAddress && count.IsEmpty()) return false;
 		const bool rows = count.IsEmpty() && memory->offset == 0u &&
 		    MatchCountedRows(*read, count_source, row_stride);
 		if (rows) {
@@ -2678,7 +2680,9 @@ private:
 				          (NonzeroOnEntry(selector->Arg(0), handle.Parent(), 0u, true) ||
 				           NonzeroOnEntry(key, handle.Parent(), UINT32_MAX, true));
 				material_source = {};
-				if (bitscan) {
+				if (const auto maximum = SelectorMaximum(key); maximum < MaxIndirectDescriptorProbes) {
+					indirect.key_count = Value(maximum + 1u);
+				} else if (bitscan) {
 					indirect.key_count = Value(32u);
 				} else if (const auto* bound = m_shader_writes != ShaderWrites::None ? BoundedLoop(key, handle.Parent()) : nullptr) {
 					// Likewise a counted loop over the records (`for i < count`).

@@ -308,14 +308,14 @@ bool MaterializeIndirectDescriptor(const ResourcePlan&                         p
 		}
 		return true;
 	};
-	const auto read_keys = [&](const ShaderBufferResource& material, uint64_t first,
+	const auto read_keys = [&](uint64_t base, uint64_t size, uint64_t first,
 	                           uint64_t step, uint64_t count) {
 		keys.resize(count);
 		if (step == 4u) {
-			return ReadScalarTable(material.Base48(), material.GetSize(), first, runtime, keys);
+			return ReadScalarTable(base, size, first, runtime, keys);
 		}
 		for (auto& key: keys) {
-			if (!ReadScalarTable(material.Base48(), material.GetSize(), first, runtime, {&key, 1}))
+			if (!ReadScalarTable(base, size, first, runtime, {&key, 1}))
 				return false;
 			first += step;
 		}
@@ -494,9 +494,17 @@ bool MaterializeIndirectDescriptor(const ResourcePlan&                         p
 				if (selected[key]) keys.push_back(key);
 		} else if (!indirect.selector_first.IsEmpty()) {
 			ShaderBufferResource material;
+			uint64_t             base = 0, size = UINT64_MAX;
 			uint32_t             first = 0, count = 0;
-			if (!DecodeBufferDescriptor(material_value, material) ||
-			    !clean.Evaluate(indirect.selector_first, first) ||
+			if (material_value.dword_count == 2u) {
+				if (selector->stride == 0u) return false;
+				base = (uint64_t {material_value.dwords[1]} << 32u) | material_value.dwords[0];
+			} else {
+				if (!DecodeBufferDescriptor(material_value, material)) return false;
+				base = material.Base48();
+				size = material.GetSize();
+			}
+			if (!clean.Evaluate(indirect.selector_first, first) ||
 			    !evaluate_count(count) || count > MaxIndirectDescriptorProbes)
 				return false;
 			// SMEM uses its instruction's byte stride; V# stride only supplies its bounds.
@@ -507,9 +515,9 @@ bool MaterializeIndirectDescriptor(const ResourcePlan&                         p
 			     uint64_t {first} + count > material.NumRecords())) return false;
 			const auto end = count != 0u
 			    ? (uint64_t {first} + count - 1u) * step + selector->offset + 4u : 0u;
-			if (end > uint64_t {UINT32_MAX} + 1u || end > material.GetSize())
+			if (end > uint64_t {UINT32_MAX} + 1u || end > size)
 				return false;
-			if (!read_keys(material, uint64_t {first} * step + selector->offset, step, count))
+			if (!read_keys(base, size, uint64_t {first} * step + selector->offset, step, count))
 				return false;
 		} else if (!indirect.selector_mask.IsEmpty()) {
 			uint32_t mask = 0;
@@ -547,7 +555,7 @@ bool MaterializeIndirectDescriptor(const ResourcePlan&                         p
 			const auto count = std::min(domain_count,
 			    available < 4u ? 0u : (available - 4u) / selector->stride + 1u);
 			if (count > MaxIndirectDescriptorProbes ||
-			    !read_keys(material, selector->offset, selector->stride, count)) return false;
+			    !read_keys(material.Base48(), material.GetSize(), selector->offset, selector->stride, count)) return false;
 			if (count < domain_count) keys.push_back(0u); // An out-of-bounds scalar read returns zero.
 		}
 		if (selector != nullptr && selector->byte_ranges.empty()) {

@@ -721,10 +721,22 @@ void FoldInstruction(Block& block, Block::iterator instruction,
 			});
 			return;
 		case ValueOpcode::BitwiseAnd32:
-			if (!FoldU32(inst, [](uint32_t a, uint32_t b) { return a & b; }) &&
-			    !ReplaceBinaryIdentity(inst, Type::U32, 0xffffffffu)) {
-				FoldUniformMaskBit(inst);
+			if (FoldU32(inst, [](uint32_t a, uint32_t b) { return a & b; }) ||
+			    ReplaceBinaryIdentity(inst, Type::U32, UINT32_MAX)) return;
+			for (uint32_t arm = 0; arm < 2u; ++arm) {
+				const auto mask = Arg(inst, arm);
+				const auto* shifted = Arg(inst, arm ^ 1u).TryInstruction();
+				if (!IsImmediate(mask, Type::U32) || shifted == nullptr ||
+				    shifted->GetOpcode() != ValueOpcode::ShiftLeftLogical32 || !HasOneUse(*shifted)) continue;
+				const auto shift = Arg(*shifted, 1);
+				if (!IsImmediate(shift, Type::U32) || shift.U32() >= 32u) continue;
+				const auto masked = worklist.Prepend(block, instruction, ValueOpcode::BitwiseAnd32,
+				    {Arg(*shifted, 0), Value(mask.U32() >> shift.U32())});
+				Replace(inst, Value(&*worklist.Prepend(block, instruction, ValueOpcode::ShiftLeftLogical32,
+				    {Value(&*masked), shift})));
+				return;
 			}
+			FoldUniformMaskBit(inst);
 			return;
 		case ValueOpcode::BitwiseAnd64:
 			if (!FoldU64(inst, [](uint64_t a, uint64_t b) { return a & b; })) {
