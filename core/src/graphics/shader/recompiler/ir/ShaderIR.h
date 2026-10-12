@@ -32,6 +32,9 @@ class CodeGenerator;
 
 namespace Libs::Graphics::ShaderRecompiler::IR {
 
+// Finite descriptor domains also bound the arithmetic used to prove their indices.
+constexpr uint32_t MaxIndirectDescriptorProbes = 65536u;
+
 enum class ResourceKind {
 	None,
 	ScalarBuffer,

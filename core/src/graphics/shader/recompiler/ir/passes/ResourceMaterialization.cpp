@@ -30,7 +30,6 @@ static thread_local std::string t_specialization_failure;
 namespace {
 
 constexpr uint64_t AddressMask            = 0x0000ffffffffffffull;
-constexpr uint64_t MaxIndirectDescriptorProbes = 65536u;
 
 bool SpecializationFail(std::string_view message) {
 	std::fprintf(stderr, "shader resource specialization failed: %.*s\n",
@@ -840,71 +839,16 @@ static bool IsFullDispatchPredicate(Value value, uint32_t depth = 0) {
 	return axis.IsImmediate() && axis.U32() < 3 && extent->Arg(0).Resolve() == axis;
 }
 
-// Nonnegative affine coefficients for constant, local and workgroup coordinates. Reject modular
-// arithmetic that could wrap; runtime coverage also bounds the largest invocation index.
-static std::optional<std::array<uint64_t, 3>> FillIndex(Value value, uint32_t axis, Value guard,
-                                                      uint32_t depth = 0) {
-	value = ResolveActiveU32(value, guard);
-	if (depth > 32 || value.GetType() != Type::U32) {
-		return {};
-	}
-	if (value.IsImmediate()) {
-		return std::array<uint64_t, 3> {value.U32(), 0, 0};
-	}
-	const auto* inst = value.TryInstruction();
-	if (inst == nullptr) {
-		return {};
-	}
-	const auto op = inst->GetOpcode();
-	if (op == ValueOpcode::GetBuiltin && inst->Arg(1) == Value(axis)) {
-		if (inst->Arg(0) == Value(static_cast<uint32_t>(StageInputKind::LocalInvocationId))) {
-			return std::array<uint64_t, 3> {0, 1, 0};
-		}
-		if (inst->Arg(0) == Value(static_cast<uint32_t>(StageInputKind::WorkgroupId))) {
-			return std::array<uint64_t, 3> {0, 0, 1};
-		}
-	}
-	// The sum of an add with carry out (PS4 V_ADD_I32): an ordinary add of the index terms.
-	if (op == ValueOpcode::CompositeExtractU32x2 && inst->Arg(1).Resolve() == Value(0u)) {
-		const auto* add = inst->Arg(0).Resolve().TryInstruction();
-		if (add != nullptr && add->GetOpcode() == ValueOpcode::IAddCarry32) {
-			auto left  = FillIndex(add->Arg(0), axis, guard, depth + 1);
-			auto right = FillIndex(add->Arg(1), axis, guard, depth + 1);
-			if (!left || !right) {
-				return {};
-			}
-			for (uint32_t i = 0; i < left->size(); ++i) {
-				(*left)[i] += (*right)[i];
-				if ((*left)[i] > UINT32_MAX) return {};
-			}
-			return left;
-		}
-	}
-	if (op != ValueOpcode::IAdd32 && op != ValueOpcode::IMul32 &&
-	    op != ValueOpcode::ShiftLeftLogical32) {
-		return {};
-	}
-	auto left  = FillIndex(inst->Arg(0), axis, guard, depth + 1);
-	auto right = FillIndex(inst->Arg(1), axis, guard, depth + 1);
-	if (!left || !right) {
-		return {};
-	}
-	if (op == ValueOpcode::IMul32 && ((*right)[1] != 0 || (*right)[2] != 0)) {
-		std::swap(left, right);
-	}
-	if (op != ValueOpcode::IAdd32 && ((*right)[1] != 0 || (*right)[2] != 0)) {
-		return {};
-	}
-	if (op == ValueOpcode::ShiftLeftLogical32) {
-		if ((*right)[0] >= 32) return {};
-		(*right)[0] = uint64_t {1} << (*right)[0];
-	}
-	for (uint32_t i = 0; i < left->size(); ++i) {
-		(*left)[i] =
-		    op == ValueOpcode::IAdd32 ? (*left)[i] + (*right)[i] : (*left)[i] * (*right)[0];
-		if ((*left)[i] > UINT32_MAX) return {};
-	}
-	return left;
+static std::optional<std::array<uint64_t, 3>> FillIndex(Value value, uint32_t axis, Value guard) {
+	return AffineIndex<3>(value, [&](Value at) { return ResolveActiveU32(at, guard); },
+	    [&](Value at) -> std::optional<size_t> {
+		    const auto* inst = at.TryInstruction();
+		    if (inst == nullptr || inst->GetOpcode() != ValueOpcode::GetBuiltin ||
+		        inst->Arg(1) != Value(axis)) return {};
+		    if (inst->Arg(0) == Value(static_cast<uint32_t>(StageInputKind::LocalInvocationId))) return 1u;
+		    if (inst->Arg(0) == Value(static_cast<uint32_t>(StageInputKind::WorkgroupId))) return 2u;
+		    return {};
+	    });
 }
 
 // A store guard made of full-dispatch terms and at most one `index < limit` (or `limit > index`)

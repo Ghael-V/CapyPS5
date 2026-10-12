@@ -887,8 +887,11 @@ bool SrtWalker::EvaluateInst(const Inst& inst, uint64_t& result) {
 			}
 			return false;
 		case ValueOpcode::UMin32:
+		case ValueOpcode::UMax32:
 			if (binary()) {
-				result = std::min(static_cast<uint32_t>(a), static_cast<uint32_t>(b));
+				result = inst.GetOpcode() == ValueOpcode::UMin32
+				    ? std::min(static_cast<uint32_t>(a), static_cast<uint32_t>(b))
+				    : std::max(static_cast<uint32_t>(a), static_cast<uint32_t>(b));
 				return true;
 			}
 			return false;

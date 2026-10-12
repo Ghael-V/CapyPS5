@@ -363,8 +363,10 @@ static ShaderWrites ClassifyWrites(const Program& program) {
 
 class Tracker {
 public:
-	Tracker(Program& program, const Decoder::Program& decoded, const CFG::Graph& native_cfg)
+	Tracker(Program& program, const Decoder::Program& decoded, const CFG::Graph& native_cfg,
+	        ShaderStageInputInfo input)
 	    : m_program(program), m_decoded(decoded), m_native_cfg(native_cfg),
+	      m_workgroup(program.stage == ShaderType::Compute ? input.compute : nullptr),
 	      m_scalar_writes(std::move(program.scalar_writes)), m_info(program.info) {
 		std::ranges::sort(m_scalar_writes, {}, &Program::ScalarWrite::pc);
 		m_info.buffers.clear();
@@ -1382,7 +1384,7 @@ private:
 	bool MatchAffineOffset(Value value, Value guard, AffineOffset& out,
 	                       uint32_t depth = 0) const {
 		if (depth > 16u) return false;
-		value = value.Resolve();
+		value = ActiveValue(value, guard);
 		uint32_t immediate = 0;
 		if (ImmediateU32(value, immediate)) {
 			out.offset = immediate;
@@ -1390,10 +1392,6 @@ private:
 		}
 		const auto* inst = value.TryInstruction();
 		if (inst == nullptr) return false;
-		if (inst->GetOpcode() == ValueOpcode::SelectU32 && inst->NumArgs() == 3u &&
-		    Implies(guard, inst->Arg(0))) {
-			return MatchAffineOffset(inst->Arg(1), guard, out, depth + 1u);
-		}
 		if (inst->GetOpcode() == ValueOpcode::IAdd32 && inst->NumArgs() == 2u) {
 			AffineOffset left, right;
 			if (!MatchAffineOffset(inst->Arg(0), guard, left, depth + 1u) ||
@@ -1718,6 +1716,269 @@ private:
 		});
 	}
 
+	Value ActiveValue(Value value, Value guard) const {
+		value = value.Resolve();
+		while (const auto* select = value.TryInstruction()) {
+			if (select->GetOpcode() != ValueOpcode::SelectU32 ||
+			    !Implies(guard, select->Arg(0))) break;
+			value = select->Arg(1).Resolve();
+		}
+		return value;
+	}
+
+	bool Reaches(const Block* from, const Block* to, const Block* stop = nullptr) const {
+		std::vector<const Block*> pending {to};
+		for (size_t index = 0; index < pending.size(); ++index) {
+			if (pending[index] == stop) continue;
+			if (pending[index] == from) return true;
+			for (const auto* previous: pending[index]->ImmPredecessors())
+				if (std::ranges::find(pending, previous) == pending.end()) pending.push_back(previous);
+		}
+		return false;
+	}
+
+	bool InCycle(const Block* block) const {
+		return std::ranges::any_of(block->ImmPredecessors(),
+		    [&](const Block* previous) { return Reaches(block, previous); });
+	}
+
+	static bool BeforeInBlock(const Inst& before, const Inst& after) {
+		if (before.Parent() != after.Parent()) return false;
+		for (const auto& inst: *before.Parent()) {
+			if (&inst == &before) return true;
+			if (&inst == &after) return false;
+		}
+		return false;
+	}
+
+	bool InitializedBefore(const Inst& initial, const Inst& use, Value witness) const {
+		if (initial.Parent() == use.Parent()) return BeforeInBlock(initial, use);
+		std::vector<const Block*> pending {use.Parent()};
+		for (size_t index = 0; index < pending.size(); ++index) {
+			const auto* current = pending[index];
+			if (current == initial.Parent()) continue;
+			if (current->ImmPredecessors().empty()) return false;
+			for (const auto* previous: current->ImmPredecessors()) {
+				const auto edge = ConditionalEdge(previous, current);
+				// The proven local-zero invocation makes an all-inactive bypass impossible.
+				if (edge && edge->lanes == LaneQuantifier::All && !edge->positive &&
+				    Implies(witness, edge->condition)) continue;
+				if (std::ranges::find(pending, previous) == pending.end()) pending.push_back(previous);
+			}
+		}
+		return true;
+	}
+
+	std::optional<std::array<uint64_t, 5>> LocalIndex(Value value, Value active,
+	                                                Value& induction, bool allow_induction) const {
+		return AffineIndex<5>(value, [&](Value at) { return ActiveValue(at, active); },
+		    [&](Value at) -> std::optional<size_t> {
+			    const auto* inst = at.TryInstruction();
+			    if (inst == nullptr) return {};
+			    uint32_t axis = 0;
+			    if (inst->GetOpcode() == ValueOpcode::GetBuiltin &&
+			        inst->Arg(0) == Value(static_cast<uint32_t>(StageInputKind::LocalInvocationId)) &&
+			        ImmediateU32(inst->Arg(1), axis) && axis < 3u) return axis + 1u;
+			    if (!allow_induction || inst->GetOpcode() != ValueOpcode::Phi ||
+			        (!induction.IsEmpty() && induction != at)) return {};
+			    induction = at;
+			    return 4u;
+		    });
+	}
+
+	bool LinearLocalIndex(const std::array<uint64_t, 5>& index) const {
+		uint64_t stride = 1u;
+		for (uint32_t axis = 0; axis < 3u; ++axis) {
+			if (m_workgroup->threads_num[axis] != 1u && index[axis + 1u] != stride) return false;
+			stride *= m_workgroup->threads_num[axis];
+		}
+		return index[0] == 0u;
+	}
+
+	bool LocalZeroWitness(Value guard) const {
+		const auto* equal = SimplifyGuard(guard).TryInstruction();
+		if (equal == nullptr || equal->GetOpcode() != ValueOpcode::IEqual32) return false;
+		for (uint32_t arg = 0; arg < 2u; ++arg) {
+			if (equal->Arg(arg).Resolve() != Value(0u)) continue;
+			Value induction;
+			const auto index = LocalIndex(equal->Arg(arg ^ 1u), guard, induction, false);
+			if (index && LinearLocalIndex(*index)) return true;
+		}
+		return false;
+	}
+
+	Value UnsignedBound(Value guard, Value value) const {
+		const auto* test = SimplifyGuard(guard).TryInstruction();
+		if (test == nullptr) return {};
+		if (test->GetOpcode() == ValueOpcode::LogicalAnd) {
+			const auto left = UnsignedBound(test->Arg(0), value);
+			return left.IsEmpty() ? UnsignedBound(test->Arg(1), value) : left;
+		}
+		if (test->GetOpcode() == ValueOpcode::ULessThan32 &&
+		    EquivalentValue(m_program, test->Arg(0), value)) return test->Arg(1);
+		if (test->GetOpcode() == ValueOpcode::LogicalNot) {
+			const auto* inverse = test->Arg(0).Resolve().TryInstruction();
+			if (inverse != nullptr && inverse->GetOpcode() == ValueOpcode::ULessThanEqual32 &&
+			    EquivalentValue(m_program, inverse->Arg(1), value)) return inverse->Arg(0);
+		}
+		return {};
+	}
+
+	Value SharedLoadBound(Value value, Value active) {
+		const auto* read = ActiveValue(value, active).TryInstruction();
+		if (read == nullptr || read->GetOpcode() != ValueOpcode::LoadSharedU32 ||
+		    m_workgroup == nullptr || m_program.stage != ShaderType::Compute ||
+		    read->Arg(1).Resolve() != Value(true)) return {};
+		uint64_t group_size = 1u;
+		for (const auto dimension: m_workgroup->threads_num) {
+			if (dimension == 0u || dimension > m_workgroup->wave_size) return {};
+			group_size *= dimension;
+		}
+		// Indexed LDS operations within one native wave execute in order. Multiwave
+		// append lists require a separate workgroup synchronization proof.
+		if (group_size != m_workgroup->wave_size || group_size != m_program.wave_size ||
+		    (group_size != 32u && group_size != 64u)) return {};
+		const auto memory = [&](const Inst& inst) -> const MemoryInfo* {
+			const auto index = inst.Flags<MemoryFlags>().index;
+			if (index >= m_program.memory_info.size()) return nullptr;
+			const auto& info = m_program.memory_info[index];
+			return info.kind == ResourceKind::Lds && info.data_bits == 32u &&
+			       info.secondary_offset == 0u && info.component_index == 0u ? &info : nullptr;
+		};
+		const auto constant_address = [&](const Inst& inst, uint32_t& address) {
+			const auto* info = memory(inst);
+			if (info == nullptr || !ImmediateU32(ActiveValue(inst.Arg(0), inst.Arg(inst.NumArgs() - 1u)), address) ||
+			    uint64_t {address} + info->offset > UINT32_MAX) return false;
+			address += info->offset;
+			return (address & 3u) == 0u;
+		};
+		const auto* read_memory = memory(*read);
+		AffineOffset read_offset;
+		if (read_memory == nullptr || !MatchAffineOffset(read->Arg(0), active, read_offset) ||
+		    read_offset.stride != 4u || read_offset.offset + read_memory->offset > UINT32_MAX) return {};
+		const auto* limit = BoundedLoop(read_offset.index, read->Parent(),
+		    [](const Inst& compare, uint32_t) { return compare.GetOpcode() == ValueOpcode::ULessThan32; });
+		if (limit == nullptr) return {};
+		const auto* counter_read = ActiveValue(limit->Arg(1), active).TryInstruction();
+		uint32_t consumed_counter = 0;
+		if (counter_read == nullptr || counter_read->GetOpcode() != ValueOpcode::LoadSharedU32 ||
+		    counter_read->Arg(1).Resolve() != Value(true) ||
+		    !constant_address(*counter_read, consumed_counter)) return {};
+
+		struct Initializer { const Inst* inst; uint32_t address; uint32_t words; };
+		struct Append { const Inst* atomic; const Inst* store = nullptr; uint32_t counter; uint32_t base = 0; Value bound; };
+		std::vector<Initializer> initializers;
+		std::vector<Append> appends;
+		std::vector<const Inst*> stores;
+		for (const auto* block: m_program.blocks) {
+			for (const auto& inst: *block) {
+				const auto op = inst.GetOpcode();
+				if (AddressOpcodeInfoOf(op).access == AddressAccess::Write) {
+					const auto index = inst.Flags<MemoryFlags>().index;
+					if (index >= m_program.memory_info.size() ||
+					    m_program.memory_info[index].kind == ResourceKind::Flat ||
+					    m_program.memory_info[index].kind == ResourceKind::FlatLocal) return {};
+				}
+				const auto access = SharedAccessOf(op);
+				if (access == SharedAccess::None || access == SharedAccess::Read) continue;
+				const auto* info = memory(inst);
+				if (info == nullptr) return {};
+				const auto guard = inst.Arg(inst.NumArgs() - 1u);
+				uint32_t address = 0;
+				if (access == SharedAccess::Atomic) {
+					if (op != ValueOpcode::SharedAtomicIAdd32 ||
+					    ActiveValue(inst.Arg(1), guard) != Value(1u) ||
+					    !constant_address(inst, address) ||
+					    uint64_t {address} + 4u > uint64_t {m_workgroup->lds_size_dwords} * 4u ||
+					    address >= 0x10000u ||
+					    std::ranges::any_of(appends, [&](const Append& at) { return at.counter == address; })) return {};
+					appends.push_back({.atomic = &inst, .counter = address});
+				} else if (access == SharedAccess::Write) {
+					const auto words = SharedComponentCount(op);
+					bool zero = LocalZeroWitness(guard) && constant_address(inst, address) &&
+					            address % (words * 4u) == 0u;
+					for (uint32_t word = 0; word < words; ++word)
+						zero = zero && ActiveValue(inst.Arg(word + 1u), guard) == Value(0u);
+					if (zero) initializers.push_back({&inst, address, words});
+					else if (op == ValueOpcode::WriteSharedU32) stores.push_back(&inst);
+					else return {};
+				} else return {};
+			}
+		}
+		if (appends.empty() || stores.size() != appends.size() || initializers.empty()) return {};
+		for (const auto& initial: initializers) {
+			if (InCycle(initial.inst->Parent())) return {};
+			// Every initialized word is a counter; arbitrary shared writes are not append provenance.
+			for (uint32_t word = 0; word < initial.words; ++word)
+				if (std::ranges::none_of(appends, [&](const Append& at) {
+					return uint64_t {initial.address} + word * 4u == at.counter;
+				})) return {};
+		}
+		for (auto& append: appends) {
+			const auto guard = append.atomic->Arg(2);
+			if (Reaches(counter_read->Parent(), append.atomic->Parent())) return {};
+			uint32_t initialized = 0;
+			for (const auto& initial: initializers) {
+				const auto witness = initial.inst->Arg(initial.inst->NumArgs() - 1u);
+				if (!InitializedBefore(*initial.inst, *append.atomic, witness) ||
+				    !InitializedBefore(*initial.inst, *counter_read, witness)) return {};
+				if (append.counter >= initial.address &&
+				    uint64_t {append.counter} < uint64_t {initial.address} + initial.words * 4u) ++initialized;
+			}
+			if (initialized != 1u) return {};
+			for (const auto* store: stores) {
+				if (!EquivalentValue(m_program, guard, store->Arg(2)) ||
+				    !BeforeInBlock(*append.atomic, *store)) continue;
+				AffineOffset address;
+				const auto* info = memory(*store);
+				if (!MatchAffineOffset(store->Arg(0), guard, address) ||
+				    address.index != Value(const_cast<Inst*>(append.atomic)) || address.stride != 4u ||
+				    (address.offset + info->offset) % 4u != 0u ||
+				    address.offset + info->offset + uint64_t {MaxIndirectDescriptorProbes} * 4u > UINT32_MAX ||
+				    std::ranges::any_of(appends, [&](const Append& at) {
+					    return address.offset + info->offset <= at.counter;
+				    })) continue;
+				if (append.store != nullptr) return {};
+				const auto payload = ActiveValue(store->Arg(1), guard);
+				Value induction;
+				const auto index = LocalIndex(payload, guard, induction, true);
+				if (!index || !LinearLocalIndex(*index) || (*index)[4] != 1u || induction.IsEmpty()) return {};
+				const auto* bound = BoundedInduction(induction, append.atomic->Parent(),
+				    [&](uint32_t initial, uint32_t step) { return initial == 0u && step == group_size; },
+				    [&](const Inst& compare, uint32_t initial) {
+					    return compare.GetOpcode() == ValueOpcode::ULessThan32 &&
+					           ValidateRuntimeValue(m_program, compare.Arg(1), RuntimeValueType::Integer) &&
+					           !InCycle(induction.Instruction()->PhiBlock(initial));
+				    });
+				if (bound == nullptr || !EquivalentValue(m_program, UnsignedBound(guard, payload), bound->Arg(1))) return {};
+				// Each re-entry must advance the producer induction; an inner append
+				// cycle could otherwise increment the counter twice for one candidate.
+				if (std::ranges::any_of(append.atomic->Parent()->ImmPredecessors(), [&](const Block* previous) {
+					    return Reaches(append.atomic->Parent(), previous, induction.Instruction()->Parent());
+				    })) return {};
+				append.store = store;
+				append.base = static_cast<uint32_t>(address.offset + info->offset);
+				append.bound = bound->Arg(1);
+			}
+			if (append.store == nullptr) return {};
+		}
+		if (std::ranges::none_of(appends, [&](const Append& at) {
+			return at.counter == consumed_counter && at.base == read_offset.offset + read_memory->offset;
+		})) return {};
+		// Materialization validates every producer bound through this union against
+		// MaxIndirectDescriptorProbes. Thus counters, lane enumeration and byte addresses
+		// cannot wrap. Overlapping payload lists remain within the union; OOB LDS reads yield zero.
+		Value bound = appends.front().bound;
+		for (size_t index = 1; index < appends.size(); ++index) {
+			if (EquivalentValue(m_program, bound, appends[index].bound)) continue;
+			auto& maximum = m_program.value_storage.emplace_back(ValueOpcode::UMax32);
+			maximum.SetArg(0, bound);
+			maximum.SetArg(1, appends[index].bound);
+			bound = Value(&maximum);
+		}
+		return bound;
+	}
+
 	bool MatchScalarMaterialKey(Value key, DescriptorSource::IndirectDescriptor& indirect,
 	                            DescriptorSource& material_source) {
 		const auto* read = key.Resolve().TryInstruction();
@@ -1744,11 +2005,19 @@ private:
 			AffineOffset affine;
 			if (!MatchAffineOffset(lane->Arg(0), lane->Arg(1), affine) ||
 			    affine.index.IsEmpty() || affine.stride == 0u) return false;
-			// U32 multiplication can wrap. Its complete byte-offset domain is one
-			// congruence class, not the source V#'s structured record stride.
-			const auto divisor = std::gcd(affine.stride, uint64_t {1} << 32u);
-			stride = static_cast<uint32_t>(std::max<uint64_t>(divisor, 4u));
-			offset = static_cast<uint32_t>(affine.offset % divisor) & ~3u;
+			count = SharedLoadBound(affine.index, lane->Arg(1));
+			if (!count.IsEmpty() && ((affine.stride | affine.offset) & 3u) == 0u &&
+			    affine.offset + memory->offset <= UINT32_MAX) {
+				stride = static_cast<uint32_t>(affine.stride);
+				offset = static_cast<uint32_t>(affine.offset);
+			} else {
+				count = {};
+				// Without a bounded source, U32 multiplication's complete offset domain
+				// is one congruence class rather than the V#'s structured record stride.
+				const auto divisor = std::gcd(affine.stride, uint64_t {1} << 32u);
+				stride = static_cast<uint32_t>(std::max<uint64_t>(divisor, 4u));
+				offset = static_cast<uint32_t>(affine.offset % divisor) & ~3u;
+			}
 		}
 		if (!MakeRuntimeTableSource(*read, material_source)) return false;
 		indirect.selector.emplace(DescriptorSource::IndirectDescriptor::SelectorRead {
@@ -2913,6 +3182,7 @@ private:
 	Program&                                   m_program;
 	const Decoder::Program&                    m_decoded;
 	const CFG::Graph&                          m_native_cfg;
+	const ShaderWorkgroupInputInfo*            m_workgroup;
 	std::vector<Program::ScalarWrite>          m_scalar_writes;
 	std::map<std::pair<uintptr_t, uint32_t>, ResolvedHandle> m_resolved_handles;
 	std::vector<ScalarReadStep>                m_srt_walk;
@@ -2930,8 +3200,9 @@ private:
 
 } // namespace
 
-void TrackResources(Program& program, const Decoder::Program& decoded, const CFG::Graph& native_cfg) {
-	Tracker(program, decoded, native_cfg).Run();
+void TrackResources(Program& program, const Decoder::Program& decoded, const CFG::Graph& native_cfg,
+                    ShaderStageInputInfo input) {
+	Tracker(program, decoded, native_cfg, input).Run();
 }
 
 } // namespace Libs::Graphics::ShaderRecompiler::IR

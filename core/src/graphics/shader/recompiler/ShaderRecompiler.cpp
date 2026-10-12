@@ -924,7 +924,7 @@ TranslateResult TranslateProgram(const Decoder::Program& decoded, const CompileO
 			     MakeIrDump(cfg_dump, ir).c_str());
 		}
 	}
-	IR::TrackResources(ir, decoded, native_cfg);
+	IR::TrackResources(ir, decoded, native_cfg, options.input_info);
 	TranslateResult result;
 	result.program = std::move(ir);
 	if (options.dump_ir) {
