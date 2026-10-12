@@ -420,7 +420,22 @@ bool MaterializeIndirectDescriptor(const ResourcePlan&                         p
 				keys.push_back(key);
 				mask &= mask - 1u;
 			}
-		} else return false;
+		} else {
+			ShaderBufferResource material;
+			if (!DecodeBufferDescriptor(material_value, material) || selector->stride < 4u ||
+			    !std::has_single_bit(selector->stride) || (selector->offset & 3u) != 0u)
+				return false;
+			// Empty selector bounds denote the complete U32 congruence class. SMEM
+			// adds its aligned immediate after the dynamic offset, without U32 wrap.
+			const auto domain_count = (uint64_t {1} << 32u) / selector->stride;
+			const auto available = material.GetSize() > selector->offset
+			    ? material.GetSize() - selector->offset : 0u;
+			const auto count = std::min(domain_count,
+			    available < 4u ? 0u : (available - 4u) / selector->stride + 1u);
+			if (count > MaxIndirectDescriptorProbes ||
+			    !read_keys(material, selector->offset, selector->stride, count)) return false;
+			if (count < domain_count) keys.push_back(0u); // An out-of-bounds scalar read returns zero.
+		}
 		if (selector != nullptr && selector->byte_ranges.empty()) {
 			std::ranges::sort(keys);
 			keys.erase(std::unique(keys.begin(), keys.end()), keys.end());

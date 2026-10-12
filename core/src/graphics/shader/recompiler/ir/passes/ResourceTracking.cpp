@@ -13,6 +13,7 @@
 #include <algorithm>
 #include <fmt/format.h>
 #include <map>
+#include <numeric>
 #include <optional>
 #include <span>
 #include <tuple>
@@ -1311,6 +1312,7 @@ private:
 
 	bool HasActiveLane(Value mask, const Block* use) const {
 		mask = mask.Resolve();
+		if (mask.IsImmediate()) return mask.GetType() == Type::U1 && mask.U1();
 		const auto incoming_is_nonempty = [&](const Block* from, const Block* to,
 		                                     Value incoming, const Block* header) {
 			const auto accepts = [&](const EdgePredicate& edge) {
@@ -1693,20 +1695,37 @@ private:
 		uint32_t memory_index = 0;
 		const auto* memory = ScalarReadMemory(*read, memory_index);
 		Value index;
+		Value count;
 		uint32_t offset = 0, stride = 0;
 		if (memory == nullptr || memory->kind != ResourceKind::ScalarBuffer ||
-		    memory->offset > INT32_MAX || !MemoryIndexBelongsTo(memory_index, *read) ||
-		    !MatchTableOffset(read->Arg(1), index, offset, stride) ||
-		    ((offset | stride | memory->offset) & 3u) != 0u ||
-		    uint64_t {offset} + memory->offset > UINT32_MAX) return false;
-		const auto* bound = BoundedLoop(index, read->Parent());
-		if (bound == nullptr || bound->GetOpcode() != ValueOpcode::ULessThan32 ||
-		    !MakeRuntimeTableSource(*read, material_source)) return false;
+		    memory->offset > INT32_MAX || !MemoryIndexBelongsTo(memory_index, *read)) return false;
+		if (MatchTableOffset(read->Arg(1), index, offset, stride) &&
+		    ((offset | stride | memory->offset) & 3u) == 0u &&
+		    uint64_t {offset} + memory->offset <= UINT32_MAX) {
+			const auto* bound = BoundedLoop(index, read->Parent());
+			if (bound != nullptr && bound->GetOpcode() == ValueOpcode::ULessThan32) {
+				count = bound->Arg(1);
+			}
+		}
+		if (count.IsEmpty()) {
+			const auto* lane = read->Arg(1).Resolve().TryInstruction();
+			if (lane == nullptr || lane->GetOpcode() != ValueOpcode::ReadFirstLane ||
+			    !HasActiveLane(lane->Arg(1), lane->Parent())) return false;
+			AffineOffset affine;
+			if (!MatchAffineOffset(lane->Arg(0), lane->Arg(1), affine) ||
+			    affine.index.IsEmpty() || affine.stride == 0u) return false;
+			// U32 multiplication can wrap. Its complete byte-offset domain is one
+			// congruence class, not the source V#'s structured record stride.
+			const auto divisor = std::gcd(affine.stride, uint64_t {1} << 32u);
+			stride = static_cast<uint32_t>(std::max<uint64_t>(divisor, 4u));
+			offset = static_cast<uint32_t>(affine.offset % divisor) & ~3u;
+		}
+		if (!MakeRuntimeTableSource(*read, material_source)) return false;
 		indirect.selector.emplace(DescriptorSource::IndirectDescriptor::SelectorRead {
 		    .source = InternSource(material_source), .stride = stride,
-		    .offset = offset + memory->offset});
-		indirect.selector_first = Value(0u);
-		indirect.key_count = bound->Arg(1);
+		    .offset = offset + (memory->offset & ~3u)});
+		indirect.key_count = count;
+		if (!count.IsEmpty()) indirect.selector_first = Value(0u);
 		return true;
 	}
 
@@ -1930,6 +1949,11 @@ private:
 			// The descriptor also supplies dimensions to shader arithmetic. Keep its reads;
 			// only the image handle is projected onto the bounded workgroup key.
 			plan.retain_reads = true;
+		} else if (!plan.table_indexed &&
+		           MatchScalarMaterialKey(key, indirect, material_source)) {
+			// Keep live descriptor payloads, but project descriptor-only SMEM onto
+			// the GPU key using the same plan as other indirect image reads.
+			plan.retain_reads |= table_source.dword_count == 4u;
 		} else if (table_source.dword_count == 2u) {
 			// A packed T# array (stride 32) or records holding a T# (a PS4 light list uses
 			// 0x108-byte entries); materialization reads key * stride + offset either way.
@@ -2007,10 +2031,6 @@ private:
 			}
 			if ((table_offset & 3u) != 0u ||
 			    (bitscan && uint64_t {table_offset} + uint64_t {table_stride} * 32u > UINT32_MAX)) return RejectIndirect(__LINE__);
-		} else if (!plan.table_indexed &&
-		           MatchScalarMaterialKey(key, indirect, material_source)) {
-			// The host enumerates the guarded scalar loop; its key and T# payload stay on the GPU.
-			plan.retain_reads = true;
 		} else {
 			// A bounded V# supplies the complete image table. Leave every GPU selector
 			// and descriptor read in the shader; the host only translates table bytes.
