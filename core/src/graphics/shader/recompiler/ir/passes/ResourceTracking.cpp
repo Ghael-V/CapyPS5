@@ -11,6 +11,7 @@
 #include "graphics/shader/recompiler/ir/passes/SrtWalker.h"
 
 #include <algorithm>
+#include <bit>
 #include <fmt/format.h>
 #include <map>
 #include <numeric>
@@ -1480,14 +1481,15 @@ private:
 		        EquivalentValue(m_program, inst->Arg(1), index));
 	}
 
-	bool MaskOnlyLosesBits(Value value, Value mask) const {
+	bool MaskOnlyLosesBits(Value value, Value mask, bool nonzero) const {
 		const auto* update = value.Resolve().TryInstruction();
 		if (update == nullptr || update->NumArgs() != 2u) return false;
 		if (update->GetOpcode() == ValueOpcode::BitwiseAnd32) {
 			return EquivalentValue(m_program, update->Arg(0), mask) ||
 			       EquivalentValue(m_program, update->Arg(1), mask);
 		}
-		if (update->GetOpcode() != ValueOpcode::BitwiseXor32) return false;
+		// XOR of the first-bit mask adds bit 31 when FindILsb receives zero.
+		if (!nonzero || update->GetOpcode() != ValueOpcode::BitwiseXor32) return false;
 		Value bit;
 		if (EquivalentValue(m_program, update->Arg(0), mask)) bit = update->Arg(1);
 		else if (EquivalentValue(m_program, update->Arg(1), mask)) bit = update->Arg(0);
@@ -1512,16 +1514,15 @@ private:
 		       first->NumArgs() == 1u && EquivalentValue(m_program, first->Arg(0), mask);
 	}
 
-	Value InitialCandidateMask(Value value, const Block* update_block) const {
+	Value InitialCandidateMask(Value value, const Block* update_block = nullptr,
+	                           bool nonzero = false) const {
 		const auto* phi = value.Resolve().TryInstruction();
 		if (phi == nullptr || phi->GetOpcode() != ValueOpcode::Phi ||
 		    phi->NumArgs() != 2u || phi->GetType() != Type::U32) return {};
 		for (uint32_t back = 0; back < 2u; ++back) {
-			if (phi->PhiBlock(back) != update_block ||
-			    !MaskOnlyLosesBits(phi->Arg(back), value)) continue;
-			const auto initial = phi->Arg(back ^ 1u).Resolve();
-			return ValidateRuntimeValue(m_program, initial, RuntimeValueType::Integer)
-			           ? initial : Value {};
+			if ((update_block != nullptr && phi->PhiBlock(back) != update_block) ||
+			    !MaskOnlyLosesBits(phi->Arg(back), value, nonzero)) continue;
+			return phi->Arg(back ^ 1u).Resolve();
 		}
 		return {};
 	}
@@ -1549,8 +1550,9 @@ private:
 			if (first == nullptr || first->GetOpcode() != ValueOpcode::FindILsb32 ||
 			    first->NumArgs() != 1u || !ImpliesNonzero(bit_guard, first->Arg(0)))
 				continue;
-			const auto initial_mask = InitialCandidateMask(first->Arg(0), phi->PhiBlock(bit_arm));
-			if (initial_mask.IsEmpty()) continue;
+			const auto initial_mask = InitialCandidateMask(first->Arg(0), phi->PhiBlock(bit_arm), true);
+			if (initial_mask.IsEmpty() ||
+			    !ValidateRuntimeValue(m_program, initial_mask, RuntimeValueType::Integer)) continue;
 			for (uint32_t sentinel_arm = 0; sentinel_arm < 3u; ++sentinel_arm) {
 				if (sentinel_arm == bit_arm) continue;
 				const auto sentinel_guard = PositiveLaneWitness(phi->PhiBlock(sentinel_arm));
@@ -1837,32 +1839,48 @@ private:
 		return false;
 	}
 
-	Value UnsignedBound(Value guard, Value value, bool positive = true) const {
+	Value UnsignedBound(Value guard, Value value, bool positive = true,
+	                    bool finite_bitscan = false) const {
 		const auto* test = SimplifyGuard(guard).TryInstruction();
 		if (test == nullptr) return {};
 		const auto op = test->GetOpcode();
 		if (op == ValueOpcode::LogicalNot)
-			return UnsignedBound(test->Arg(0), value, !positive);
+			return UnsignedBound(test->Arg(0), value, !positive, finite_bitscan);
 		if ((op == ValueOpcode::LogicalAnd && positive) ||
 		    (op == ValueOpcode::LogicalOr && !positive)) {
-			const auto left = UnsignedBound(test->Arg(0), value, positive);
-			return left.IsEmpty() ? UnsignedBound(test->Arg(1), value, positive) : left;
+			const auto left = UnsignedBound(test->Arg(0), value, positive, finite_bitscan);
+			return left.IsEmpty() ? UnsignedBound(test->Arg(1), value, positive, finite_bitscan) : left;
 		}
 		if ((positive ? op == ValueOpcode::ULessThan32 : op == ValueOpcode::UGreaterThanEqual32) &&
 		    EquivalentValue(m_program, test->Arg(0), value)) return test->Arg(1);
 		if (!positive && op == ValueOpcode::ULessThanEqual32 &&
 		    EquivalentValue(m_program, test->Arg(1), value)) return test->Arg(0);
+		const auto* scan = value.Resolve().TryInstruction();
+		if (finite_bitscan && scan != nullptr && scan->GetOpcode() == ValueOpcode::FindILsb32 &&
+		    (positive ? op == ValueOpcode::INotEqual32 : op == ValueOpcode::IEqual32)) {
+			for (uint32_t arg = 0; arg < 2u; ++arg) {
+				uint32_t excluded;
+				if (!ImmediateU32(test->Arg(arg), excluded)) continue;
+				if ((excluded == UINT32_MAX && EquivalentValue(m_program, test->Arg(arg ^ 1u), value)) ||
+				    (excluded == 0u && EquivalentValue(m_program, test->Arg(arg ^ 1u), scan->Arg(0))))
+					return Value(static_cast<uint32_t>(std::bit_width(SelectorMaximum(scan->Arg(0)))));
+			}
+		}
 		return {};
 	}
 
-	Value UnsignedBoundOnEntry(Value key, const Block* block) const {
+	Value UnsignedBoundOnEntry(Value key, const Block* block, bool finite_bitscan = false) const {
 		const auto* definition = key.Resolve().TryInstruction();
+		// A mask-nonzero guard may precede FF1. Its proof lasts until the mask's
+		// definition, including a loop Phi that changes it for the next iteration.
+		if (definition != nullptr && definition->GetOpcode() == ValueOpcode::FindILsb32)
+			definition = definition->Arg(0).Resolve().TryInstruction();
 		Value bound;
 		const bool guarded = GuardedOnEntry(block, [&](const Block* current) {
 			return definition != nullptr && current == definition->Parent();
 		}, [&](const EdgePredicate& edge) {
 			if (edge.lanes != LaneQuantifier::All) return false;
-			const auto candidate = UnsignedBound(edge.condition, key, edge.positive);
+			const auto candidate = UnsignedBound(edge.condition, key, edge.positive, finite_bitscan);
 			if (candidate.IsEmpty() ||
 			    !ValidateRuntimeValue(m_program, candidate, RuntimeValueType::Integer)) return false;
 			if (bound.IsEmpty()) bound = candidate;
@@ -2631,18 +2649,16 @@ private:
 			if (table_stride < 32u || (table_stride & 3u) != 0u) return RejectIndirect(__LINE__);
 			auto guarded_count = UnsignedBoundOnEntry(key, handle.Parent());
 			if (guarded_count.IsEmpty()) guarded_count = UnsignedImageBound(key, handle);
+			// A runtime count can describe fewer rows than the mask's static bit range.
+			if (guarded_count.IsEmpty()) guarded_count = UnsignedBoundOnEntry(key, handle.Parent(), true);
 			const auto* selector = key.Resolve().TryInstruction();
-			bool bitscan = guarded_count.IsEmpty() && selector != nullptr &&
-			    selector->GetOpcode() == ValueOpcode::FindILsb32 &&
-			    selector->NumArgs() == 1u && m_shader_writes == ShaderWrites::None &&
-			    NonzeroOnEntry(selector->Arg(0), handle.Parent());
+			// Set by the PS4 fallback below for a FindILsb key guarded against its sentinel.
+			bool bitscan = false;
 			if (!guarded_count.IsEmpty()) {
 				if (table_stride < 32u || (table_stride & 3u) != 0u) return false;
 				// Materialization captures the count and descriptor reads; renderer alias
 				// checks reject writes to those ranges while unrelated stores remain valid.
 				indirect.key_count = guarded_count;
-			} else if (bitscan) {
-				indirect.key_count = Value(32u);
 			} else if (m_shader_writes == ShaderWrites::None) {
 				if (const auto* bound = BoundedLoop(key, handle.Parent())) {
 					indirect.key_count = bound->Arg(1);
@@ -2915,6 +2931,16 @@ private:
 			return SelectorMaximum(inst->Arg(arg), bounds, depth + 1u, guard);
 		};
 		switch (inst->GetOpcode()) {
+			case ValueOpcode::Phi: {
+				const auto initial = InitialCandidateMask(value);
+				return initial.IsEmpty() ? UINT32_MAX
+				    : SelectorMaximum(initial, bounds, depth + 1u, guard);
+			}
+			case ValueOpcode::BitFieldUExtract: {
+				uint32_t width;
+				if (ImmediateU32(inst->Arg(2), width) && width < 32u) return (1u << width) - 1u;
+				break;
+			}
 			case ValueOpcode::FindILsb32:
 			case ValueOpcode::FindUMsb32:
 				return (!guard.IsEmpty() && ImpliesNonzero(guard, inst->Arg(0))) ||
