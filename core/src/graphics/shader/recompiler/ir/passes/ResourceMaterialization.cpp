@@ -372,6 +372,50 @@ bool MaterializeIndirectDescriptor(const ResourcePlan&                         p
 			std::iota(keys.begin(), keys.end(), first_key);
 			if (!keys.empty() && keys.back() < keys.front())
 				std::rotate(keys.begin(), keys.begin() + (UINT32_MAX - first_key + 1ull), keys.end());
+		} else if (selector->rows) {
+			const auto& rows = *selector->rows;
+			DescriptorValue count_value;
+			ShaderBufferResource counts, material;
+			if (!clean.EvaluateDescriptor(rows.source, count_value) ||
+			    !DecodeBufferDescriptor(count_value, counts) ||
+			    !DecodeBufferDescriptor(material_value, material) || selector->stride != 4u ||
+			    selector->offset != 0u || rows.stride == 0u || (rows.stride & 3u) != 0u ||
+			    counts.GetSize() / 4u > MaxIndirectDescriptorProbes) return false;
+			std::vector<uint32_t> lengths(counts.GetSize() / 4u);
+			if (!ReadScalarTable(counts.Base48(), counts.GetSize(), 0u, runtime, lengths)) return false;
+			uint32_t total = 0;
+			for (size_t row = 0; row < lengths.size(); ++row) {
+				const auto length = lengths[row];
+				if (length > MaxIndirectDescriptorProbes - total ||
+				    (length != 0u && uint64_t {row} * rows.stride + uint64_t {length} * 4u >
+				                         UINT32_MAX + 1ull)) return false;
+				total += length;
+			}
+			keys.reserve(total);
+			std::vector<uint32_t> batch;
+			for (size_t row = 0; row < lengths.size();) {
+				if (lengths[row] == 0u) { ++row; continue; }
+				const auto first = uint64_t {row} * rows.stride / 4u;
+				auto end = first + lengths[row];
+				size_t next = row + 1u;
+				for (; next < lengths.size(); ++next) {
+					if (lengths[next] == 0u) continue;
+					const auto candidate_end =
+					    std::max(end, uint64_t {next} * rows.stride / 4u + lengths[next]);
+					if (candidate_end - first > MaxIndirectDescriptorProbes) break;
+					end = candidate_end;
+				}
+				// Coalesce small gaps, but interpret only selected prefixes. The strict
+				// reader captures the entire fetched span for writable-alias rejection.
+				batch.resize(end - first);
+				if (!ReadScalarTable(material.Base48(), material.GetSize(), first * 4u, runtime, batch))
+					return false;
+				for (; row < next; ++row) {
+					if (lengths[row] == 0u) continue;
+					const auto begin = batch.begin() + (uint64_t {row} * rows.stride / 4u - first);
+					keys.insert(keys.end(), begin, begin + lengths[row]);
+				}
+			}
 		} else if (selector->bitset) {
 			ShaderBufferResource material;
 			std::array<uint32_t, 4> masks {};
@@ -1265,8 +1309,11 @@ ResourcePlan ExtractResourcePlan(const Program& program) {
 		for (const auto& source: plan.descriptor_sources) {
 			if (!source.indirect_descriptor.has_value()) continue;
 			const auto& indirect = *source.indirect_descriptor;
-			if (indirect.selector)
+			if (indirect.selector) {
 				MarkCleanReads(planned_reads, Source(plan, indirect.selector->source));
+				if (indirect.selector->rows)
+					MarkCleanReads(planned_reads, Source(plan, indirect.selector->rows->source));
+			}
 			MarkCleanReads(planned_reads, nullptr, indirect.selector_mask);
 			MarkCleanReads(planned_reads, nullptr, indirect.selector_first);
 			MarkCleanReads(planned_reads, nullptr, indirect.key_count);

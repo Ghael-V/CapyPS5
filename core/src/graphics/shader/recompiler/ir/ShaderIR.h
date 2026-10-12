@@ -574,11 +574,18 @@ struct ShaderInfo {
 struct DescriptorSource {
 	struct IndirectDescriptor {
 		struct SelectorRead {
+			struct CountedRows {
+				uint32_t source = UINT32_MAX;
+				uint32_t stride = 0; // Byte spacing between selector rows, not their length.
+
+				bool operator==(const CountedRows& other) const = default;
+			};
 			uint32_t source = UINT32_MAX;
 			uint32_t stride = 0;
 			uint32_t offset = 0;
 			// Four DWORD bitmap words per record; set-bit ranks subtract from the last key.
 			bool bitset = false;
+			std::optional<CountedRows> rows;
 			std::vector<std::pair<uint32_t, uint32_t>> byte_ranges;
 
 			bool operator==(const SelectorRead& other) const = default;

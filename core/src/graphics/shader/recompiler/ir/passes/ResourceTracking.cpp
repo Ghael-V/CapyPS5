@@ -1984,6 +1984,44 @@ private:
 		return bound;
 	}
 
+	bool MatchCountedRows(const Inst& read, DescriptorSource& count_source, uint32_t& row_stride) {
+		Value element;
+		uint32_t offset = 0, stride = 0;
+		if (!MatchTableOffset(read.Arg(1), element, offset, stride) || offset != 0u || stride != 4u)
+			return false;
+		const auto* sum = element.TryInstruction();
+		if (sum == nullptr || sum->GetOpcode() != ValueOpcode::IAdd32) return false;
+		for (uint32_t arm = 0; arm < 2u; ++arm) {
+			const auto induction = sum->Arg(arm).Resolve();
+			if (BoundedLoop(induction, read.Parent(), [&](const Inst& compare, uint32_t) {
+				if (compare.GetOpcode() != ValueOpcode::ULessThan32) return false;
+				const auto* count = compare.Arg(1).Resolve().TryInstruction();
+				if (count == nullptr || count->GetOpcode() != ValueOpcode::ReadConstBuffer) return false;
+				uint32_t memory_index = 0;
+				const auto* memory = ScalarReadMemory(*count, memory_index);
+				Value row;
+				uint32_t count_offset = 0, count_stride = 0;
+				if (memory == nullptr || memory->offset != 0u ||
+				    !MatchTableOffset(count->Arg(1), row, count_offset, count_stride) ||
+				    count_offset != 0u || count_stride != 4u) return false;
+				const auto affine = AffineIndex<3>(read.Arg(1), [](Value value) { return value.Resolve(); },
+				    [&](Value value) -> std::optional<size_t> {
+					    if (value == induction) return 1u;
+					    if (EquivalentValue(m_program, value, row)) return 2u;
+					    return {};
+				    });
+				if (!affine || (*affine)[0] != 0u || (*affine)[1] != 4u ||
+				    (*affine)[2] == 0u || ((*affine)[2] & 3u) != 0u ||
+				    !MakeRuntimeTableSource(*count, count_source)) return false;
+				// Count addresses identify rows modulo 2^30. A DWORD-aligned row
+				// spacing preserves those aliases in the U32 selector address too.
+				row_stride = static_cast<uint32_t>((*affine)[2]);
+				return true;
+			}) != nullptr) return true;
+		}
+		return false;
+	}
+
 	bool MatchScalarMaterialKey(Value key, DescriptorSource::IndirectDescriptor& indirect,
 	                            DescriptorSource& material_source) {
 		const auto* read = key.Resolve().TryInstruction();
@@ -1992,6 +2030,8 @@ private:
 		const auto* memory = ScalarReadMemory(*read, memory_index);
 		Value index;
 		Value count;
+		DescriptorSource count_source;
+		uint32_t row_stride = 0;
 		uint32_t offset = 0, stride = 0;
 		if (memory == nullptr || memory->kind != ResourceKind::ScalarBuffer ||
 		    memory->offset > INT32_MAX || !MemoryIndexBelongsTo(memory_index, *read)) return false;
@@ -2003,7 +2043,12 @@ private:
 				count = bound->Arg(1);
 			}
 		}
-		if (count.IsEmpty()) {
+		const bool rows = count.IsEmpty() && memory->offset == 0u &&
+		    MatchCountedRows(*read, count_source, row_stride);
+		if (rows) {
+			stride = 4u;
+			offset = 0u;
+		} else if (count.IsEmpty()) {
 			const auto* lane = read->Arg(1).Resolve().TryInstruction();
 			if (lane == nullptr || lane->GetOpcode() != ValueOpcode::ReadFirstLane ||
 			    !HasActiveLane(lane->Arg(1), lane->Parent())) return false;
@@ -2029,6 +2074,9 @@ private:
 		    .source = InternSource(material_source), .stride = stride,
 		    .offset = offset + (memory->offset & ~3u)});
 		indirect.key_count = count;
+		if (rows) indirect.selector->rows.emplace(
+		    DescriptorSource::IndirectDescriptor::SelectorRead::CountedRows {
+		        .source = InternSource(count_source), .stride = row_stride});
 		if (!count.IsEmpty()) indirect.selector_first = Value(0u);
 		return true;
 	}
