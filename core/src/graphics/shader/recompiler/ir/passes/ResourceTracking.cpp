@@ -1842,16 +1842,24 @@ private:
 	}
 
 	Value UnsignedBound(Value guard, Value value, bool positive = true,
-	                    bool finite_bitscan = false) const {
+	                    bool finite_bitscan = false, Value witness = {}) const {
 		const auto* test = SimplifyGuard(guard).TryInstruction();
 		if (test == nullptr) return {};
 		const auto op = test->GetOpcode();
 		if (op == ValueOpcode::LogicalNot)
-			return UnsignedBound(test->Arg(0), value, !positive, finite_bitscan);
+			return UnsignedBound(test->Arg(0), value, !positive, finite_bitscan, witness);
 		if ((op == ValueOpcode::LogicalAnd && positive) ||
 		    (op == ValueOpcode::LogicalOr && !positive)) {
-			const auto left = UnsignedBound(test->Arg(0), value, positive, finite_bitscan);
-			return left.IsEmpty() ? UnsignedBound(test->Arg(1), value, positive, finite_bitscan) : left;
+			const auto left = UnsignedBound(test->Arg(0), value, positive, finite_bitscan, witness);
+			return left.IsEmpty() ? UnsignedBound(test->Arg(1), value, positive, finite_bitscan, witness) : left;
+		}
+		if (op == ValueOpcode::LogicalAnd && !positive && !witness.IsEmpty()) {
+			// !(A & Q) proves !Q only for accesses whose EXEC also proves A.
+			for (uint32_t arm = 0; arm < 2u; ++arm) {
+				if (!Implies(witness, test->Arg(arm))) continue;
+				const auto bound = UnsignedBound(test->Arg(arm ^ 1u), value, false, finite_bitscan, witness);
+				if (!bound.IsEmpty()) return bound;
+			}
 		}
 		if ((positive ? op == ValueOpcode::ULessThan32 : op == ValueOpcode::UGreaterThanEqual32) &&
 		    EquivalentValue(m_program, test->Arg(0), value)) return test->Arg(1);
@@ -1871,7 +1879,8 @@ private:
 		return {};
 	}
 
-	Value UnsignedBoundOnEntry(Value key, const Block* block, bool finite_bitscan = false) const {
+	Value UnsignedBoundOnEntry(Value key, const Block* block, bool finite_bitscan = false,
+	                           Value witness = {}) const {
 		const auto* definition = key.Resolve().TryInstruction();
 		// A mask-nonzero guard may precede FF1. Its proof lasts until the mask's
 		// definition, including a loop Phi that changes it for the next iteration.
@@ -1882,7 +1891,7 @@ private:
 			return definition != nullptr && current == definition->Parent();
 		}, [&](const EdgePredicate& edge) {
 			if (edge.lanes != LaneQuantifier::All) return false;
-			const auto candidate = UnsignedBound(edge.condition, key, edge.positive, finite_bitscan);
+			const auto candidate = UnsignedBound(edge.condition, key, edge.positive, finite_bitscan, witness);
 			if (candidate.IsEmpty() ||
 			    !ValidateRuntimeValue(m_program, candidate, RuntimeValueType::Integer)) return false;
 			if (bound.IsEmpty()) bound = candidate;
@@ -1901,7 +1910,9 @@ private:
 			    op != ValueOpcode::ImageGatherRaw && op != ValueOpcode::ImageRead)) return {};
 			// The image's own EXEC predicate proves the range for every accessing lane;
 			// an EXEC-nonzero branch alone only proves that some lane is active.
-			const auto candidate = UnsignedBound(image.Arg(image.NumArgs() - 1u), key);
+			const auto active = image.Arg(image.NumArgs() - 1u);
+			auto candidate = UnsignedBound(active, key);
+			if (candidate.IsEmpty()) candidate = UnsignedBoundOnEntry(key, image.Parent(), false, active);
 			if (candidate.IsEmpty() ||
 			    !ValidateRuntimeValue(m_program, candidate, RuntimeValueType::Integer)) return {};
 			if (bound.IsEmpty()) bound = candidate;
