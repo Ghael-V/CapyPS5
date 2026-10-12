@@ -1000,6 +1000,7 @@ private:
 				    a.table_offset != b.table_offset || a.table_immediate != b.table_immediate ||
 				    a.table_stride != b.table_stride || a.indexed_store != b.indexed_store ||
 				    a.workgroup_axis != b.workgroup_axis || a.sources != b.sources ||
+				    a.signed_count != b.signed_count ||
 				    !EquivalentValue(m_program, a.key_count, b.key_count) ||
 				    a.selector_first.IsEmpty() != b.selector_first.IsEmpty() ||
 				    (!a.selector_first.IsEmpty() &&
@@ -2133,6 +2134,7 @@ private:
 					if (!proof.SelectsRange(*selected, active, *candidate, *carried, mask, exits)) continue;
 					indirect.selector_first = first;
 					indirect.key_count = bound->Arg(1);
+					indirect.signed_count = bound->GetOpcode() == ValueOpcode::SLessThan32;
 					return true;
 				}
 			}
@@ -2511,8 +2513,10 @@ private:
 			if (bitscan) {
 				indirect.key_count = Value(32u);
 			} else if (m_shader_writes == ShaderWrites::None) {
-				if (const auto* bound = BoundedLoop(key, handle.Parent()))
+				if (const auto* bound = BoundedLoop(key, handle.Parent())) {
 					indirect.key_count = bound->Arg(1);
+					indirect.signed_count = bound->GetOpcode() == ValueOpcode::SLessThan32;
+				}
 			}
 			if (indirect.key_count.IsEmpty() &&
 			    !MatchUniformizedMaterialKey(key, handle, indirect, material_source) &&
@@ -2670,7 +2674,8 @@ private:
 			if (inst.GetOpcode() != ValueOpcode::StoreBufferU32) return false;
 			const auto& memory = m_program.memory_info[inst.Flags<MemoryFlags>().index];
 			uint32_t scalar = 1u;
-			if (memory.kind != ResourceKind::Buffer || memory.typed || memory.formatted ||
+			if (memory.kind != ResourceKind::Buffer || memory.typed ||
+			    (memory.formatted && (!indexed || memory.data_bits != 32u || memory.data_dwords != 1u)) ||
 			    memory.idxen != indexed || memory.offen == indexed ||
 			    (indexed && (memory.offset != 0u || inst.Arg(2).Resolve() != Value(0u))) ||
 			    !ImmediateU32(inst.Arg(3), scalar) || scalar != 0u)
@@ -2700,6 +2705,13 @@ private:
 			return true;
 		};
 		if (table_source.dword_count == 2u && MatchPackedScalarKey(key, indirect)) return finish();
+		if (table_source.dword_count == 2u) {
+			const auto* bound = BoundedLoop(key, handle.Parent());
+			if (bound == nullptr) return false;
+			indirect.key_count = bound->Arg(1);
+			indirect.signed_count = bound->GetOpcode() == ValueOpcode::SLessThan32;
+			return finish();
+		}
 		if (table_source.dword_count != 4u || table_offset != 0u || table_immediate != 0u || indexed)
 			return false;
 		const auto* lane_read = key.Resolve().TryInstruction();

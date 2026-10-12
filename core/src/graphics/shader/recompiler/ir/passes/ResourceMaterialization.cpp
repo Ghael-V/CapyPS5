@@ -203,7 +203,7 @@ bool ReadScalarTable(uint64_t base, uint64_t size, uint64_t dynamic_offset,
 	       runtime.read_specialization_memory(runtime.userdata, address, prefix);
 }
 
-bool NormalizeIndirectStoreBuffer(DescriptorValue& value, bool indexed) {
+bool NormalizeIndirectStoreBuffer(DescriptorValue& value, bool indexed, bool formatted) {
 	ShaderBufferResource descriptor;
 	if (!DecodeBufferDescriptor(value, descriptor)) return false;
 	if (descriptor.Type() != 0u || descriptor.Format() == Prospero::BufferFormat::kInvalid ||
@@ -212,6 +212,10 @@ bool NormalizeIndirectStoreBuffer(DescriptorValue& value, bool indexed) {
 	} else if (descriptor.Stride() != (indexed ? 4u : 1u) || descriptor.SwizzleEnabled() ||
 	           descriptor.AddTid() || descriptor.OutOfBounds() != (indexed ? 0u : 3u)) {
 		return SpecializationFail("indirect buffer stores require exact linear DWORD or byte bounds");
+	} else if (formatted && (descriptor.Format() != Prospero::BufferFormat::k32UInt ||
+	                         descriptor.DstSelXYZW() != DstSel(4, 0, 0, 0) ||
+	                         (descriptor.Base48() & 3u) != 0u)) {
+		return SpecializationFail("indirect formatted X stores require an aligned 32-bit UInt identity mapping");
 	}
 	return true;
 }
@@ -242,6 +246,11 @@ bool MaterializeIndirectDescriptor(const ResourcePlan&                         p
 	// the specialization (and so the compiled permutation) change whenever the lights did.
 	bool one_slot_per_key = Decoder::GetGuestIsa() == Decoder::GuestIsa::Gfx7 && sources.empty() &&
 	                              !indirect.selector && indirect.workgroup_axis == UINT32_MAX;
+	const auto evaluate_count = [&](uint32_t& count) {
+		if (!clean.Evaluate(indirect.key_count, count)) return false;
+		if (indirect.signed_count && std::bit_cast<int32_t>(count) < 0) count = 0;
+		return true;
+	};
 	const auto intern_candidate = [&](const DescriptorValue& candidate, uint32_t& ordinal) {
 		ordinal = 0u;
 		if (one_slot_per_key) {
@@ -347,9 +356,8 @@ bool MaterializeIndirectDescriptor(const ResourcePlan&                         p
 				key_count = runtime.workgroup_counts[indirect.workgroup_axis];
 				if (key_count == 0u) return false;
 			} else {
-				if (table_value.dword_count != 2u || !clean.Evaluate(indirect.key_count, key_count))
+				if (table_value.dword_count != 2u || !evaluate_count(key_count))
 					return false;
-				if (std::bit_cast<int32_t>(key_count) <= 0) key_count = 0;
 			}
 			if (!indirect.selector_first.IsEmpty() && !clean.Evaluate(indirect.selector_first, first_key))
 				return false;
@@ -370,7 +378,7 @@ bool MaterializeIndirectDescriptor(const ResourcePlan&                         p
 			uint32_t first = 0, count = 0;
 			if (!DecodeBufferDescriptor(material_value, material) ||
 			    !clean.Evaluate(indirect.selector_first, first) ||
-			    !clean.Evaluate(indirect.key_count, count) || count != masks.size() * 32u ||
+			    !evaluate_count(count) || count != masks.size() * 32u ||
 			    selector->stride != sizeof(masks) || selector->offset != 0u ||
 			    material.Type() != 0u || material.Stride() != sizeof(masks) ||
 			    material.SwizzleEnabled() || material.AddTid() || material.OutOfBounds() != 0u ||
@@ -411,7 +419,7 @@ bool MaterializeIndirectDescriptor(const ResourcePlan&                         p
 			uint32_t             first = 0, count = 0;
 			if (!DecodeBufferDescriptor(material_value, material) ||
 			    !clean.Evaluate(indirect.selector_first, first) ||
-			    !clean.Evaluate(indirect.key_count, count) || count > MaxIndirectDescriptorProbes)
+			    !evaluate_count(count) || count > MaxIndirectDescriptorProbes)
 				return false;
 			// SMEM uses its instruction's byte stride; V# stride only supplies its bounds.
 			const auto step = selector->stride != 0u ? selector->stride : material.Stride();
@@ -430,7 +438,7 @@ bool MaterializeIndirectDescriptor(const ResourcePlan&                         p
 			uint32_t count = 0;
 			if (material_value.dword_count != 2u || table_value.dword_count != 2u ||
 			    !clean.Evaluate(indirect.selector_mask, mask) ||
-			    !clean.Evaluate(indirect.key_count, count) || count == 0u || count > 32u) {
+			    !evaluate_count(count) || count == 0u || count > 32u) {
 				return false;
 			}
 			if (count < 32u) mask &= (1u << count) - 1u;
@@ -1368,7 +1376,8 @@ bool MaterializeResources(const ResourcePlan& program, const SrtRuntime& runtime
 					        program, *source->indirect_descriptor, i, 4u, observed, clean, snapshot,
 					        snapshot.buffers, specialization.buffers, ShaderInfo::MaxBuffers,
 					        [&](DescriptorValue& value) {
-						        return NormalizeIndirectStoreBuffer(value, source->indirect_descriptor->indexed_store);
+						        return NormalizeIndirectStoreBuffer(
+						            value, source->indirect_descriptor->indexed_store, base.formatted);
 					        }))
 						return MaterializeFail("indirect buffer descriptor could not be materialized");
 				}
@@ -1597,6 +1606,16 @@ void ApplyResourceSpecialization(Program& program, const ResourceSpecialization&
 			auto& inst = *it;
 			if (inst.GetOpcode() == ValueOpcode::GetImageResource) {
 				inst.SetFlags(image_remap[inst.Flags<uint32_t>()]);
+				continue;
+			}
+			if (inst.GetOpcode() == ValueOpcode::StoreBufferU32) {
+				auto& memory = memory_info[inst.Flags<MemoryFlags>().index];
+				if (memory.kind == ResourceKind::Buffer && memory.formatted &&
+				    program.descriptor_sources[buffers[memory.resource].source].indirect_descriptor) {
+					// Candidate validation proved an index-only k32UInt identity store.
+					// Reuse finite raw-store dispatch and its original-index bounds check.
+					memory.formatted = false;
+				}
 				continue;
 			}
 			if (BufferAccessOf(inst.GetOpcode()) == BufferAccess::Read) {
