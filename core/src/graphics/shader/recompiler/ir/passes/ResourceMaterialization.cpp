@@ -678,7 +678,8 @@ static bool BuildResourceSpecialization(const ResourcePlan& program, ResourceSna
 		}
 		const bool raw_sint_storage = storage && format == Prospero::BufferFormat::k32SInt &&
 		                              base.written && (base.atomic ? !base.atomic64 : !base.read);
-		image.numeric_class         = Prospero::SampledTextureNumericClass(format);
+		image.numeric_class = Prospero::SampledTextureNumericClass(
+		    storage ? Prospero::RemapTextureFormat(format) : format);
 		// A stale record of a PS4 table enumerated by key range: drop it as a null image.
 		if (Decoder::GetGuestIsa() == Decoder::GuestIsa::Gfx7 && image.indirect_root != ImageResource::NoIndirectImage &&
 		    image.indirect_root != i && image.numeric_class == Prospero::TextureNumericClass::Unsupported) {

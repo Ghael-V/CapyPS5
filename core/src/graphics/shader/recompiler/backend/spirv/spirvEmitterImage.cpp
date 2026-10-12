@@ -428,13 +428,16 @@ uint32_t InverseSwizzle(uint32_t swizzle, uint32_t component) {
 
 Format::BufferFormatInfo ImageConversionFormat(const EmitterState&   state,
                                                const IR::MemoryInfo& mem) {
-	const auto format = state.program.info.images[mem.resource].conversion_format;
+	const auto& image = state.program.info.images[mem.resource];
+	const auto format = image.conversion_format;
 	if (format == Prospero::BufferFormat::kInvalid) return {};
 	const auto info = Format::GetFormatInfo(format);
 	EXIT_IF(Prospero::RemapTextureFormat(format) == format || info.component_count == 0u ||
 	        info.component_count > 4u);
 	EXIT_IF(info.type != Format::ComponentType::Uscaled &&
-	        (info.type != Format::ComponentType::Uint || !info.packed_bitfield ||
+	        ((info.type != Format::ComponentType::Uint &&
+	          !(info.type == Format::ComponentType::Unorm &&
+	            image.resource_class == IR::ImageResourceClass::Storage)) || !info.packed_bitfield ||
 	         info.byte_size != sizeof(uint32_t)));
 	return info;
 }
@@ -588,47 +591,22 @@ uint32_t EmitOneDimensionalGatherLz(ValueEmitContext& ctx, const IR::MemoryInfo&
 	return result;
 }
 
-uint32_t PackImageTexel(ValueEmitContext& ctx, const IR::MemoryInfo& mem, uint32_t texel) {
-	const auto info = ImageConversionFormat(ctx.state, mem);
-	if (info.format == Prospero::BufferFormat::kInvalid) return texel;
-	EXIT_IF(info.type != Format::ComponentType::Uint || !info.packed_bitfield);
-
-	auto packed = ConstantU32(ctx.state, 0u);
-	for (uint32_t component = 0; component < info.component_count; component++) {
-		const auto value = ctx.state.builder.AllocateId();
-		ctx.state.builder.AddFunction(spv::OpCompositeExtract, TypeU32(ctx.state), value, texel,
-		                              component);
-		const auto maximum =
-		    ConstantU32(ctx.state, info.component_bits[component] == 32u
-		                               ? UINT32_MAX
-		                               : (1u << info.component_bits[component]) - 1u);
-		const auto within =
-		    Binary(ctx.state, spv::OpULessThan, TypeBool(ctx.state), value, maximum);
-		const auto clamped = ctx.state.builder.AllocateId();
-		ctx.state.builder.AddFunction(spv::OpSelect, TypeU32(ctx.state), clamped, within, value,
-		                              maximum);
-		const auto shifted =
-		    info.component_bit_offset[component] == 0u
-		        ? clamped
-		        : Binary(ctx.state, spv::OpShiftLeftLogical, TypeU32(ctx.state), clamped,
-		                 ConstantU32(ctx.state, info.component_bit_offset[component]));
-		packed = Binary(ctx.state, spv::OpBitwiseOr, TypeU32(ctx.state), packed, shifted);
-	}
-	const auto zero   = ConstantU32(ctx.state, 0u);
-	const auto result = ctx.state.builder.AllocateId();
-	ctx.state.builder.AddFunction(spv::OpCompositeConstruct, TypeU32Vector(ctx.state, 4), result,
-	                              packed, zero, zero, zero);
-	return result;
-}
-
 uint32_t StoreTexel(ValueEmitContext& ctx, const IR::MemoryInfo& mem, uint32_t data, bool integer) {
 	const auto swizzle = ctx.state.program.info.images[mem.resource].shader_swizzle;
-	uint32_t   values[4] {};
+	const auto info = ImageConversionFormat(ctx.state, mem);
+	const bool packed = info.format != Prospero::BufferFormat::kInvalid;
+	EXIT_IF(packed && (!info.packed_bitfield ||
+	                  (info.type != Format::ComponentType::Uint &&
+	                   info.type != Format::ComponentType::Unorm)));
+	const auto zero = ConstantU32(ctx.state, 0);
+	uint32_t values[4] {zero, zero, zero, zero};
+	auto packed_value = zero;
 	const auto dmask = mem.dmask != 0u ? mem.dmask : 1u;
-	for (uint32_t component = 0; component < 4u; component++) {
+	for (uint32_t component = 0; component < (packed ? info.component_count : 4u); component++) {
 		const auto source = InverseSwizzle(swizzle, component);
-		uint32_t   raw    = ConstantU32(ctx.state, 0);
-		if (source < 4u && ((dmask >> source) & 1u) != 0u) {
+		const bool selected = source < 4u && ((dmask >> source) & 1u) != 0u;
+		uint32_t raw = zero;
+		if (selected) {
 			const auto packed_index = DmaskComponentIndex(dmask, source);
 			raw                     = ctx.state.builder.AllocateId();
 			ctx.state.builder.AddFunction(spv::OpCompositeExtract, TypeU32(ctx.state), raw, data,
@@ -638,21 +616,39 @@ uint32_t StoreTexel(ValueEmitContext& ctx, const IR::MemoryInfo& mem, uint32_t d
 					raw = Binary(ctx.state, spv::OpShiftRightLogical, TypeU32(ctx.state), raw,
 					             ConstantU32(ctx.state, 16u));
 				}
-				raw = Binary(ctx.state, spv::OpBitwiseAnd, TypeU32(ctx.state), raw,
-				             ConstantU32(ctx.state, 0xffffu));
+				if (!packed) {
+					raw = Binary(ctx.state, spv::OpBitwiseAnd, TypeU32(ctx.state), raw,
+					             ConstantU32(ctx.state, 0xffffu));
+				}
 			}
+		}
+		if (packed) {
+			if (!selected) continue;
+			auto value = EncodeFormattedStoreComponent(ctx.state, info, component, raw, mem.data_bits);
+			if (info.type == Format::ComponentType::Uint) {
+				value = EmitUMin32(ctx.state, value,
+				                  ConstantU32(ctx.state, (1u << info.component_bits[component]) - 1u));
+			}
+			if (info.component_bit_offset[component] != 0u) {
+				value = Binary(ctx.state, spv::OpShiftLeftLogical, TypeU32(ctx.state), value,
+				               ConstantU32(ctx.state, info.component_bit_offset[component]));
+			}
+			packed_value = packed_value == zero ? value
+			    : Binary(ctx.state, spv::OpBitwiseOr, TypeU32(ctx.state), packed_value, value);
+			continue;
 		}
 		values[component] = integer ? raw
 		                    : mem.data_bits == 16u
 		                        ? EmitF16BitsToF32(ctx.state, raw)
 		                        : Unary(ctx.state, spv::OpBitcast, TypeF32(ctx.state), raw);
 	}
+	if (packed) values[0] = packed_value;
 	const auto texel = ctx.state.builder.AllocateId();
 	ctx.state.builder.AddFunction(spv::OpCompositeConstruct,
 	                              integer ? TypeU32Vector(ctx.state, 4)
 	                                      : TypeF32Vector(ctx.state, 4),
 	                              texel, values[0], values[1], values[2], values[3]);
-	return PackImageTexel(ctx, mem, texel);
+	return texel;
 }
 
 template <typename Emit>
