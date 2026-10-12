@@ -677,7 +677,7 @@ static bool BuildResourceSpecialization(const ResourcePlan& program, ResourceSna
 			image.shader_swizzle = DescriptorImageSwizzle(descriptor);
 		}
 		const bool raw_sint_storage = storage && format == Prospero::BufferFormat::k32SInt &&
-		                              base.written && !base.read && !base.atomic;
+		                              base.written && (base.atomic ? !base.atomic64 : !base.read);
 		image.numeric_class         = Prospero::SampledTextureNumericClass(format);
 		// A stale record of a PS4 table enumerated by key range: drop it as a null image.
 		if (Decoder::GetGuestIsa() == Decoder::GuestIsa::Gfx7 && image.indirect_root != ImageResource::NoIndirectImage &&

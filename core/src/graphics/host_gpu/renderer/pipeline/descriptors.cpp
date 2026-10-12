@@ -324,7 +324,8 @@ void ValidateStorageTexture(const ShaderRecompiler::IR::ImageResource& resource,
 	const bool encoding_ok   = IsCanonicalTextureEncoding(descriptor, resource.r128);
 	const bool uint_resource    = resource.numeric_class == Prospero::TextureNumericClass::Uint;
 	const bool raw_sint_storage = format == Prospero::BufferFormat::k32SInt && uint_resource &&
-	                              resource.written && !resource.read && !resource.atomic;
+	                              resource.written &&
+	                              (resource.atomic ? !resource.atomic64 : !resource.read);
 	const auto numeric_class = Prospero::SampledTextureNumericClass(format);
 	// Atomics use the R32_UINT (R64_UINT) view every storage atomic gets, whatever the numeric type
 	// of the one (two) 32-bit channels: the opcode carries the signedness (a PS4 title's
