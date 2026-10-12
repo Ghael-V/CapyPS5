@@ -365,6 +365,40 @@ bool FoldCompositeExtract(Inst& inst, ValueOpcode construct, size_t components) 
 	return false;
 }
 
+void FoldZeroComparison(Block& block, Block::iterator instruction, FoldWorklist& worklist) {
+	auto& inst = *instruction;
+	Value value;
+	for (uint32_t arg = 0; arg < 2u; ++arg)
+		if (Arg(inst, arg) == Value(0u)) value = Arg(inst, arg ^ 1u);
+	const auto* source = value.TryInstruction();
+	if (source == nullptr) return;
+	const bool equal = inst.GetOpcode() == ValueOpcode::IEqual32;
+	const auto boolean_select = [](const Inst* select) {
+		return select != nullptr && select->GetOpcode() == ValueOpcode::SelectU32 &&
+		       IsImmediate(Arg(*select, 1), Type::U32) &&
+		       IsImmediate(Arg(*select, 2), Type::U32);
+	};
+	if (boolean_select(source)) {
+		const bool when_true = (Arg(*source, 1).U32() == 0u) == equal;
+		const bool when_false = (Arg(*source, 2).U32() == 0u) == equal;
+		if (when_true == when_false) Replace(inst, Value(when_true));
+		else if (when_true) Replace(inst, Arg(*source, 0));
+		else Replace(inst, Value(&*worklist.Prepend(block, instruction, ValueOpcode::LogicalNot,
+		                                          {Arg(*source, 0)})));
+	} else if (source->GetOpcode() == ValueOpcode::BitwiseOr32 &&
+	           (boolean_select(Arg(*source, 0).TryInstruction()) ||
+	            boolean_select(Arg(*source, 1).TryInstruction()))) {
+		// SCC encoded as a DWORD needs no select or bitwise operation when only
+		// its zero predicate is consumed. Keep arbitrary DWORDs as zero comparisons.
+		const auto lhs = worklist.Prepend(block, instruction, inst.GetOpcode(),
+		                                 {Arg(*source, 0), Value(0u)});
+		const auto rhs = worklist.Prepend(block, instruction, inst.GetOpcode(),
+		                                 {Arg(*source, 1), Value(0u)});
+		Replace(inst, Value(&*worklist.Prepend(block, instruction,
+		    equal ? ValueOpcode::LogicalAnd : ValueOpcode::LogicalOr, {Value(&*lhs), Value(&*rhs)})));
+	}
+}
+
 void FoldInstruction(Block& block, Block::iterator instruction,
 	                      FoldWorklist& worklist) {
 	auto& inst = *instruction;
@@ -763,10 +797,12 @@ void FoldInstruction(Block& block, Block::iterator instruction,
 			}
 			return;
 		case ValueOpcode::IEqual32:
-			FoldU32Compare(inst, [](uint32_t a, uint32_t b) { return a == b; });
+			if (!FoldU32Compare(inst, [](uint32_t a, uint32_t b) { return a == b; }))
+				FoldZeroComparison(block, instruction, worklist);
 			return;
 		case ValueOpcode::INotEqual32:
-			FoldU32Compare(inst, [](uint32_t a, uint32_t b) { return a != b; });
+			if (!FoldU32Compare(inst, [](uint32_t a, uint32_t b) { return a != b; }))
+				FoldZeroComparison(block, instruction, worklist);
 			return;
 		case ValueOpcode::ULessThan32:
 			FoldU32Compare(inst, [](uint32_t a, uint32_t b) { return a < b; });
@@ -828,18 +864,42 @@ void FoldInstruction(Block& block, Block::iterator instruction,
 				const auto lhs = Arg(inst, 0);
 				const auto rhs = Arg(inst, 1);
 				const auto simplify = [&](Value assumption, Value expression) {
-					const auto* disjunction = expression.TryInstruction();
-					if (disjunction == nullptr || disjunction->GetOpcode() != ValueOpcode::LogicalOr) {
-						return false;
+					const auto* test = expression.TryInstruction();
+					if (test == nullptr) return false;
+					const auto replace = [&](Value value) {
+						inst.SetArg(assumption == lhs ? 1u : 0u, value);
+						return true;
+					};
+					const auto negate = [&](Value value) {
+						return Value(&*worklist.Prepend(block, instruction, ValueOpcode::LogicalNot, {value}));
+					};
+					const bool inverse = test->GetOpcode() == ValueOpcode::LogicalNot;
+					if (inverse) {
+						test = Arg(*test, 0).TryInstruction();
+						if (test == nullptr) return false;
+						if (test->GetOpcode() == ValueOpcode::LogicalAnd)
+							for (uint32_t arg = 0; arg < 2u; ++arg)
+								if (Arg(*test, arg) == assumption)
+									return replace(negate(Arg(*test, arg ^ 1u)));
 					}
-					for (uint32_t i = 0; i < 2u; ++i) {
-						const auto* inverse = disjunction->Arg(i).Resolve().TryInstruction();
-						if (inverse != nullptr && inverse->GetOpcode() == ValueOpcode::LogicalNot &&
-						    inverse->Arg(0).Resolve() == assumption) {
-							inst.SetArg(assumption == lhs ? 1u : 0u,
-							            disjunction->Arg(i ^ 1u));
-							return true;
+					if (test->GetOpcode() == ValueOpcode::IEqual32 ||
+					    test->GetOpcode() == ValueOpcode::INotEqual32) {
+						for (uint32_t arg = 0; arg < 2u; ++arg) {
+							if (Arg(*test, arg) != Value(0u)) continue;
+							const auto original = Arg(*test, arg ^ 1u);
+							const auto active = ResolveActiveU32(original, assumption);
+							if (!active.IsEmpty() && active != original) {
+								const auto comparison = Value(&*worklist.Prepend(block, instruction,
+								    test->GetOpcode(), {active, Value(0u)}));
+								return replace(inverse ? negate(comparison) : comparison);
+							}
 						}
+					}
+					if (inverse || test->GetOpcode() != ValueOpcode::LogicalOr) return false;
+					for (uint32_t arg = 0; arg < 2u; ++arg) {
+						const auto* negation = Arg(*test, arg).TryInstruction();
+						if (negation != nullptr && negation->GetOpcode() == ValueOpcode::LogicalNot &&
+						    Arg(*negation, 0) == assumption) return replace(Arg(*test, arg ^ 1u));
 					}
 					return false;
 				};
