@@ -364,6 +364,33 @@ bool MaterializeIndirectDescriptor(const ResourcePlan&                         p
 			std::iota(keys.begin(), keys.end(), first_key);
 			if (!keys.empty() && keys.back() < keys.front())
 				std::rotate(keys.begin(), keys.begin() + (UINT32_MAX - first_key + 1ull), keys.end());
+		} else if (selector->bitset) {
+			ShaderBufferResource material;
+			std::array<uint32_t, 4> masks {};
+			uint32_t first = 0, count = 0;
+			if (!DecodeBufferDescriptor(material_value, material) ||
+			    !clean.Evaluate(indirect.selector_first, first) ||
+			    !clean.Evaluate(indirect.key_count, count) || count != masks.size() * 32u ||
+			    selector->stride != sizeof(masks) || selector->offset != 0u ||
+			    material.Type() != 0u || material.Stride() != sizeof(masks) ||
+			    material.SwizzleEnabled() || material.AddTid() || material.OutOfBounds() != 0u ||
+			    (material.Base48() & 3u) != 0u ||
+			    material.GetSize() / sizeof(uint32_t) > MaxIndirectDescriptorProbes) return false;
+			if (material.Format() != Prospero::BufferFormat::kInvalid) {
+				keys.resize(material.GetSize() / sizeof(uint32_t));
+				if (!keys.empty() && !ReadScalarTable(material.Base48(), material.GetSize(), 0u,
+				                                    runtime, keys)) return false;
+				for (size_t word = 0; word < keys.size(); ++word) masks[word % masks.size()] |= keys[word];
+				keys.clear();
+				for (uint32_t word = 0; word < masks.size(); ++word) {
+					auto mask = masks[word];
+					while (mask != 0u) {
+						const auto rank = word * 32u + std::countr_zero(mask);
+						keys.push_back(first + count - 1u - rank);
+						mask &= mask - 1u;
+					}
+				}
+			}
 		} else if (!selector->byte_ranges.empty()) {
 			if (material_value.dword_count != 2u) return false;
 			const auto base = (uint64_t {material_value.dwords[1]} << 32u) | material_value.dwords[0];
