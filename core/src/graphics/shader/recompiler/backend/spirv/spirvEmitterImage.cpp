@@ -436,10 +436,18 @@ Format::BufferFormatInfo ImageConversionFormat(const EmitterState&   state,
 	        info.component_count > 4u);
 	EXIT_IF(info.type != Format::ComponentType::Uscaled &&
 	        ((info.type != Format::ComponentType::Uint &&
-	          !(info.type == Format::ComponentType::Unorm &&
-	            image.resource_class == IR::ImageResourceClass::Storage)) || !info.packed_bitfield ||
+	          info.type != Format::ComponentType::Unorm) || !info.packed_bitfield ||
 	         info.byte_size != sizeof(uint32_t)));
 	return info;
+}
+
+uint32_t ExtractPackedImageComponent(EmitterState& state, const Format::BufferFormatInfo& info,
+                                     uint32_t packed, uint32_t type, uint32_t component) {
+	const auto result = state.builder.AllocateId();
+	state.builder.AddFunction(spv::OpBitFieldUExtract, type, result, packed,
+	                          ConstantU32(state, info.component_bit_offset[component]),
+	                          ConstantU32(state, info.component_bits[component]));
+	return result;
 }
 
 uint32_t ImageGatherSource(const EmitterState& state, const IR::MemoryInfo& mem) {
@@ -465,13 +473,11 @@ uint32_t UnpackImageTexel(ValueEmitContext& ctx, const IR::MemoryInfo& mem, uint
 	}
 	uint32_t components[4] {};
 	for (uint32_t component = 0; component < info.component_count; component++) {
-		components[component] = ctx.state.builder.AllocateId();
 		if (info.packed_bitfield) {
-			ctx.state.builder.AddFunction(spv::OpBitFieldUExtract, scalar_type,
-			                              components[component], packed,
-			                              ConstantU32(ctx.state, info.component_bit_offset[component]),
-			                              ConstantU32(ctx.state, info.component_bits[component]));
+			components[component] =
+			    ExtractPackedImageComponent(ctx.state, info, packed, scalar_type, component);
 		} else {
+			components[component] = ctx.state.builder.AllocateId();
 			ctx.state.builder.AddFunction(spv::OpCompositeExtract, scalar_type,
 			                              components[component], texel, component);
 			// UNorm backing preserves the guest's filtering; scaling precedes swizzle constants.
@@ -531,21 +537,74 @@ uint32_t UnpackImageGather(ValueEmitContext& ctx, const IR::MemoryInfo& mem, uin
 		return Binary(ctx.state, spv::OpFMul, vector_type, gathered, scales);
 	}
 
-	uint32_t values[4] {};
-	for (uint32_t lane = 0; lane < 4u; lane++) {
-		const auto packed = ctx.state.builder.AllocateId();
-		ctx.state.builder.AddFunction(spv::OpCompositeExtract, TypeU32(ctx.state), packed, gathered,
-		                              lane);
-		values[lane]        = ctx.state.builder.AllocateId();
-		const auto physical = (selector - 4u) % info.component_count;
-		ctx.state.builder.AddFunction(spv::OpBitFieldUExtract, TypeU32(ctx.state), values[lane],
-		                              packed,
-		                              ConstantU32(ctx.state, info.component_bit_offset[physical]),
-		                              ConstantU32(ctx.state, info.component_bits[physical]));
+	return ExtractPackedImageComponent(ctx.state, info, gathered, TypeU32Vector(ctx.state, 4),
+	                                   (selector - 4u) % info.component_count);
+}
+
+uint32_t SamplePackedUnormLz(ValueEmitContext& ctx, const IR::MemoryInfo& mem, uint32_t coord) {
+	auto& state = ctx.state;
+	const auto& image = state.program.info.images[mem.resource];
+	const auto info = ImageConversionFormat(state, mem);
+	const auto sampled = MakeSampledImage(state, mem.resource,
+	                                     LoadSamplerDescriptor(state, mem.sampler));
+	const auto gathered = state.builder.AllocateId();
+	state.builder.AddFunction(spv::OpImageGather, TypeU32Vector(state, 4), gathered, sampled,
+	                          coord, ConstantU32(state, 0u));
+	state.builder.RequireCapability(spv::CapabilityImageQuery);
+	const auto size = state.builder.AllocateId();
+	state.builder.AddFunction(spv::OpImageQuerySizeLod, TypeU32Vector(state, 2), size,
+	                          LoadImageDescriptor(state, mem.resource), ConstantU32(state, 0u));
+	const auto size_f32 = Unary(state, spv::OpConvertUToF, TypeF32Vector(state, 2), size);
+	const auto half = ConstantF32Value(state, 0.5f);
+	const auto halves = state.builder.Constant(spv::OpConstantComposite,
+	                                           TypeF32Vector(state, 2), half, half);
+	const auto fractions = state.builder.AllocateId();
+	state.builder.AddFunction(
+	    spv::OpExtInst, TypeF32Vector(state, 2), fractions, GlslStd450(state), GLSLstd450Fract,
+	    Binary(state, spv::OpFSub, TypeF32Vector(state, 2),
+	           Binary(state, spv::OpFMul, TypeF32Vector(state, 2), coord, size_f32), halves));
+	uint32_t fraction[2];
+	uint32_t complement[2];
+	for (uint32_t axis = 0; axis < 2u; axis++) {
+		fraction[axis] = state.builder.AllocateId();
+		state.builder.AddFunction(spv::OpCompositeExtract, TypeF32(state), fraction[axis],
+		                          fractions, axis);
+		complement[axis] = Binary(state, spv::OpFSub, TypeF32(state),
+		                          ConstantF32Value(state, 1.0f), fraction[axis]);
 	}
-	const auto result = ctx.state.builder.AllocateId();
-	ctx.state.builder.AddFunction(spv::OpCompositeConstruct, TypeU32Vector(ctx.state, 4), result,
-	                              values[0], values[1], values[2], values[3]);
+	// Gather order is (x0, y1), (x1, y1), (x1, y0), (x0, y0).
+	const auto weights = state.builder.AllocateId();
+	state.builder.AddFunction(
+	    spv::OpCompositeConstruct, TypeF32Vector(state, 4), weights,
+	    Binary(state, spv::OpFMul, TypeF32(state), complement[0], fraction[1]),
+	    Binary(state, spv::OpFMul, TypeF32(state), fraction[0], fraction[1]),
+	    Binary(state, spv::OpFMul, TypeF32(state), fraction[0], complement[1]),
+	    Binary(state, spv::OpFMul, TypeF32(state), complement[0], complement[1]));
+	uint32_t decoded[4] {};
+	uint32_t selected[4] {ZeroF32(state), ZeroF32(state), ZeroF32(state), ZeroF32(state)};
+	for (uint32_t component = 0; component < 4u; component++) {
+		if ((mem.dmask & (1u << component)) == 0u) continue;
+		const auto selector = (image.shader_swizzle >> (component * 3u)) & 7u;
+		if (selector == 1u) {
+			selected[component] = ConstantF32Value(state, 1.0f);
+		} else if (selector >= 4u) {
+			const auto physical = (selector - 4u) % info.component_count;
+			if (decoded[physical] == 0u) {
+				const auto texels = Unary(
+				    state, spv::OpConvertUToF, TypeF32Vector(state, 4),
+				    ExtractPackedImageComponent(state, info, gathered,
+				                                TypeU32Vector(state, 4), physical));
+				decoded[physical] = Binary(
+				    state, spv::OpFMul, TypeF32(state),
+				    Binary(state, spv::OpDot, TypeF32(state), texels, weights),
+				    ConstantF32Value(state, 1.0f / ((1u << info.component_bits[physical]) - 1u)));
+			}
+			selected[component] = decoded[physical];
+		}
+	}
+	const auto result = state.builder.AllocateId();
+	state.builder.AddFunction(spv::OpCompositeConstruct, TypeF32Vector(state, 4), result,
+	                          selected[0], selected[1], selected[2], selected[3]);
 	return result;
 }
 
@@ -762,6 +821,22 @@ void EmitImage(ValueEmitContext& ctx, const IR::Inst& inst) {
 	if (op == IR::ValueOpcode::ImageQueryDimensions) {
 		state.builder.RequireCapability(spv::CapabilityImageQuery);
 		ctx.Define(inst, QueryDimensions(ctx, mem, *address));
+		return;
+	}
+	if (image.resource_class == IR::ImageResourceClass::Sampled &&
+	    image.conversion_format == Prospero::BufferFormat::k11_11_10UNorm) {
+		if (op != IR::ValueOpcode::ImageSampleRaw ||
+		    image.dimension != ImageDimension::Dim2D ||
+		    mem.image_dimension != ImageDimension::Dim2D || mem.data_bits != 32u ||
+		    mem.image_sample_flags != Decoder::ImageSampleFlagLevelZero ||
+		    image.indirect_root != IR::ImageResource::NoIndirectImage ||
+		    !state.program.info.samplers.at(mem.sampler).indirect_resources.empty()) {
+			ctx.Fail(inst, "packed UNorm sampling requires a direct 2D sample_lz");
+			return;
+		}
+		const auto coord = CoordF32(ctx, mem, *address, Layout(mem).coord, 2u);
+		ctx.Define(inst, ResultVector(ctx, SamplePackedUnormLz(ctx, mem, coord),
+		                              Prospero::TextureNumericClass::Float, false, mem));
 		return;
 	}
 	if (op == IR::ValueOpcode::ImageQueryLod) {

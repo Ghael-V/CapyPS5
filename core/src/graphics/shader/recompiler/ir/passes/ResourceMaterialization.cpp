@@ -118,6 +118,40 @@ Prospero::BufferFormat ImageConversionFormat(Prospero::BufferFormat format) {
 	                                                      : Prospero::BufferFormat::kInvalid;
 }
 
+bool ValidatePackedUnormSampling(const ResourcePlan& program, const ResourceSnapshot& snapshot,
+                                 uint32_t image_index) {
+	ShaderTextureResource texture;
+	std::copy_n(snapshot.images[image_index].dwords.begin(), std::size(texture.fields),
+	            texture.fields);
+	if (texture.Type() != Prospero::ImageType::kColor2D ||
+	    texture.BaseLevel() != texture.LastLevel() || texture.MinLod() != 0u ||
+	    texture.CornerSample()) {
+		return SpecializationFail("packed UNorm sampling requires a centered, single-mip 2D image");
+	}
+	for (const auto& pair: program.info.sampled_pairs) {
+		if (pair.image != image_index) continue;
+		if (pair.sampler >= snapshot.samplers.size() ||
+		    !program.info.samplers[pair.sampler].indirect_resources.empty()) {
+			return SpecializationFail("packed UNorm sampling requires a direct sampler");
+		}
+		ShaderSamplerResource sampler;
+		std::copy_n(snapshot.samplers[pair.sampler].dwords.begin(), std::size(sampler.fields),
+		            sampler.fields);
+		const auto linear = static_cast<uint32_t>(Prospero::SamplerFilter::kBilinear);
+		const auto clamp = static_cast<uint32_t>(Prospero::SamplerClampMode::kClampLastTexel);
+		if (sampler.XyMagFilter() != linear || sampler.XyMinFilter() != linear ||
+		    sampler.ClampX() != clamp || sampler.ClampY() != clamp ||
+		    sampler.ForceUnormCoords() || sampler.MaxAnisoRatio() != 0u ||
+		    sampler.FilterMode() != 0u || sampler.MinLod() != 0u || sampler.ForceSrgb() ||
+		    sampler.TruncCoord() || (sampler.fields[0] & (1u << 19u)) != 0u) { // MC_COORD_TRUNC
+			return SpecializationFail(fmt::format(
+			    "packed UNorm image {} requires normalized bilinear clamp sampling (sampler {})",
+			    image_index, pair.sampler));
+		}
+	}
+	return true;
+}
+
 enum class SamplerClass : uint8_t { Float, Integer };
 
 SamplerClass ClassifySampler(const ImageResource& image) {
@@ -679,7 +713,7 @@ static bool BuildResourceSpecialization(const ResourcePlan& program, ResourceSna
 		const bool raw_sint_storage = storage && format == Prospero::BufferFormat::k32SInt &&
 		                              base.written && (base.atomic ? !base.atomic64 : !base.read);
 		image.numeric_class = Prospero::SampledTextureNumericClass(
-		    storage ? Prospero::RemapTextureFormat(format) : format);
+		    Prospero::RemapTextureFormat(format));
 		// A stale record of a PS4 table enumerated by key range: drop it as a null image.
 		if (Decoder::GetGuestIsa() == Decoder::GuestIsa::Gfx7 && image.indirect_root != ImageResource::NoIndirectImage &&
 		    image.indirect_root != i && image.numeric_class == Prospero::TextureNumericClass::Unsupported) {
@@ -688,6 +722,12 @@ static bool BuildResourceSpecialization(const ResourcePlan& program, ResourceSna
 			image.dimension     = Decoder::ImageDimension::Dim2D;
 			image.cube          = false;
 			continue;
+		}
+		if (!storage && format == Prospero::BufferFormat::k11_11_10UNorm) {
+			if (image.indirect_root != ImageResource::NoIndirectImage) {
+				return SpecializationFail("packed UNorm sampling requires a direct image");
+			}
+			if (!ValidatePackedUnormSampling(program, snapshot, i)) return false;
 		}
 		if (storage) {
 			// 32-bit SINT atomics run on the R32_UINT view (see ValidateStorageTexture).

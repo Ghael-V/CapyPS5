@@ -793,6 +793,7 @@ enum ImageSampleFlag : uint32_t {
 	ImageSampleFlagCd               = 1u << 8u,
 	ImageSampleFlagGatherHorizontal = 1u << 9u,
 	ImageSampleFlagAdjust           = 1u << 10u,
+	ImageSampleFlagUnnormalized     = 1u << 11u,
 };
 
 enum class ImageDimension : uint32_t {
