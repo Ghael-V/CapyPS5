@@ -289,6 +289,8 @@ struct ImageSampleLayout {
 	uint32_t clamp  = NoImageComponent;
 	uint32_t grad_x = NoImageComponent;
 	uint32_t grad_y = NoImageComponent;
+
+	bool operator==(const ImageSampleLayout&) const = default;
 };
 
 struct F32Class {

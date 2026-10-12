@@ -67,10 +67,10 @@ uint32_t AddressF32(ValueEmitContext& ctx, const IR::MemoryInfo& mem, const IR::
 	           : Unary(ctx.state, spv::OpBitcast, TypeF32(ctx.state), value);
 }
 
-ImageSampleLayout Layout(const IR::MemoryInfo& mem) {
+ImageSampleLayout Layout(const IR::MemoryInfo& mem, ImageDimension dimension) {
 	ImageSampleLayout layout;
 	uint32_t          cursor = 0;
-	const auto&       info   = ImageDimensionInfoFor(mem.image_dimension);
+	const auto&       info   = ImageDimensionInfoFor(dimension);
 	if (HasFlag(mem, Decoder::ImageSampleFlagOffset)) layout.offset = cursor++;
 	if (HasFlag(mem, Decoder::ImageSampleFlagBias)) layout.bias = cursor++;
 	if (HasFlag(mem, Decoder::ImageSampleFlagCompare)) layout.dref = cursor++;
@@ -85,6 +85,48 @@ ImageSampleLayout Layout(const IR::MemoryInfo& mem) {
 	if (HasFlag(mem, Decoder::ImageSampleFlagLod)) layout.lod = cursor++;
 	if (HasFlag(mem, Decoder::ImageSampleFlagLodClamp)) layout.clamp = cursor++;
 	return layout;
+}
+
+void ValidateIndirectImageOperands(ValueEmitContext& ctx, const IR::Inst& inst) {
+	const auto op = inst.GetOpcode();
+	const auto& memory = ctx.Memory(inst);
+	const auto& images = ctx.state.program.info.images;
+	const auto& root = images.at(memory.resource);
+	if (root.indirect_root != memory.resource) return;
+	if (op != IR::ValueOpcode::ImageSampleRaw &&
+	    op != IR::ValueOpcode::ImageGatherRaw && op != IR::ValueOpcode::ImageRead) {
+		ctx.Fail(inst, "requires an unsupported indirect image operation");
+	}
+	const auto& native = ImageDimensionInfoFor(memory.image_dimension);
+	const auto native_layout = Layout(memory, memory.image_dimension);
+	const bool sampling = op == IR::ValueOpcode::ImageSampleRaw ||
+	                      op == IR::ValueOpcode::ImageGatherRaw;
+	const auto validate = [&](const IR::ImageResource& image) {
+		const auto& candidate = ImageDimensionInfoFor(image.dimension);
+		// Sample/fetch ignore the native array slice for a non-array T# while
+		// keeping the original positions of later operands.
+		const bool projected_2d = memory.image_dimension == ImageDimension::Dim2DArray &&
+		                          image.dimension == ImageDimension::Dim2D;
+		bool compatible = projected_2d ||
+		                  (candidate.coordinate_components == native.coordinate_components &&
+		                   candidate.multisampled == native.multisampled);
+		if (sampling) {
+			compatible &= candidate.multisampled == 0u && native.multisampled == 0u;
+			compatible &= projected_2d || Layout(memory, image.dimension) == native_layout;
+			if (HasFlag(memory, Decoder::ImageSampleFlagDerivative)) {
+				compatible &= candidate.spatial_components == native.spatial_components;
+			}
+			if (op == IR::ValueOpcode::ImageGatherRaw ||
+			    HasFlag(memory, Decoder::ImageSampleFlagCompare)) {
+				compatible &= image.dimension != ImageDimension::Dim3D;
+			}
+		}
+		if (!compatible) ctx.Fail(inst, "has incompatible image operand layout");
+	};
+	validate(root);
+	for (const auto resource: root.indirect_resources) {
+		if (resource != memory.resource) validate(images.at(resource));
+	}
 }
 
 uint32_t ZeroF32(EmitterState& state) {
@@ -800,6 +842,7 @@ void EmitImage(ValueEmitContext& ctx, const IR::Inst& inst) {
 	const auto& mem       = gfx7_layout ? gfx7_memory : memory;
 	const auto  image_arg = inst.Arg(0);
 	ctx.ResourceIndex(image_arg, IR::ValueOpcode::GetImageResource);
+	ValidateIndirectImageOperands(ctx, inst);
 	const auto& image   = state.program.info.images.at(mem.resource);
 	const auto* address = ctx.ImageAddress(inst.Arg(image_info.needs_sampler ? 2 : 1));
 	if (op == IR::ValueOpcode::ImageQueryDimensions) {
@@ -902,7 +945,7 @@ void EmitImage(ValueEmitContext& ctx, const IR::Inst& inst) {
 	if (op == IR::ValueOpcode::ImageSampleRaw || op == IR::ValueOpcode::ImageGatherRaw) {
 		const auto  dimension      = image.dimension;
 		const auto& dimension_info = ImageDimensionInfoFor(dimension);
-		const auto  layout         = Layout(mem);
+		const auto  layout         = Layout(mem, mem.image_dimension);
 		const auto  numeric_class  = image.numeric_class;
 		const bool  dref           = HasFlag(mem, Decoder::ImageSampleFlagCompare);
 		if (dref && state.program.info.images[mem.resource].conversion_format !=
