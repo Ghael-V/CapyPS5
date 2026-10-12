@@ -588,6 +588,7 @@ struct DescriptorSource {
 		bool     indexed_store = false;
 		uint32_t workgroup_axis  = UINT32_MAX;
 		Value    key_count;
+		// First selector index, or first descriptor key when no selector is present.
 		Value                 selector_first;
 		Value    selector_mask;
 		std::vector<uint32_t> sources;

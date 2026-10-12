@@ -1348,6 +1348,12 @@ private:
 		guard = SimplifyGuard(guard);
 		required = required.Resolve();
 		if (EquivalentValue(m_program, guard, required)) return true;
+		const auto* test = required.TryInstruction();
+		if (test != nullptr && test->GetOpcode() == ValueOpcode::INotEqual32) {
+			for (uint32_t arg = 0; arg < 2u; ++arg)
+				if (test->Arg(arg).Resolve() == Value(0u) &&
+				    ImpliesNonzero(guard, test->Arg(arg ^ 1u))) return true;
+		}
 		const auto* inst = guard.TryInstruction();
 		return inst != nullptr && inst->GetOpcode() == ValueOpcode::LogicalAnd &&
 		       (Implies(inst->Arg(0), required) || Implies(inst->Arg(1), required));
@@ -1419,8 +1425,11 @@ private:
 			return ImpliesNonzero(inst->Arg(0), value) ||
 			       ImpliesNonzero(inst->Arg(1), value);
 		}
-		if (inst->GetOpcode() != ValueOpcode::INotEqual32 || inst->NumArgs() != 2u)
-			return false;
+		if (inst->NumArgs() != 2u) return false;
+		if (inst->GetOpcode() == ValueOpcode::ULessThan32)
+			return inst->Arg(0).Resolve() == Value(0u) &&
+			       EquivalentValue(m_program, inst->Arg(1), value);
+		if (inst->GetOpcode() != ValueOpcode::INotEqual32) return false;
 		uint32_t zero = 1u;
 		return (ImmediateU32(inst->Arg(0), zero) && zero == 0u &&
 		        EquivalentValue(m_program, inst->Arg(1), value)) ||
@@ -1627,7 +1636,8 @@ private:
 		return true;
 	}
 
-	const Inst* BoundedLoop(Value key, const Block* use, const auto& accepts_bound) const {
+	const Inst* BoundedInduction(Value key, const Block* use, const auto& accepts_step,
+	                             const auto& accepts_bound) const {
 		const auto* phi = key.Resolve().TryInstruction();
 		if (phi == nullptr || phi->GetOpcode() != ValueOpcode::Phi || phi->GetType() != Type::U32 ||
 		    phi->NumArgs() != 2u || phi->NumPhiBlocks() != 2u)
@@ -1635,9 +1645,9 @@ private:
 		const Block* increment_block = nullptr;
 		uint32_t initial_arm = 0;
 		for (uint32_t initial = 0; initial < 2u; ++initial) {
-			const auto zero = phi->Arg(initial).Resolve();
+			const auto initial_value = phi->Arg(initial).Resolve();
 			const auto* step = phi->Arg(initial ^ 1u).Resolve().TryInstruction();
-			if (!zero.IsImmediate() || zero.GetType() != Type::U32 || zero.U32() != 0u ||
+			if (!initial_value.IsImmediate() || initial_value.GetType() != Type::U32 ||
 			    step == nullptr || step->GetOpcode() != ValueOpcode::IAdd32 ||
 			    step->Parent() == nullptr) continue;
 			// Structurization can forward the native increment through a synthetic continue block.
@@ -1653,9 +1663,9 @@ private:
 			if (incoming != step->Parent()) continue;
 			uint32_t increment = 0;
 			if ((step->Arg(0).Resolve() == key &&
-			     ImmediateU32(step->Arg(1), increment) && increment == 1u) ||
+			     ImmediateU32(step->Arg(1), increment) && accepts_step(initial_value.U32(), increment)) ||
 			    (step->Arg(1).Resolve() == key &&
-			     ImmediateU32(step->Arg(0), increment) && increment == 1u)) {
+			     ImmediateU32(step->Arg(0), increment) && accepts_step(initial_value.U32(), increment))) {
 				increment_block = step->Parent();
 				initial_arm = initial;
 				break;
@@ -1666,8 +1676,7 @@ private:
 		const auto stops = [&](const Block* block) { return block == phi->Parent(); };
 		for (const auto& use_of_key: phi->Uses()) {
 			const auto* compare = use_of_key.user;
-			if ((compare->GetOpcode() != ValueOpcode::SLessThan32 &&
-			     compare->GetOpcode() != ValueOpcode::ULessThan32) || use_of_key.operand != 0u ||
+			if (use_of_key.operand != 0u ||
 			    !accepts_bound(*compare, initial_arm)) continue;
 			if (!GuardedOnEntry(use != nullptr ? use : increment_block, stops, [&](const EdgePredicate& edge) {
 				return edge.positive && Implies(edge.condition, Value(use_of_key.user));
@@ -1680,6 +1689,27 @@ private:
 			})) return compare;
 		}
 		return {};
+	}
+
+	const Inst* BoundedLoop(Value key, const Block* use, const auto& accepts_bound) const {
+		return BoundedInduction(key, use,
+		    [](uint32_t initial, uint32_t step) { return initial == 0u && step == 1u; },
+		    [&](const Inst& compare, uint32_t initial) {
+			    return (compare.GetOpcode() == ValueOpcode::SLessThan32 ||
+			            compare.GetOpcode() == ValueOpcode::ULessThan32) &&
+			           accepts_bound(compare, initial);
+		    });
+	}
+
+	const Inst* DescendingLoop(Value key, const Block* use, uint32_t& maximum) const {
+		return BoundedInduction(key, use,
+		    [&](uint32_t initial, uint32_t step) {
+			    maximum = initial;
+			    return initial <= INT32_MAX && step == UINT32_MAX;
+		    }, [](const Inst& compare, uint32_t) {
+			    return compare.GetOpcode() == ValueOpcode::SGreaterThanEqual32 &&
+			           compare.Arg(1).Resolve() == Value(0u);
+		    });
 	}
 
 	const Inst* BoundedLoop(Value key, const Block* use) const {
@@ -1730,10 +1760,26 @@ private:
 	}
 
 	void FoldBoundedLoopSelectors() {
+		const auto fold = [&](const Inst& compare, const auto& bounds, const Block* header) {
+			for (auto* block: m_program.blocks) {
+				if (!GuardedOnEntry(block, [&](const Block* at) { return at == header; },
+				    [&](const EdgePredicate& edge) {
+					    return edge.positive && Implies(edge.condition, Value(const_cast<Inst*>(&compare)));
+				    })) continue;
+				for (auto& inst: *block)
+					if (inst.GetOpcode() == ValueOpcode::SelectU32 &&
+					    SelectorPredicateFalse(inst.Arg(0), bounds)) inst.ReplaceUsesWith(inst.Arg(2));
+			}
+		};
 		for (auto* header: m_program.blocks) {
 			for (auto& induction: *header) {
 				const Inst* carried = nullptr;
 				uint32_t maximum = 0;
+				if (const auto* compare = DescendingLoop(Value(&induction), nullptr, maximum)) {
+					const std::array bounds {std::pair {static_cast<const Inst*>(&induction), maximum}};
+					fold(*compare, bounds, header);
+					continue;
+				}
 				const auto* compare = BoundedLoop(Value(&induction), nullptr,
 				    [&](const Inst& test, uint32_t initial) {
 					if (test.GetOpcode() != ValueOpcode::ULessThan32) return false;
@@ -1756,17 +1802,7 @@ private:
 				// Native scalar branches advance the zero/+1 induction uniformly, so
 				// even an any-lane bound test limits it by the largest carried bound.
 				// Per-lane edges instead require the comparison on every executing lane.
-				for (auto* block: m_program.blocks) {
-					if (!GuardedOnEntry(block, [&](const Block* at) { return at == header; },
-					    [&](const EdgePredicate& edge) {
-						return edge.positive && Implies(edge.condition, Value(const_cast<Inst*>(compare)));
-					})) continue;
-					for (auto& inst: *block) {
-						if (inst.GetOpcode() == ValueOpcode::SelectU32 &&
-						    SelectorPredicateFalse(inst.Arg(0), assumptions))
-							inst.ReplaceUsesWith(inst.Arg(2));
-					}
-				}
+				fold(*compare, assumptions, header);
 			}
 		}
 	}
@@ -1829,6 +1865,32 @@ private:
 			}
 		}
 		return false;
+	}
+
+	bool MatchReversedImageRange(Value key, DescriptorSource::IndirectDescriptor& indirect) {
+		const auto* subtract = key.Resolve().TryInstruction();
+		if (subtract == nullptr || subtract->GetOpcode() != ValueOpcode::ISub32 ||
+		    !ValidateRuntimeValue(m_program, subtract->Arg(0), RuntimeValueType::Integer)) return false;
+		const auto* lane = subtract->Arg(1).Resolve().TryInstruction();
+		if (lane == nullptr || lane->GetOpcode() != ValueOpcode::ReadFirstLane ||
+		    !HasActiveLane(lane->Arg(1), lane->Parent())) return false;
+		std::vector<std::pair<const Inst*, uint32_t>> bounds;
+		for (const auto* block: m_program.blocks) {
+			for (const auto& inst: *block) {
+				if (inst.GetOpcode() != ValueOpcode::Phi) continue;
+				uint32_t maximum = 0;
+				if (DescendingLoop(Value(const_cast<Inst*>(&inst)), lane->Parent(), maximum))
+					bounds.emplace_back(&inst, maximum);
+			}
+		}
+		const auto maximum = SelectorMaximum(lane->Arg(0), bounds, 0u, lane->Arg(1));
+		if (maximum >= INT32_MAX) return false;
+		auto& first = m_program.value_storage.emplace_back(ValueOpcode::ISub32);
+		first.SetArg(0, subtract->Arg(0));
+		first.SetArg(1, Value(maximum));
+		indirect.selector_first = Value(&first);
+		indirect.key_count = Value(maximum + 1u);
+		return true;
 	}
 
 	bool MatchDescriptorTable(Inst& handle, const DescriptorSource& descriptor,
@@ -1969,7 +2031,8 @@ private:
 					indirect.key_count = bound->Arg(1);
 			}
 			if (indirect.key_count.IsEmpty() &&
-			    !MatchUniformizedMaterialKey(key, handle, indirect, material_source)) {
+			    !MatchUniformizedMaterialKey(key, handle, indirect, material_source) &&
+			    !MatchReversedImageRange(key, indirect)) {
 				// A FindILsb key guarded against its sentinel (mask != 0, or key != -1 as a PS4
 				// light loop tests it) is below 32 whatever the shader writes: its image stores
 				// do not change the descriptor records read through the scalar table.
@@ -2191,20 +2254,21 @@ private:
 
 	using SelectorBounds = std::span<const std::pair<const Inst*, uint32_t>>;
 
-	bool SelectorPredicateFalse(Value value, SelectorBounds bounds, uint32_t depth = 0) const {
+	bool SelectorPredicateFalse(Value value, SelectorBounds bounds, uint32_t depth = 0,
+	                            Value guard = {}) const {
 		if (depth > 32u) return false;
 		value = value.Resolve();
 		if (value.IsImmediate()) return value.GetType() == Type::U1 && !value.U1();
 		const auto* inst = value.TryInstruction();
 		if (inst == nullptr) return false;
 		if (inst->GetOpcode() == ValueOpcode::LogicalAnd)
-			return SelectorPredicateFalse(inst->Arg(0), bounds, depth + 1u) ||
-			       SelectorPredicateFalse(inst->Arg(1), bounds, depth + 1u);
+			return SelectorPredicateFalse(inst->Arg(0), bounds, depth + 1u, guard) ||
+			       SelectorPredicateFalse(inst->Arg(1), bounds, depth + 1u, guard);
 		if (inst->GetOpcode() == ValueOpcode::IEqual32) {
 			for (uint32_t arg = 0; arg < 2u; ++arg) {
 				uint32_t target;
 				if (ImmediateU32(inst->Arg(arg), target) &&
-				    SelectorMaximum(inst->Arg(arg ^ 1u), bounds, depth + 1u) < target) return true;
+				    SelectorMaximum(inst->Arg(arg ^ 1u), bounds, depth + 1u, guard) < target) return true;
 			}
 		}
 		uint32_t target;
@@ -2212,7 +2276,8 @@ private:
 		       SelectorMaximum(inst->Arg(1), bounds, depth + 1u) <= target;
 	}
 
-	uint32_t SelectorMaximum(Value value, SelectorBounds bounds = {}, uint32_t depth = 0) const {
+	uint32_t SelectorMaximum(Value value, SelectorBounds bounds = {}, uint32_t depth = 0,
+	                         Value guard = {}) const {
 		if (depth > 32u) return UINT32_MAX;
 		value = value.Resolve();
 		if (value.IsImmediate() && value.GetType() == Type::U32) return value.U32();
@@ -2221,16 +2286,29 @@ private:
 		for (const auto& [phi, maximum]: bounds)
 			if (inst == phi) return maximum;
 		const auto maximum = [&](uint32_t arg) {
-			return SelectorMaximum(inst->Arg(arg), bounds, depth + 1u);
+			return SelectorMaximum(inst->Arg(arg), bounds, depth + 1u, guard);
 		};
 		switch (inst->GetOpcode()) {
 			case ValueOpcode::FindILsb32:
-				return NonzeroOnEntry(inst->Arg(0), inst->Parent()) ? 31u : UINT32_MAX;
+			case ValueOpcode::FindUMsb32:
+				return (!guard.IsEmpty() && ImpliesNonzero(guard, inst->Arg(0))) ||
+				               NonzeroOnEntry(inst->Arg(0), inst->Parent()) ? 31u : UINT32_MAX;
 			case ValueOpcode::UMin32:
 			case ValueOpcode::BitwiseAnd32: return std::min(maximum(0), maximum(1));
 			case ValueOpcode::SelectU32:
-				return SelectorPredicateFalse(inst->Arg(0), bounds, depth + 1u)
+				if (!guard.IsEmpty() && Implies(guard, inst->Arg(0))) return maximum(1);
+				return SelectorPredicateFalse(inst->Arg(0), bounds, depth + 1u, guard)
 				           ? maximum(2) : std::max(maximum(1), maximum(2));
+			case ValueOpcode::ISub32: {
+				uint32_t left;
+				if (ImmediateU32(inst->Arg(0), left) && maximum(1) <= left) return left;
+				break;
+			}
+			case ValueOpcode::IAdd32: {
+				const auto result = uint64_t {maximum(0)} + maximum(1);
+				if (result <= UINT32_MAX) return static_cast<uint32_t>(result);
+				break;
+			}
 			case ValueOpcode::ShiftRightLogical32:
 			case ValueOpcode::ShiftLeftLogical32: {
 				uint32_t shift;

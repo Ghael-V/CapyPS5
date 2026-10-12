@@ -346,6 +346,7 @@ bool MaterializeIndirectDescriptor(const ResourcePlan&                         p
 		}
 		if (selector == nullptr) {
 			uint32_t key_count = 0;
+			uint32_t first_key = 0;
 			if (indirect.workgroup_axis != UINT32_MAX) {
 				if (indirect.workgroup_axis >= runtime.workgroup_counts.size()) return false;
 				key_count = runtime.workgroup_counts[indirect.workgroup_axis];
@@ -355,14 +356,19 @@ bool MaterializeIndirectDescriptor(const ResourcePlan&                         p
 					return false;
 				if (std::bit_cast<int32_t>(key_count) <= 0) key_count = 0;
 			}
+			if (!indirect.selector_first.IsEmpty() && !clean.Evaluate(indirect.selector_first, first_key))
+				return false;
 			if (indirect.table_stride == 0u || key_count > MaxIndirectDescriptorProbes ||
-			    (key_count != 0u && uint64_t {indirect.table_offset} + indirect.table_immediate +
+			    (indirect.selector_first.IsEmpty() && key_count != 0u &&
+			         uint64_t {indirect.table_offset} + indirect.table_immediate +
 			         uint64_t {key_count - 1u} * indirect.table_stride + descriptor_bytes >
 			             UINT32_MAX + 1ull)) {
 				return false;
 			}
 			keys.resize(key_count);
-			std::iota(keys.begin(), keys.end(), 0u);
+			std::iota(keys.begin(), keys.end(), first_key);
+			if (!keys.empty() && keys.back() < keys.front())
+				std::rotate(keys.begin(), keys.begin() + (UINT32_MAX - first_key + 1ull), keys.end());
 		} else if (!selector->byte_ranges.empty()) {
 			if (material_value.dword_count != 2u) return false;
 			const auto base = (uint64_t {material_value.dwords[1]} << 32u) | material_value.dwords[0];
