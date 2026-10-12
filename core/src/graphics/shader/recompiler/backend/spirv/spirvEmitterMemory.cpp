@@ -322,10 +322,11 @@ void StoreBda(ValueEmitContext& ctx, uint32_t address, uint32_t active, uint32_t
 	});
 }
 
-uint32_t ByteAddress(ValueEmitContext& ctx, const IR::Inst& inst, const IR::MemoryInfo& mem) {
+uint32_t ByteAddress(ValueEmitContext& ctx, const IR::Inst& inst, const IR::MemoryInfo& mem,
+                     uint32_t prefix = 0) {
 	if (mem.kind == IR::ResourceKind::Buffer) {
 		const auto resource = ctx.state.program.info.buffers.at(mem.resource).descriptor_index;
-		const auto prefix = ctx.state.memory_byte_offsets[resource];
+		if (prefix == 0u) prefix = ctx.state.memory_byte_offsets[resource];
 		const auto address = Binary(ctx.state, spv::OpIAdd, TypeU32(ctx.state),
 		                            BufferByteAddress(ctx, inst, mem), prefix);
 		// The host binding prefix must not wrap an out-of-range guest address into the buffer.
@@ -346,8 +347,9 @@ uint32_t ByteAddress(ValueEmitContext& ctx, const IR::Inst& inst, const IR::Memo
 	return ScratchByteAddress(ctx, mem, ctx.Arg(inst, 1), ctx.Arg(inst, 2));
 }
 
-uint32_t DwordIndex(ValueEmitContext& ctx, const IR::Inst& inst, const IR::MemoryInfo& mem) {
-	auto address = ByteAddress(ctx, inst, mem);
+uint32_t DwordIndex(ValueEmitContext& ctx, const IR::Inst& inst, const IR::MemoryInfo& mem,
+                    uint32_t prefix = 0) {
+	auto address = ByteAddress(ctx, inst, mem, prefix);
 	if (mem.kind == IR::ResourceKind::Lds || mem.kind == IR::ResourceKind::Gds) {
 		// RDNA2 DS region addresses retain bits [15:2] after adding the byte offset.
 		address = Binary(ctx.state, spv::OpBitwiseAnd, TypeU32(ctx.state), address,
@@ -613,8 +615,30 @@ void StoreLocalFlat(ValueEmitContext& ctx, const IR::Inst& inst) {
 
 void StoreWordPrepared(ValueEmitContext& ctx, const IR::Inst& inst, const IR::MemoryInfo& mem,
                        const MemoryResourceAccess& resource, uint32_t data) {
-	const auto index = DwordIndex(ctx, inst, mem);
-	EmitIfCondition(ctx.state, EmitMemoryElementInBounds(ctx.state, resource, index), [&]() {
+	auto& state = ctx.state;
+	const auto source = mem.kind == IR::ResourceKind::Buffer
+	                        ? state.program.info.buffers[mem.resource].source : UINT32_MAX;
+	const auto& sources = state.program.descriptor_sources;
+	const auto* indirect = source < sources.size() && sources[source].indirect_descriptor
+	                           ? &*sources[source].indirect_descriptor : nullptr;
+	uint32_t index = 0;
+	uint32_t in_bounds = 0;
+	if (indirect != nullptr && indirect->indexed_store) {
+		// The resource plan proves stride-four, index-only stores. Check the original
+		// index before any byte multiplication can wrap it into the buffer.
+		const auto prefix = Binary(state, spv::OpShiftRightLogical, TypeU32(state),
+		                           resource.byte_offset, ConstantU32(state, 2));
+		const auto guest_index = ctx.Arg(inst, 1);
+		const auto records = Binary(state, spv::OpISub, TypeU32(state), resource.length, prefix);
+		in_bounds = AndCondition(state,
+		    Binary(state, spv::OpULessThanEqual, TypeBool(state), prefix, resource.length),
+		    Binary(state, spv::OpULessThan, TypeBool(state), guest_index, records));
+		index = EmitAddU32(state, guest_index, prefix);
+	} else {
+		index = DwordIndex(ctx, inst, mem, resource.byte_offset);
+		in_bounds = EmitMemoryElementInBounds(state, resource, index);
+	}
+	EmitIfCondition(state, in_bounds, [&]() {
 		StoreWordInBounds(ctx, resource, index, data);
 	});
 }
@@ -649,6 +673,15 @@ void StoreWord(ValueEmitContext& ctx, const IR::Inst& inst, IR::MemoryInfo mem) 
 		const auto selected = EmitIndirectResourceIndex(
 		    state, ctx.Arg(*handle, 0), buffer.indirect_mapping_offset,
 		    buffer.indirect_search_iterations, UINT32_MAX);
+		if (UsesSharedIndirectBufferStore(state, mem.resource)) {
+			EmitIfCondition(state, Binary(state, spv::OpULessThan, TypeBool(state), selected,
+			                             ConstantU32(state, buffer.indirect_resources.size())), [&]() {
+				const auto slot = EmitAddU32(state, selected, ConstantU32(state, buffer.descriptor_index));
+				const auto access = PrepareStorageBufferResourceAccess(state, mem, state.storage_buffers[2], slot);
+				StoreWordPrepared(ctx, inst, mem, access, data);
+			});
+			return;
+		}
 		const auto merge = state.builder.AllocateId();
 		std::vector<uint32_t> labels(buffer.indirect_resources.size());
 		std::vector<uint32_t> branches {spv::OpSwitch, selected, merge};

@@ -995,7 +995,7 @@ private:
 				const auto& b = *descriptor.indirect_descriptor;
 				if (a.selector != b.selector || a.table_source != b.table_source ||
 				    a.table_offset != b.table_offset || a.table_immediate != b.table_immediate ||
-				    a.table_stride != b.table_stride ||
+				    a.table_stride != b.table_stride || a.indexed_store != b.indexed_store ||
 				    a.workgroup_axis != b.workgroup_axis || a.sources != b.sources ||
 				    !EquivalentValue(m_program, a.key_count, b.key_count) ||
 				    a.selector_first.IsEmpty() != b.selector_first.IsEmpty() ||
@@ -2042,17 +2042,71 @@ private:
 		return true;
 	}
 
+	bool MatchPackedScalarKey(Value key, DescriptorSource::IndirectDescriptor& indirect) {
+		const auto* mask = key.Resolve().TryInstruction();
+		uint32_t bits = 0;
+		if (mask == nullptr || mask->GetOpcode() != ValueOpcode::BitwiseAnd32 ||
+		    !ImmediateU32(mask->Arg(1), bits) || bits != 255u) return false;
+		const auto* shift = mask->Arg(0).Resolve().TryInstruction();
+		if (shift == nullptr || shift->GetOpcode() != ValueOpcode::ShiftRightLogical32 ||
+		    (PossibleU32Bits(shift->Arg(1)) & ~24u) != 0u) return false;
+		DescriptorSource::IndirectDescriptor::SelectorRead selector;
+		std::vector<const Inst*> pending {shift->Arg(0).Resolve().TryInstruction()};
+		std::vector<const Inst*> visited;
+		while (!pending.empty()) {
+			const auto* read = pending.back();
+			pending.pop_back();
+			if (read == nullptr) return false;
+			if (std::ranges::find(visited, read) != visited.end()) continue;
+			visited.push_back(read);
+			if (read->GetOpcode() == ValueOpcode::Phi) {
+				for (size_t arm = 0; arm < read->NumArgs(); ++arm)
+					pending.push_back(read->Arg(arm).Resolve().TryInstruction());
+				continue;
+			}
+			uint32_t index = 0;
+			const auto* memory = ScalarReadMemory(*read, index);
+			DescriptorSource source;
+			if (memory == nullptr || memory->kind != ResourceKind::ScalarAddress ||
+			    memory->offset > INT32_MAX || !MakeRuntimeTableSource(*read, source)) return false;
+			const auto maximum = PossibleU32Bits(read->Arg(1)) & ~3u;
+			const auto offset = memory->offset & ~3u;
+			if (uint64_t {offset} + maximum + 4u > UINT32_MAX) return false;
+			const auto source_index = InternSource(source);
+			if (selector.source != UINT32_MAX && selector.source != source_index) return false;
+			selector.source = source_index;
+			selector.byte_ranges.emplace_back(offset, maximum + 4u);
+		}
+		if (selector.byte_ranges.empty()) return false;
+		// Scalar reads align both offsets independently. Merge the possible read spans;
+		// the GPU retains the actual byte selection and the host only discovers V#s.
+		std::ranges::sort(selector.byte_ranges);
+		for (size_t i = 1; i < selector.byte_ranges.size();) {
+			auto& previous = selector.byte_ranges[i - 1u];
+			const auto current = selector.byte_ranges[i];
+			if (current.first > previous.first + previous.second) { ++i; continue; }
+			previous.second = std::max(previous.second, current.first + current.second - previous.first);
+			selector.byte_ranges.erase(selector.byte_ranges.begin() + i);
+		}
+		indirect.selector = std::move(selector);
+		return true;
+	}
+
 	bool TryMakeIndirectBuffer(Inst& handle, const DescriptorSource& descriptor,
 	                           IndirectDescriptorPlan& plan) {
 		if (handle.GetOpcode() != ValueOpcode::GetBufferResource || handle.NumArgs() != 4u ||
 		    handle.Uses().empty()) return false;
+		if (handle.Uses().front().user->GetOpcode() != ValueOpcode::StoreBufferU32) return false;
+		const auto indexed = m_program.memory_info[handle.Uses().front().user->Flags<MemoryFlags>().index].idxen;
 		for (const auto& use: handle.Uses()) {
 			const auto& inst = *use.user;
 			if (inst.GetOpcode() != ValueOpcode::StoreBufferU32) return false;
 			const auto& memory = m_program.memory_info[inst.Flags<MemoryFlags>().index];
 			uint32_t scalar = 1u;
 			if (memory.kind != ResourceKind::Buffer || memory.typed || memory.formatted ||
-			    memory.idxen || !memory.offen || !ImmediateU32(inst.Arg(3), scalar) || scalar != 0u)
+			    memory.idxen != indexed || memory.offen == indexed ||
+			    (indexed && (memory.offset != 0u || inst.Arg(2).Resolve() != Value(0u))) ||
+			    !ImmediateU32(inst.Arg(3), scalar) || scalar != 0u)
 				return false;
 		}
 		DescriptorSource table_source;
@@ -2061,8 +2115,26 @@ private:
 		uint32_t table_stride = 0;
 		uint32_t table_immediate = 0;
 		if (!MatchDescriptorTable(handle, descriptor, plan, table_source, key, table_offset,
-		                          table_stride, table_immediate) || table_stride != 16u ||
-		    table_source.dword_count != 4u || table_offset != 0u || table_immediate != 0u) return false;
+		                          table_stride, table_immediate) || table_stride != 16u) return false;
+		DescriptorSource::IndirectDescriptor indirect;
+		indirect.table_stride = table_stride;
+		indirect.table_offset = table_offset;
+		indirect.table_immediate = table_immediate;
+		indirect.indexed_store = indexed;
+		const auto finish = [&] {
+			indirect.table_source = InternSource(table_source);
+			DescriptorSource source;
+			source.dword_count = 4u;
+			source.dwords.fill(Value(0u));
+			source.indirect_descriptor = std::move(indirect);
+			plan.handle = &handle;
+			plan.source = InternSource(source);
+			plan.key = key;
+			return true;
+		};
+		if (table_source.dword_count == 2u && MatchPackedScalarKey(key, indirect)) return finish();
+		if (table_source.dword_count != 4u || table_offset != 0u || table_immediate != 0u || indexed)
+			return false;
 		const auto* lane_read = key.Resolve().TryInstruction();
 		if (lane_read == nullptr || lane_read->GetOpcode() != ValueOpcode::ReadFirstLane)
 			return false;
@@ -2090,21 +2162,11 @@ private:
 		    !ImmediateU32(read->Arg(3), scalar) || scalar != 0u ||
 		    !EquivalentValue(m_program, selected->Arg(0), read->Arg(4))) return false;
 		DescriptorSource material_source;
-		DescriptorSource::IndirectDescriptor indirect;
-		indirect.table_stride = table_stride;
 		if (!MakeRuntimeTableSource(*read, material_source) ||
 		    !BoundedSelectedIndex(read->Arg(1), read->Arg(4), indirect)) return false;
 		indirect.selector.emplace(DescriptorSource::IndirectDescriptor::SelectorRead{.source = InternSource(material_source),
 		                              .offset = memory.offset + lane * 4u});
-		indirect.table_source = InternSource(table_source);
-		DescriptorSource source;
-		source.dword_count = 4u;
-		source.dwords.fill(Value(0u));
-		source.indirect_descriptor = indirect;
-		plan.handle = &handle;
-		plan.source = InternSource(source);
-		plan.key = key;
-		return true;
+		return finish();
 	}
 
 	using SelectorBounds = std::span<const std::pair<const Inst*, uint32_t>>;

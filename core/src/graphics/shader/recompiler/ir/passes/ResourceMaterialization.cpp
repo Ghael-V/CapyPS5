@@ -208,15 +208,15 @@ bool ReadScalarTable(uint64_t base, uint64_t size, uint64_t dynamic_offset,
 	       runtime.read_specialization_memory(runtime.userdata, address, prefix);
 }
 
-bool NormalizeIndirectStoreBuffer(DescriptorValue& value) {
+bool NormalizeIndirectStoreBuffer(DescriptorValue& value, bool indexed) {
 	ShaderBufferResource descriptor;
 	if (!DecodeBufferDescriptor(value, descriptor)) return false;
 	if (descriptor.Type() != 0u || descriptor.Format() == Prospero::BufferFormat::kInvalid ||
 	    descriptor.Base48() == 0u || descriptor.GetSize() == 0u) {
 		value.dwords.fill(0u);
-	} else if (descriptor.Stride() != 1u || descriptor.SwizzleEnabled() || descriptor.AddTid() ||
-	           descriptor.OutOfBounds() != 3u) {
-		return SpecializationFail("indirect buffer stores require linear byte bounds");
+	} else if (descriptor.Stride() != (indexed ? 4u : 1u) || descriptor.SwizzleEnabled() ||
+	           descriptor.AddTid() || descriptor.OutOfBounds() != (indexed ? 0u : 3u)) {
+		return SpecializationFail("indirect buffer stores require exact linear DWORD or byte bounds");
 	}
 	return true;
 }
@@ -363,6 +363,21 @@ bool MaterializeIndirectDescriptor(const ResourcePlan&                         p
 			}
 			keys.resize(key_count);
 			std::iota(keys.begin(), keys.end(), 0u);
+		} else if (!selector->byte_ranges.empty()) {
+			if (material_value.dword_count != 2u) return false;
+			const auto base = (uint64_t {material_value.dwords[1]} << 32u) | material_value.dwords[0];
+			std::array<bool, 256> selected {};
+			for (const auto [offset, size]: selector->byte_ranges) {
+				if (size > MaxIndirectDescriptorProbes || ((offset | size) & 3u) != 0u) return false;
+				keys.resize(size / 4u);
+				if (!ReadScalarTable(base, UINT64_MAX, offset, runtime, keys)) return false;
+				for (const auto word: keys)
+					for (uint32_t shift = 0; shift < 32u; shift += 8u)
+						selected[(word >> shift) & 255u] = true;
+			}
+			keys.clear();
+			for (uint32_t key = 0; key < selected.size(); ++key)
+				if (selected[key]) keys.push_back(key);
 		} else if (!indirect.selector_first.IsEmpty()) {
 			ShaderBufferResource material;
 			uint32_t             first = 0, count = 0;
@@ -406,7 +421,7 @@ bool MaterializeIndirectDescriptor(const ResourcePlan&                         p
 				mask &= mask - 1u;
 			}
 		} else return false;
-		if (selector != nullptr) {
+		if (selector != nullptr && selector->byte_ranges.empty()) {
 			std::ranges::sort(keys);
 			keys.erase(std::unique(keys.begin(), keys.end()), keys.end());
 		}
@@ -1364,7 +1379,9 @@ bool MaterializeResources(const ResourcePlan& program, const SrtRuntime& runtime
 					if (!MaterializeIndirectDescriptor(
 					        program, *source->indirect_descriptor, i, 4u, observed, clean, snapshot,
 					        snapshot.buffers, specialization.buffers, ShaderInfo::MaxBuffers,
-					        NormalizeIndirectStoreBuffer))
+					        [&](DescriptorValue& value) {
+						        return NormalizeIndirectStoreBuffer(value, source->indirect_descriptor->indexed_store);
+					        }))
 						return MaterializeFail("indirect buffer descriptor could not be materialized");
 				}
 			} else if (!evaluate(base.source, snapshot.buffers[i], base.written)) {
