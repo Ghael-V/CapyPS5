@@ -686,6 +686,10 @@ static bool BuildResourceSpecialization(const ResourcePlan& program, ResourceSna
 			return SpecializationFail("indirect image specialization has no typed candidate");
 		}
 		const auto& image_class = specialization.images[exemplar];
+		const auto is_2d = [](Decoder::ImageDimension dimension) {
+			return dimension == Decoder::ImageDimension::Dim2D ||
+			       dimension == Decoder::ImageDimension::Dim2DArray;
+		};
 		for (uint32_t candidate = 0; candidate < specialization.images.size(); candidate++) {
 			auto& image = specialization.images[candidate];
 			if (image.indirect_root != root_index) {
@@ -699,7 +703,11 @@ static bool BuildResourceSpecialization(const ResourcePlan& program, ResourceSna
 				image.shader_swizzle    = image_class.shader_swizzle;
 				image.cube              = image_class.cube;
 			}
-			if (image.mip_count != image_class.mip_count ||
+			const bool same_coordinates = image.dimension == image_class.dimension &&
+			                              image.cube == image_class.cube;
+			if (image.numeric_class != image_class.numeric_class ||
+			    (!same_coordinates && !(is_2d(image.dimension) && is_2d(image_class.dimension))) ||
+			    image.mip_count != image_class.mip_count ||
 			    image.conversion_format != image_class.conversion_format ||
 			    image.shader_swizzle != image_class.shader_swizzle) {
 				// A PS4 table enumerated by key range (32 light slots) also holds records the
@@ -1551,20 +1559,9 @@ void ApplyResourceSpecialization(Program& program, const ResourceSpecialization&
 	}
 
 	SamplerPlan sampler_plan;
+	EXIT_IF(!BuildSamplerPlan(program.info, sampler_plan));
 	auto& samplers      = program.info.samplers;
 	auto& sampled_pairs = program.info.sampled_pairs;
-	const auto original_pair_count = sampled_pairs.size();
-	for (size_t index = 0; index < original_pair_count; ++index) {
-		const auto pair = sampled_pairs[index];
-		uint32_t classes = 1u << static_cast<uint32_t>(images[pair.image].numeric_class);
-		for (const auto candidate: images[pair.image].indirect_resources) {
-			const auto bit = 1u << static_cast<uint32_t>(images[candidate].numeric_class);
-			if ((classes & bit) != 0u) continue;
-			classes |= bit;
-			sampled_pairs.push_back({candidate, pair.sampler, pair.first_use_pc});
-		}
-	}
-	EXIT_IF(!BuildSamplerPlan(program.info, sampler_plan));
 	const auto original_sampler_count = samplers.size();
 	samplers.reserve(sampler_plan.sampler_count);
 	for (uint32_t index = 0; index < sampler_plan.sampler_count; index++) {
@@ -1678,6 +1675,10 @@ void ApplyResourceSpecialization(Program& program, const ResourceSpecialization&
 				memory.sampler = sampler_plan.mapping[memory.sampler][type];
 				EXIT_IF(memory.sampler == UINT32_MAX);
 			}
+			EXIT_IF(image.indirect_root == memory.resource &&
+			        inst.GetOpcode() != ValueOpcode::ImageSampleRaw &&
+			        inst.GetOpcode() != ValueOpcode::ImageGatherRaw &&
+			        inst.GetOpcode() != ValueOpcode::ImageRead);
 			memory_live[index] = true;
 		}
 	}
