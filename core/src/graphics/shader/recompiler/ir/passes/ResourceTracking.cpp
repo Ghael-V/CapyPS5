@@ -1640,7 +1640,8 @@ private:
 	}
 
 	const Inst* BoundedInduction(Value key, const Block* use, const auto& accepts_step,
-	                             const auto& accepts_bound) const {
+	                             const auto& accepts_bound,
+	                             LaneQuantifier lanes = LaneQuantifier::Any) const {
 		const auto* phi = key.Resolve().TryInstruction();
 		if (phi == nullptr || phi->GetOpcode() != ValueOpcode::Phi || phi->GetType() != Type::U32 ||
 		    phi->NumArgs() != 2u || phi->NumPhiBlocks() != 2u)
@@ -1682,7 +1683,8 @@ private:
 			if (use_of_key.operand != 0u ||
 			    !accepts_bound(*compare, initial_arm)) continue;
 			if (!GuardedOnEntry(use != nullptr ? use : increment_block, stops, [&](const EdgePredicate& edge) {
-				return edge.positive && Implies(edge.condition, Value(use_of_key.user));
+				return edge.positive && (lanes == LaneQuantifier::Any || edge.lanes == lanes) &&
+				       Implies(edge.condition, Value(use_of_key.user));
 			})) continue;
 			LoopBoundProof proof(m_program, *phi, *compare);
 			// The image bound and the increment guard are separate obligations: a
@@ -1694,14 +1696,15 @@ private:
 		return {};
 	}
 
-	const Inst* BoundedLoop(Value key, const Block* use, const auto& accepts_bound) const {
+	const Inst* BoundedLoop(Value key, const Block* use, const auto& accepts_bound,
+	                       LaneQuantifier lanes = LaneQuantifier::Any) const {
 		return BoundedInduction(key, use,
 		    [](uint32_t initial, uint32_t step) { return initial == 0u && step == 1u; },
 		    [&](const Inst& compare, uint32_t initial) {
 			    return (compare.GetOpcode() == ValueOpcode::SLessThan32 ||
 			            compare.GetOpcode() == ValueOpcode::ULessThan32) &&
 			           accepts_bound(compare, initial);
-		    });
+		    }, lanes);
 	}
 
 	const Inst* DescendingLoop(Value key, const Block* use, uint32_t& maximum) const {
@@ -1989,6 +1992,12 @@ private:
 		uint32_t offset = 0, stride = 0;
 		if (!MatchTableOffset(read.Arg(1), element, offset, stride) || offset != 0u || stride != 4u)
 			return false;
+		const auto* lane = element.TryInstruction();
+		const bool selected_lane = lane != nullptr && lane->GetOpcode() == ValueOpcode::ReadFirstLane;
+		if (selected_lane) {
+			if (!HasActiveLane(lane->Arg(1), lane->Parent())) return false;
+			element = ActiveValue(lane->Arg(0), lane->Arg(1));
+		}
 		const auto* sum = element.TryInstruction();
 		if (sum == nullptr || sum->GetOpcode() != ValueOpcode::IAdd32) return false;
 		for (uint32_t arm = 0; arm < 2u; ++arm) {
@@ -2004,20 +2013,28 @@ private:
 				if (memory == nullptr || memory->offset != 0u ||
 				    !MatchTableOffset(count->Arg(1), row, count_offset, count_stride) ||
 				    count_offset != 0u || count_stride != 4u) return false;
-				const auto affine = AffineIndex<3>(read.Arg(1), [](Value value) { return value.Resolve(); },
+				if (selected_lane) {
+					const auto* row_lane = row.TryInstruction();
+					if (row_lane == nullptr || row_lane->GetOpcode() != ValueOpcode::ReadFirstLane ||
+					    !ValidateWaveUniformValue(m_program, row_lane->Arg(0))) return false;
+					// Different EXEC masks may select different lanes. A globally uniform row
+					// keeps their count and key addresses correlated; i is bounded on every lane.
+					row = row_lane->Arg(0).Resolve();
+				}
+				const auto affine = AffineIndex<3>(element, [](Value value) { return value.Resolve(); },
 				    [&](Value value) -> std::optional<size_t> {
 					    if (value == induction) return 1u;
 					    if (EquivalentValue(m_program, value, row)) return 2u;
 					    return {};
 				    });
-				if (!affine || (*affine)[0] != 0u || (*affine)[1] != 4u ||
-				    (*affine)[2] == 0u || ((*affine)[2] & 3u) != 0u ||
+				if (!affine || (*affine)[0] != 0u || (*affine)[1] != 1u ||
+				    (*affine)[2] == 0u || (*affine)[2] > UINT32_MAX / 4u ||
 				    !MakeRuntimeTableSource(*count, count_source)) return false;
 				// Count addresses identify rows modulo 2^30. A DWORD-aligned row
 				// spacing preserves those aliases in the U32 selector address too.
-				row_stride = static_cast<uint32_t>((*affine)[2]);
+				row_stride = static_cast<uint32_t>((*affine)[2] * 4u);
 				return true;
-			}) != nullptr) return true;
+			}, selected_lane ? LaneQuantifier::All : LaneQuantifier::Any) != nullptr) return true;
 		}
 		return false;
 	}

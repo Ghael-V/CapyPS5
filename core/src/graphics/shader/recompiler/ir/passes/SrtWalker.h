@@ -51,6 +51,9 @@ enum class RuntimeValueType { Any, Integer, ImmutableInteger };
 
 bool ValidateRuntimeValue(const ResourcePlan& program, Value value,
                           RuntimeValueType type = RuntimeValueType::Any);
+// Uniform across a compute wave, including values derived from its workgroup ID.
+// This does not imply that the host can evaluate the value.
+bool ValidateWaveUniformValue(const ResourcePlan& program, Value value);
 void CompileSrtWalker(ResourcePlan& program);
 // Uses the strict reader for values that affect shader specialization.
 SrtRuntime CleanRuntime(SrtRuntime runtime);
