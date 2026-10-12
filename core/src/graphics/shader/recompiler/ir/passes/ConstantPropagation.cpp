@@ -102,6 +102,13 @@ bool AncillaryRetainedOnly(const Inst& inst) {
 	});
 }
 
+bool HasOneUse(const Inst& inst) {
+	// Replacement aliases preserve external Values but emit no additional operation.
+	return std::ranges::count_if(inst.Uses(), [](const Use& use) {
+		return use.user->GetOpcode() != ValueOpcode::Identity;
+	}) == 1;
+}
+
 class FoldWorklist {
 public:
 	struct Location {
@@ -877,7 +884,7 @@ void FoldInstruction(Block& block, Block::iterator instruction,
 					if (inverse) {
 						test = Arg(*test, 0).TryInstruction();
 						if (test == nullptr) return false;
-						if (test->GetOpcode() == ValueOpcode::LogicalAnd)
+						if (test->GetOpcode() == ValueOpcode::LogicalAnd && HasOneUse(*test))
 							for (uint32_t arg = 0; arg < 2u; ++arg)
 								if (Arg(*test, arg) == assumption)
 									return replace(negate(Arg(*test, arg ^ 1u)));
@@ -919,6 +926,25 @@ void FoldInstruction(Block& block, Block::iterator instruction,
 					Replace(inst, lhs.U1() ? lhs : rhs);
 				} else if (IsImmediate(rhs, Type::U1)) {
 					Replace(inst, rhs.U1() ? rhs : lhs);
+				} else {
+					const auto* left = lhs.TryInstruction();
+					const auto* right = rhs.TryInstruction();
+					if (left == nullptr || right == nullptr ||
+					    left->GetOpcode() != ValueOpcode::LogicalAnd ||
+					    right->GetOpcode() != ValueOpcode::LogicalAnd ||
+					    (!HasOneUse(*left) && !HasOneUse(*right))) return;
+					// Factor a shared execution predicate without retaining more operations.
+					for (uint32_t a = 0; a < 2u; ++a) {
+						for (uint32_t b = 0; b < 2u; ++b) {
+							const auto common = Arg(*left, a);
+							if (common != Arg(*right, b)) continue;
+							const auto either = Value(&*worklist.Prepend(block, instruction,
+							    ValueOpcode::LogicalOr, {Arg(*left, a ^ 1u), Arg(*right, b ^ 1u)}));
+							Replace(inst, Value(&*worklist.Prepend(block, instruction,
+							    ValueOpcode::LogicalAnd, {common, either})));
+							return;
+						}
+					}
 				}
 			}
 			return;

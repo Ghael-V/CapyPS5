@@ -896,19 +896,20 @@ TranslateResult TranslateProgram(const Decoder::Program& decoded, const CompileO
 	     GetDumpLabel(options), StageName(options.stage), options.shader_hash,
 	     static_cast<uint64_t>(ir.blocks.size()), phase_ms());
 	IR::RewriteToSsa(ir.blocks);
-	IR::ConstantPropagationPass(ir.blocks, ir.wave_size);
-	IR::ResolveControlFlowIdentities(ir);
-	IR::RemoveIdentities(ir.blocks);
-	IR::EliminateDeadCode(ir.blocks);
-	const auto read_lane_stats = IR::EliminateReadLane(ir, ir.wave_size);
-	if (read_lane_stats.rewritten_reads != 0) {
-		LOGF("%s read-lane elimination: reads=%" PRIu32 "\n", GetDumpLabel(options),
-		     read_lane_stats.rewritten_reads);
+	const auto simplify = [&ir] {
 		IR::ConstantPropagationPass(ir.blocks, ir.wave_size);
 		IR::ResolveControlFlowIdentities(ir);
 		IR::RemoveIdentities(ir.blocks);
 		IR::EliminateDeadCode(ir.blocks);
+	};
+	simplify();
+	const auto read_lane_stats = IR::EliminateReadLane(ir, ir.wave_size);
+	if (read_lane_stats.rewritten_reads != 0) {
+		LOGF("%s read-lane elimination: reads=%" PRIu32 "\n", GetDumpLabel(options),
+		     read_lane_stats.rewritten_reads);
 	}
+	// Cleanup also exposes profitable folds by removing dead predicate consumers.
+	simplify();
 	if (decoded.has_swap_pc) {
 		// Leaf returns are resolved CFG edges; native PC values must not escape into GPU data.
 		for (const auto* block: ir.blocks)
