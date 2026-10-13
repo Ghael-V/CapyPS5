@@ -2289,7 +2289,7 @@ private:
 	}
 
 	bool MatchScalarMaterialKey(Value key, DescriptorSource::IndirectDescriptor& indirect,
-	                            DescriptorSource& material_source) {
+	                            DescriptorSource& material_source, bool require_bound) {
 		DescriptorSource::IndirectDescriptor::SelectorRead selector;
 		const auto* read = SelectorReadValue(key, Value(true), selector);
 		if (read == nullptr) return false;
@@ -2346,6 +2346,9 @@ private:
 				offset = static_cast<uint32_t>(affine.offset % divisor) & ~3u;
 			}
 		}
+		// A bounded image heap already supports GPU selection. Only enumerate a
+		// narrower proven selector domain instead of scanning unrelated material data.
+		if (require_bound && count.IsEmpty() && !rows) return false;
 		if (!MakeRuntimeTableSource(*read, material_source)) return false;
 		selector.source = InternSource(material_source);
 		selector.stride = stride;
@@ -2824,7 +2827,8 @@ private:
 			// only the image handle is projected onto the bounded workgroup key.
 			plan.retain_reads = true;
 		} else if (!plan.table_indexed &&
-		           MatchScalarMaterialKey(key, indirect, material_source)) {
+		           MatchScalarMaterialKey(key, indirect, material_source,
+		                                  table_source.dword_count == 4u)) {
 			// Keep live descriptor payloads, but project descriptor-only SMEM onto
 			// the GPU key using the same plan as other indirect image reads.
 			plan.retain_reads |= table_source.dword_count == 4u;
