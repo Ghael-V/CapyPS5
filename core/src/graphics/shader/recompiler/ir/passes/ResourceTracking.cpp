@@ -2263,13 +2263,21 @@ private:
 			stride = 4u;
 			offset = 0u;
 		} else if (count.IsEmpty()) {
-			const auto* lane = read->Arg(1).Resolve().TryInstruction();
+			auto address = read->Arg(1);
+			auto active = Value(true);
+			const auto* lane = address.Resolve().TryInstruction();
+			const bool selected_lane = lane != nullptr && lane->GetOpcode() == ValueOpcode::ReadFirstLane;
+			if (selected_lane) {
+				active = lane->Arg(1);
+				address = lane->Arg(0);
+			}
+			AffineOffset affine;
+			if (!MatchAffineOffset(address, active, affine) ||
+			    affine.index.IsEmpty() || affine.stride == 0u) return false;
+			if (!selected_lane) lane = affine.index.Resolve().TryInstruction();
 			if (lane == nullptr || lane->GetOpcode() != ValueOpcode::ReadFirstLane ||
 			    !HasActiveLane(lane->Arg(1), lane->Parent())) return false;
-			AffineOffset affine;
-			if (!MatchAffineOffset(lane->Arg(0), lane->Arg(1), affine) ||
-			    affine.index.IsEmpty() || affine.stride == 0u) return false;
-			count = SharedLoadBound(affine.index, lane->Arg(1));
+			if (selected_lane) count = SharedLoadBound(affine.index, active);
 			if (!count.IsEmpty() && ((affine.stride | affine.offset) & 3u) == 0u &&
 			    affine.offset + memory->offset <= UINT32_MAX) {
 				stride = static_cast<uint32_t>(affine.stride);
