@@ -1374,7 +1374,7 @@ private:
 	bool Implies(Value guard, Value required) const {
 		guard = SimplifyGuard(guard);
 		required = required.Resolve();
-		if (EquivalentValue(m_program, guard, required)) return true;
+		if (required == Value(true) || EquivalentValue(m_program, guard, required)) return true;
 		const auto* test = required.TryInstruction();
 		if (test != nullptr && test->GetOpcode() == ValueOpcode::INotEqual32) {
 			for (uint32_t arg = 0; arg < 2u; ++arg)
