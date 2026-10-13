@@ -142,6 +142,7 @@ private:
 	SrtRuntime                      m_runtime;
 	SrtWalker*                      m_clean_evaluator = nullptr;
 	Value                           m_active_mask;
+	const std::vector<uint8_t>*      m_reachable_blocks = nullptr;
 	ResourcePlan::EvaluationContext& m_context;
 };
 

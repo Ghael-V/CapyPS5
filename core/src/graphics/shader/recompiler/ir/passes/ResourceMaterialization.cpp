@@ -1307,49 +1307,79 @@ ResourcePlan ExtractResourcePlan(const Program& program) {
 	for (const auto& read: program.srt_reads) {
 		plan.srt_reads.push_back({Clone(read.value), read.flat_offset});
 	}
-	// A proven uniform factor can decide a branch even when its other lanes are unknown.
-	// Keep only that Boolean structure, never the varying shader dependency graph.
-	Value unknown;
+	// Retain integer control expressions with opaque varying leaves. Their identities
+	// matter when an EXEC factor also guards a selected value; never clone float work.
 	bool capture_control_reads = false;
-	std::unordered_map<const Inst*, Value> predicates;
+	bool uniform_control = false;
+	const auto control_value_count = plan.value_storage.size();
+	struct ControlValue {
+		Value value;
+		bool complete = false;
+	};
+	std::unordered_map<const Inst*, ControlValue> predicates;
 	std::function<Value(Value)> ClonePredicate = [&](Value value) -> Value {
 		value = value.Resolve();
 		if (value.IsEmpty()) return {};
 		const auto* inst = value.TryInstruction();
-		if (inst == nullptr)
+		if (inst == nullptr) {
+			uniform_control |= value.GetType() == Type::U1;
 			return ValidateRuntimeValue(program, value, RuntimeValueType::Integer) ? value : Value {};
-		// Preserve shared EXEC predicates, including subgraphs with no uniform factor.
+		}
 		const auto [found, inserted] = predicates.try_emplace(inst);
-		if (!inserted) return found->second;
-		auto& result = found->second;
+		auto& entry = found->second;
+		auto& result = entry.value;
+		const auto opaque = [&]() -> Value {
+			if (value.GetType() != Type::U1 && value.GetType() != Type::U32) return {};
+			return result = Value(&plan.value_storage.emplace_back(
+			    value.GetType() == Type::U1 ? ValueOpcode::UndefU1 : ValueOpcode::UndefU32));
+		};
+		// A recursive projection remains opaque, including unstructured loop Phis.
+		if (!inserted) return entry.complete || !result.IsEmpty() ? result : opaque();
+		const auto finish = [&](Value projected) {
+			entry.complete = true;
+			return result = projected;
+		};
 		if (ValidateRuntimeValue(program, value, RuntimeValueType::Integer)) {
+			uniform_control = true;
 			capture_control_reads |=
 			    !ValidateRuntimeValue(program, value, RuntimeValueType::ImmutableInteger);
-			return result = Clone(value);
+			return finish(Clone(value));
 		}
 		const auto op = inst->GetOpcode();
-		if (op == ValueOpcode::ConditionRef || op == ValueOpcode::LogicalNot) {
-			const auto operand = ClonePredicate(inst->Arg(0));
-			if (operand.IsEmpty() || op == ValueOpcode::ConditionRef) return result = operand;
-			auto& node = plan.value_storage.emplace_back(op);
-			node.SetArg(0, operand);
-			return result = Value(&node);
+		if (op == ValueOpcode::ConditionRef) return finish(ClonePredicate(inst->Arg(0)));
+		if (op == ValueOpcode::Phi) {
+			if (inst->Parent() == nullptr || inst->Parent()->terminator.loop_header ||
+			    inst->NumPhiBlocks() != inst->NumArgs() || inst->NumArgs() == 0u ||
+			    (value.GetType() != Type::U1 && value.GetType() != Type::U32)) return finish(opaque());
+			std::vector<uint32_t> predecessors;
+			for (size_t index = 0; index < inst->NumArgs(); ++index) {
+				const auto predecessor = std::ranges::find(program.blocks, inst->PhiBlock(index));
+				if (predecessor == program.blocks.end()) return finish(opaque());
+				predecessors.push_back(static_cast<uint32_t>(predecessor - program.blocks.begin()));
+			}
+			auto& node = plan.value_storage.emplace_back(op, inst->Flags<uint64_t>());
+			plan.control_phi_predecessors.emplace(&node, std::move(predecessors));
+			for (size_t index = 0; index < inst->NumArgs(); ++index)
+				node.AddPhiOperand(nullptr, ClonePredicate(inst->Arg(index)));
+			return finish(Value(&node));
 		}
-		if (op != ValueOpcode::LogicalAnd && op != ValueOpcode::LogicalOr) return {};
-		auto left = ClonePredicate(inst->Arg(0));
-		auto right = ClonePredicate(inst->Arg(1));
-		if (left.IsEmpty() && right.IsEmpty()) return {};
-		if (left.IsEmpty() || right.IsEmpty()) {
-			if (unknown.IsEmpty()) unknown = Value(&plan.value_storage.emplace_back(ValueOpcode::UndefU1));
-			if (left.IsEmpty()) left = unknown;
-			if (right.IsEmpty()) right = unknown;
-		}
+		if (op != ValueOpcode::LogicalAnd && op != ValueOpcode::LogicalOr &&
+		    op != ValueOpcode::LogicalNot && op != ValueOpcode::IEqual32 &&
+		    op != ValueOpcode::INotEqual32 && op != ValueOpcode::ULessThanEqual32 &&
+		    op != ValueOpcode::SelectU1 && op != ValueOpcode::SelectU32) return finish(opaque());
 		auto& node = plan.value_storage.emplace_back(op);
-		node.SetArg(0, left);
-		node.SetArg(1, right);
-		return result = Value(&node);
+		for (size_t index = 0; index < inst->NumArgs(); ++index)
+			node.SetArg(index, ClonePredicate(inst->Arg(index)));
+		return finish(Value(&node));
 	};
 	plan.control_flow = ResourceControlFlow(program, ClonePredicate);
+	if (!uniform_control) {
+		plan.control_flow.clear();
+		plan.control_phi_predecessors.clear();
+		auto first = std::next(plan.value_storage.begin(), control_value_count);
+		for (auto it = first; it != plan.value_storage.end(); ++it) it->Invalidate();
+		plan.value_storage.erase(first, plan.value_storage.end());
+	}
 	plan.uniform_fill = AnalyzeUniformFill(program);
 	for (uint32_t i = 0; i < plan.uniform_fill.fill.words; ++i) {
 		plan.uniform_fill.values[i] = Clone(plan.uniform_fill.values[i]);

@@ -24,6 +24,7 @@
 #include <memory>
 #include <optional>
 #include <string_view>
+#include <unordered_map>
 #include <vector>
 
 namespace Xbyak {
@@ -687,6 +688,7 @@ struct ResourcePlan {
 	std::vector<MemoryInfo>             memory_info;
 	std::vector<DescriptorSource>       descriptor_sources;
 	std::vector<ResourceBlock>          control_flow;
+	std::unordered_map<const Inst*, std::vector<uint32_t>> control_phi_predecessors;
 	std::vector<SrtRead>                srt_reads;
 	bool                                requires_specialization_memory = false;
 	std::vector<std::pair<uint64_t, uint64_t>> source_reads;
@@ -721,6 +723,7 @@ struct ResourcePlan {
 		uint32_t                      evaluation_depth = 0;
 		std::vector<uint8_t>          active_sources;
 		std::vector<uint8_t>          visited_blocks;
+		std::vector<uint8_t>          reachable_blocks;
 		std::vector<uint32_t>         pending_blocks;
 		std::vector<uint32_t>         material_keys;
 		std::vector<uint32_t>         flat_words;

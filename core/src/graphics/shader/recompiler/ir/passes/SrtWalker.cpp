@@ -675,6 +675,19 @@ bool SrtWalker::Arg(const Inst& inst, size_t index, uint64_t& result) {
 }
 
 bool SrtWalker::EvaluatePhi(const Inst& inst, uint64_t& result) {
+	if (const auto control = m_program.control_phi_predecessors.find(&inst);
+	    control != m_program.control_phi_predecessors.end()) {
+		bool found = false;
+		for (size_t index = 0; index < inst.NumArgs(); ++index) {
+			if (m_reachable_blocks != nullptr &&
+			    !m_reachable_blocks->at(control->second[index])) continue;
+			uint64_t incoming = 0;
+			if (!Arg(inst, index, incoming) || (found && incoming != result)) return false;
+			result = incoming;
+			found = true;
+		}
+		return found;
+	}
 	const auto value = ResolveInvariantPhi(m_program, Value(const_cast<Inst*>(&inst)));
 	return !value.IsEmpty() && EvaluateWide(value, result);
 }
@@ -1128,7 +1141,13 @@ bool SrtWalker::EvaluateInst(const Inst& inst, uint64_t& result) {
 			}
 			return false;
 		case ValueOpcode::ULessThanEqual32:
-			if (binary()) {
+			// A zero lower bound accepts every U32, including a varying lane value.
+			if (!Arg(inst, 0, a)) return false;
+			if (a == 0u) {
+				result = 1u;
+				return true;
+			}
+			if (Arg(inst, 1, b)) {
 				result = static_cast<uint32_t>(a) <= static_cast<uint32_t>(b);
 				return true;
 			}
@@ -1152,9 +1171,22 @@ bool SrtWalker::EvaluateInst(const Inst& inst, uint64_t& result) {
 				result = 0u;
 				return true;
 			}
-			if (!Arg(inst, 1, b) || (b != 0u && !left)) return false;
-			result = b != 0u;
-			return true;
+			if (Arg(inst, 1, b) && (b == 0u || left)) {
+				result = b != 0u;
+				return true;
+			}
+			if (!left) {
+				// Only lanes satisfying the left EXEC factor can make the conjunction
+				// true. Use a separate memo so this assumption cannot escape its RHS.
+				SrtWalker active(m_program, m_clean_evaluator != nullptr
+				    ? CleanRuntime(m_runtime) : m_runtime, nullptr, inst.Arg(0).Resolve());
+				active.m_reachable_blocks = m_reachable_blocks;
+				if (active.EvaluateWide(inst.Arg(1), b) && b == 0u) {
+					result = 0u;
+					return true;
+				}
+			}
+			return false;
 		}
 		case ValueOpcode::LogicalOr: {
 			const bool left = Arg(inst, 0, a);
@@ -1330,35 +1362,48 @@ bool SrtWalker::RefreshFlatBufferInterpreted(std::vector<uint32_t>& flat) {
 		}
 		return true;
 	}
+	auto& visited = m_program.Scratch().visited_blocks;
+	auto& reachable = m_program.Scratch().reachable_blocks;
+	auto& pending = m_program.Scratch().pending_blocks;
+	visited.assign(m_program.control_flow.size(), 1u);
+	m_reachable_blocks = &visited;
+	if (m_clean_evaluator != nullptr) m_clean_evaluator->m_reachable_blocks = &visited;
+	for (;;) {
+		reachable.assign(m_program.control_flow.size(), 0u);
+		pending.clear();
+		pending.push_back(0u);
+		while (!pending.empty()) {
+			const auto index = pending.back();
+			pending.pop_back();
+			if (reachable.at(index)) continue;
+			reachable[index] = 1u;
+			const auto& block = m_program.control_flow[index];
+			uint32_t condition = 0;
+			auto& predicate = m_clean_evaluator != nullptr ? *m_clean_evaluator : *this;
+			if (!block.condition.IsEmpty() &&
+			    (m_runtime.read_specialization_memory != nullptr || !m_program.capture_specialization_reads) &&
+			    predicate.Evaluate(block.condition, condition)) {
+				pending.push_back(block.successors[condition != 0u ? 0u : 1u]);
+			} else {
+				pending.insert(pending.end(), block.successors.begin(), block.successors.end());
+			}
+		}
+		if (reachable == visited) break;
+		visited.swap(reachable);
+		if (m_program.control_phi_predecessors.empty()) break;
+		// Only unknown values need another evaluation: successful Phi facts remain
+		// true as their possible predecessors shrink. Keep uniform-read memos stable.
+	}
 	flat.assign(m_program.srt_reads.size(), 0u);
 	active.assign(m_program.descriptor_sources.size(), 1u);
-	for (const auto& block: m_program.control_flow) {
+	for (const auto& block: m_program.control_flow)
 		for (const auto source: block.sources) active.at(source) = 0u;
-	}
-	auto& visited = m_program.Scratch().visited_blocks;
-	auto& pending = m_program.Scratch().pending_blocks;
-	visited.assign(m_program.control_flow.size(), 0u);
-	pending.clear();
-	pending.push_back(0u);
-	while (!pending.empty()) {
-		const auto index = pending.back();
-		pending.pop_back();
-		if (visited.at(index)) continue;
-		visited[index] = 1u;
+	for (uint32_t index = 0; index < visited.size(); ++index) {
+		if (!visited[index]) continue;
 		const auto& block = m_program.control_flow[index];
 		for (const auto source: block.sources) active[source] = 1u;
-		for (const auto slot: block.srt_reads) {
+		for (const auto slot: block.srt_reads)
 			if (!refresh(slot)) return false;
-		}
-		uint32_t condition = 0;
-		auto& predicate = m_clean_evaluator != nullptr ? *m_clean_evaluator : *this;
-		if (!block.condition.IsEmpty() &&
-		    (m_runtime.read_specialization_memory != nullptr || !m_program.capture_specialization_reads) &&
-		    predicate.Evaluate(block.condition, condition)) {
-			pending.push_back(block.successors[condition != 0u ? 0u : 1u]);
-		} else {
-			pending.insert(pending.end(), block.successors.begin(), block.successors.end());
-		}
 	}
 	return true;
 }
