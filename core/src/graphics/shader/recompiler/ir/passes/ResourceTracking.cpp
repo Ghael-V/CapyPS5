@@ -28,28 +28,44 @@ namespace {
 constexpr uint32_t SamplerBorderClampMask    = (1u << 2u) | (1u << 5u) | (1u << 8u);
 constexpr uint32_t SamplerDword3ReservedMask = 0x3ffff000u;
 
-uint32_t PossibleU32Bits(Value value) {
-	value = value.Resolve();
-	if (value.IsImmediate()) {
-		return value.GetType() == Type::U32 ? value.U32() : UINT32_MAX;
-	}
-	const auto* inst = value.TryInstruction();
-	if (inst == nullptr) {
-		return UINT32_MAX;
-	}
-	switch (inst->GetOpcode()) {
-		case ValueOpcode::BitwiseAnd32:
-			return PossibleU32Bits(inst->Arg(0)) & PossibleU32Bits(inst->Arg(1));
-		case ValueOpcode::BitwiseOr32:
-			return PossibleU32Bits(inst->Arg(0)) | PossibleU32Bits(inst->Arg(1));
-		case ValueOpcode::ShiftLeftLogical32: {
-			const auto shift = inst->Arg(1).Resolve();
-			return shift.IsImmediate() && shift.GetType() == Type::U32
-			           ? PossibleU32Bits(inst->Arg(0)) << (shift.U32() & 31u)
-			           : UINT32_MAX;
+uint32_t PossibleU32Bits(Value value, const auto& normalize) {
+	std::unordered_map<const Inst*, uint32_t> known;
+	const auto visit = [&](auto&& self, Value at) -> uint32_t {
+		at = normalize(at);
+		if (at.IsImmediate()) return at.GetType() == Type::U32 ? at.U32() : UINT32_MAX;
+		const auto* inst = at.TryInstruction();
+		if (inst == nullptr) return UINT32_MAX;
+		// Keep cycles unknown while sharing results across the SSA graph.
+		const auto [entry, inserted] = known.try_emplace(inst, UINT32_MAX);
+		if (!inserted) return entry->second;
+		auto& bits = entry->second;
+		const auto arg = [&](uint32_t index) { return self(self, inst->Arg(index)); };
+		switch (inst->GetOpcode()) {
+			case ValueOpcode::BitwiseAnd32: bits = arg(0) & arg(1); break;
+			case ValueOpcode::BitwiseOr32:
+			case ValueOpcode::UMax32: bits = arg(0) | arg(1); break;
+			case ValueOpcode::SelectU32: bits = arg(1) | arg(2); break;
+			case ValueOpcode::Phi: {
+				uint32_t merged = 0u;
+				for (uint32_t index = 0; index < inst->NumArgs(); ++index) merged |= arg(index);
+				if (inst->NumArgs() != 0u) bits = merged;
+				break;
+			}
+			case ValueOpcode::ShiftLeftLogical32: {
+				const auto shift = inst->Arg(1).Resolve();
+				if (shift.IsImmediate() && shift.GetType() == Type::U32)
+					bits = arg(0) << (shift.U32() & 31u);
+				break;
+			}
+			default: break;
 		}
-		default: return UINT32_MAX;
-	}
+		return bits;
+	};
+	return visit(visit, value);
+}
+
+uint32_t PossibleU32Bits(Value value) {
+	return PossibleU32Bits(value, [](Value at) { return at.Resolve(); });
 }
 
 bool IsNoncanonicalFlatAddress(Value high, Value active) {
@@ -1674,7 +1690,13 @@ private:
 		if (material_handle == nullptr ||
 		    material_handle->GetOpcode() != ValueOpcode::GetAddressResource ||
 		    !MakeRuntimeTableSource(*read, material_source)) return false;
-		const auto bits = PossibleU32Bits(ActiveValue(read->Arg(1), active));
+		const auto bits = PossibleU32Bits(read->Arg(1), [&](Value at) {
+			at = ActiveValue(at, active);
+			const auto* inst = at.TryInstruction();
+			// The current lane predicate cannot constrain a prior loop iteration.
+			return inst != nullptr && inst->GetOpcode() == ValueOpcode::Phi && InCycle(inst->Parent())
+			           ? Value{} : at;
+		});
 		const auto shift = std::countr_zero(bits);
 		const auto count = bits == 0u ? 0u : uint64_t {bits >> shift} + 1u;
 		if (shift >= 2u && count != 0u && count <= MaxIndirectDescriptorProbes &&
