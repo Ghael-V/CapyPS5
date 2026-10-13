@@ -564,6 +564,8 @@ bool MaterializeIndirectDescriptor(const ResourcePlan&                         p
 			if (count < domain_count) keys.push_back(0u); // An out-of-bounds scalar read returns zero.
 		}
 		if (selector != nullptr && selector->byte_ranges.empty()) {
+			if (selector->maximum != UINT32_MAX)
+				for (auto& key: keys) key = std::min(key, selector->maximum);
 			std::ranges::sort(keys);
 			keys.erase(std::unique(keys.begin(), keys.end()), keys.end());
 		}

@@ -2231,6 +2231,12 @@ private:
 	bool MatchScalarMaterialKey(Value key, DescriptorSource::IndirectDescriptor& indirect,
 	                            DescriptorSource& material_source) {
 		const auto* read = key.Resolve().TryInstruction();
+		uint32_t maximum = UINT32_MAX;
+		if (read != nullptr && read->GetOpcode() == ValueOpcode::UMin32) {
+			if (ImmediateU32(read->Arg(1), maximum)) read = read->Arg(0).Resolve().TryInstruction();
+			else if (ImmediateU32(read->Arg(0), maximum)) read = read->Arg(1).Resolve().TryInstruction();
+			else return false;
+		}
 		if (read == nullptr) return false;
 		uint32_t memory_index = 0;
 		const auto* memory = ScalarReadMemory(*read, memory_index);
@@ -2280,7 +2286,7 @@ private:
 		if (!MakeRuntimeTableSource(*read, material_source)) return false;
 		indirect.selector.emplace(DescriptorSource::IndirectDescriptor::SelectorRead {
 		    .source = InternSource(material_source), .stride = stride,
-		    .offset = offset + (memory->offset & ~3u)});
+		    .offset = offset + (memory->offset & ~3u), .maximum = maximum});
 		indirect.key_count = count;
 		if (rows) indirect.selector->rows.emplace(
 		    DescriptorSource::IndirectDescriptor::SelectorRead::CountedRows {

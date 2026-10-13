@@ -583,6 +583,7 @@ struct DescriptorSource {
 			uint32_t source = UINT32_MAX;
 			uint32_t stride = 0;
 			uint32_t offset = 0;
+			uint32_t maximum = UINT32_MAX;
 			// Four DWORD bitmap words per record; set-bit ranks subtract from the last key.
 			bool bitset = false;
 			std::optional<CountedRows> rows;
