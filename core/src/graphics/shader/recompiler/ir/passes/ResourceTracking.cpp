@@ -382,6 +382,7 @@ public:
 		if (m_program.resource_tracking_complete) {
 			Fail(0, "resources already tracked");
 		}
+		ForwardPrivateLds();
 		FoldBoundedLoopSelectors();
 		PlanScalarReads();
 		EliminateDeadCode(m_program.blocks);
@@ -1809,10 +1810,18 @@ private:
 		    [&](Value at) -> std::optional<size_t> {
 			    const auto* inst = at.TryInstruction();
 			    if (inst == nullptr) return {};
+			    uint32_t bits = 32u;
+			    if (inst->GetOpcode() == ValueOpcode::BitFieldUExtract &&
+			        inst->Arg(1).Resolve() == Value(0u) &&
+			        ImmediateU32(inst->Arg(2), bits) && bits <= 32u) {
+				    inst = inst->Arg(0).Resolve().TryInstruction();
+				    if (inst == nullptr) return {};
+			    }
 			    uint32_t axis = 0;
 			    if (inst->GetOpcode() == ValueOpcode::GetBuiltin &&
 			        inst->Arg(0) == Value(static_cast<uint32_t>(StageInputKind::LocalInvocationId)) &&
-			        ImmediateU32(inst->Arg(1), axis) && axis < 3u) return axis + 1u;
+			        ImmediateU32(inst->Arg(1), axis) && axis < 3u &&
+			        m_workgroup->threads_num[axis] <= (uint64_t {1} << bits)) return axis + 1u;
 			    if (!allow_induction || inst->GetOpcode() != ValueOpcode::Phi ||
 			        (!induction.IsEmpty() && induction != at)) return {};
 			    induction = at;
@@ -1827,6 +1836,66 @@ private:
 			stride *= m_workgroup->threads_num[axis];
 		}
 		return index[0] == 0u;
+	}
+
+	void ForwardPrivateLds() {
+		if (m_workgroup == nullptr) return;
+		uint64_t bytes = 4u;
+		for (const auto size: m_workgroup->threads_num) {
+			if (size == 0u || size > 1024u) return;
+			bytes *= size;
+		}
+		if (bytes > uint64_t {m_workgroup->lds_size_dwords} * 4u) return;
+		struct Access { Inst* inst; uint32_t offset; };
+		std::vector<Access> reads, writes;
+		Value address;
+		for (auto* block: m_program.blocks) {
+			for (auto& inst: *block) {
+				const auto op = inst.GetOpcode();
+				const auto shared = SharedAccessOf(op);
+				if (shared == SharedAccess::None &&
+				    AddressOpcodeInfoOf(op).access != AddressAccess::Write) continue;
+				const auto& memory = m_program.memory_info.at(inst.Flags<MemoryFlags>().index);
+				if (memory.kind == ResourceKind::Flat || memory.kind == ResourceKind::FlatLocal) return;
+				if (memory.kind != ResourceKind::Lds) continue;
+				if ((op != ValueOpcode::LoadSharedU32 && op != ValueOpcode::WriteSharedU32) ||
+				    memory.data_bits != 32u || memory.secondary_offset != 0u ||
+				    (memory.offset & 3u) != 0u ||
+				    uint64_t {memory.offset} + bytes > uint64_t {m_workgroup->lds_size_dwords} * 4u)
+					return;
+				if (address.IsEmpty()) address = inst.Arg(0).Resolve();
+				else if (!EquivalentValue(m_program, address, inst.Arg(0))) return;
+				(op == ValueOpcode::LoadSharedU32 ? reads : writes).push_back({&inst, memory.offset});
+			}
+		}
+		Value induction;
+		auto index = LocalIndex(address, Value(true), induction, false);
+		if (!index) return;
+		for (auto& coefficient: *index) {
+			if ((coefficient & 3u) != 0u) return;
+			coefficient /= 4u;
+		}
+		if (!LinearLocalIndex(*index)) return;
+		// Each invocation owns one DWORD in each disjoint slot. A unique dominating
+		// writer therefore survives loops and barriers without cross-lane interference.
+		for (const auto& store: writes) {
+			if (InCycle(store.inst->Parent()) || std::ranges::any_of(writes, [&](const Access& other) {
+				return other.inst != store.inst && uint64_t {other.offset} < store.offset + bytes &&
+				       uint64_t {store.offset} < other.offset + bytes;
+			})) continue;
+			for (const auto& load: reads) {
+				if (load.offset != store.offset || !AvailableBefore(*store.inst, *load.inst) ||
+				    !Implies(load.inst->Arg(1), store.inst->Arg(2))) continue;
+				auto* block = load.inst->Parent();
+				const auto where = std::ranges::find_if(block->Instructions(),
+				    [&](const Inst& at) { return &at == load.inst; });
+				const auto guard = load.inst->Arg(1);
+				const auto value = ActiveValue(store.inst->Arg(1), guard);
+				auto& forwarded = *block->PrependNewInst(where, ValueOpcode::SelectU32,
+				    {guard, value, Value(0u)});
+				load.inst->ReplaceUsesWith(Value(&forwarded));
+			}
+		}
 	}
 
 	bool LocalZeroWitness(Value guard) const {
@@ -1879,8 +1948,8 @@ private:
 		return {};
 	}
 
-	Value UnsignedBoundOnEntry(Value key, const Block* block, bool finite_bitscan = false,
-	                           Value witness = {}) const {
+	Value UnsignedBoundOnEntry(Value key, const Block* block, bool finite_bitscan,
+	                           Value witness, const auto& accepts_bound) const {
 		const auto* definition = key.Resolve().TryInstruction();
 		// A mask-nonzero guard may precede FF1. Its proof lasts until the mask's
 		// definition, including a loop Phi that changes it for the next iteration.
@@ -1892,13 +1961,20 @@ private:
 		}, [&](const EdgePredicate& edge) {
 			if (edge.lanes != LaneQuantifier::All) return false;
 			const auto candidate = UnsignedBound(edge.condition, key, edge.positive, finite_bitscan, witness);
-			if (candidate.IsEmpty() ||
-			    !ValidateRuntimeValue(m_program, candidate, RuntimeValueType::Integer)) return false;
-			if (bound.IsEmpty()) bound = candidate;
 			// Every incoming path must prove the same bound for this key definition.
-			return EquivalentValue(m_program, candidate, bound);
+			if (candidate.IsEmpty() || (!bound.IsEmpty() &&
+			    !EquivalentValue(m_program, candidate, bound)) || !accepts_bound(candidate)) return false;
+			bound = candidate;
+			return true;
 		});
 		return guarded ? bound : Value {};
+	}
+
+	Value UnsignedBoundOnEntry(Value key, const Block* block, bool finite_bitscan = false,
+	                           Value witness = {}) const {
+		return UnsignedBoundOnEntry(key, block, finite_bitscan, witness, [&](Value bound) {
+			return ValidateRuntimeValue(m_program, bound, RuntimeValueType::Integer);
+		});
 	}
 
 	Value UnsignedImageBound(Value key, const Inst& handle) const {
@@ -2090,10 +2166,11 @@ private:
 		const auto* sum = element.TryInstruction();
 		if (sum == nullptr || sum->GetOpcode() != ValueOpcode::IAdd32) return false;
 		for (uint32_t arm = 0; arm < 2u; ++arm) {
-			const auto induction = sum->Arg(arm).Resolve();
-			if (BoundedLoop(induction, read.Parent(), [&](const Inst& compare, uint32_t) {
-				if (compare.GetOpcode() != ValueOpcode::ULessThan32) return false;
-				const auto* count = compare.Arg(1).Resolve().TryInstruction();
+			const auto index = sum->Arg(arm).Resolve();
+			// Enumerating every unsigned index below the count needs the access guard,
+			// independently of the loop's initial value, step or termination.
+			if (!UnsignedBoundOnEntry(index, read.Parent(), false, {}, [&](Value bound) {
+				const auto* count = bound.Resolve().TryInstruction();
 				if (count == nullptr || count->GetOpcode() != ValueOpcode::ReadConstBuffer) return false;
 				uint32_t memory_index = 0;
 				const auto* memory = ScalarReadMemory(*count, memory_index);
@@ -2105,14 +2182,17 @@ private:
 				if (selected_lane) {
 					const auto* row_lane = row.TryInstruction();
 					if (row_lane == nullptr || row_lane->GetOpcode() != ValueOpcode::ReadFirstLane ||
-					    !ValidateWaveUniformValue(m_program, row_lane->Arg(0))) return false;
-					// Different EXEC masks may select different lanes. A globally uniform row
-					// keeps their count and key addresses correlated; i is bounded on every lane.
-					row = row_lane->Arg(0).Resolve();
+					    !ValidateWaveUniformValue(m_program,
+					        EquivalentValue(m_program, row_lane->Arg(1), lane->Arg(1))
+					            ? row : row_lane->Arg(0))) return false;
+					// Equal EXEC masks select the same row; differing masks need a globally
+					// uniform row to keep count and key addresses correlated.
+					row = ActiveValue(row_lane->Arg(0), lane->Arg(1));
 				}
-				const auto affine = AffineIndex<3>(element, [](Value value) { return value.Resolve(); },
+				const auto affine = AffineIndex<3>(element,
+				    [&](Value value) { return selected_lane ? ActiveValue(value, lane->Arg(1)) : value.Resolve(); },
 				    [&](Value value) -> std::optional<size_t> {
-					    if (value == induction) return 1u;
+					    if (value == index) return 1u;
 					    if (EquivalentValue(m_program, value, row)) return 2u;
 					    return {};
 				    });
@@ -2123,7 +2203,7 @@ private:
 				// spacing preserves those aliases in the U32 selector address too.
 				row_stride = static_cast<uint32_t>((*affine)[2] * 4u);
 				return true;
-			}, selected_lane ? LaneQuantifier::All : LaneQuantifier::Any) != nullptr) return true;
+			}).IsEmpty()) return true;
 		}
 		return false;
 	}
