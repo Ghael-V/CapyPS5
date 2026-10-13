@@ -3299,20 +3299,8 @@ static bool FreeGuestMemoryOwner(uint64_t vaddr, uint64_t size) {
 	       g_virtual_ranges->Remove(vaddr, size);
 }
 
-static int UnmapMemoryRange(uint64_t vaddr, size_t len) {
-	if (len == 0 || UINT64_MAX - vaddr < len) {
-		return KERNEL_ERROR_EINVAL;
-	}
-
-	VirtualRanges::Range range {};
-	if (!g_virtual_ranges->Query(vaddr, 0, &range)) {
-		return KERNEL_ERROR_EACCES;
-	}
-	const auto chunk_len = std::min<uint64_t>(len, range.size - (vaddr - range.start));
-	if (chunk_len < len) {
-		const int ret = UnmapMemoryRange(vaddr, chunk_len);
-		return ret == OK ? UnmapMemoryRange(vaddr + chunk_len, len - chunk_len) : ret;
-	}
+// Unmaps [vaddr, vaddr + len), which lies inside `range`.
+static int UnmapMemoryOwner(const VirtualRanges::Range& range, uint64_t vaddr, size_t len) {
 	if (IsReservedRangeType(range.type)) {
 		if (!g_guest_address_space->ReleaseFree(vaddr, len)) {
 			return KERNEL_ERROR_EACCES;
@@ -3381,6 +3369,16 @@ static int UnmapMemoryRange(uint64_t vaddr, size_t len) {
 	return OK;
 }
 
+// Takes the range off the GPU first; a failed unmap gives a committed range back to it.
+static int UnmapMemoryRange(const VirtualRanges::Range& range, uint64_t vaddr, size_t len) {
+	UnmapGpuRange(vaddr, len);
+	const int result = UnmapMemoryOwner(range, vaddr, len);
+	if (result != OK && IsCommittedRangeType(range.type)) {
+		MapGpuRange(vaddr, len);
+	}
+	return result;
+}
+
 // The ABI entry point and batch operations hold g_memory_operation_mutex.
 static int UnmapMemoryUnfolded(uint64_t vaddr, size_t len);
 
@@ -3423,14 +3421,49 @@ static int UnmapMemoryUnfolded(uint64_t vaddr, size_t len) {
 		}
 	}
 #endif
-	UnmapGpuRange(vaddr, len);
-	return UnmapMemoryRange(vaddr, len);
+	for (const auto& range: ranges) {
+		const int result = UnmapMemoryRange(range, range.start, range.size);
+		if (result != OK) {
+			return result;
+		}
+	}
+	return OK;
 }
 
 int KYTY_SYSV_ABI KernelMunmap(uint64_t vaddr, size_t len) {
 	PRINT_NAME();
 	std::lock_guard<std::recursive_mutex> memory_operation_lock(g_memory_operation_mutex);
 	return UnmapMemory(vaddr, len);
+}
+
+static bool IsAmmMemoryRange(uint64_t vaddr, size_t size) {
+	constexpr uint64_t page_size = 0x4000;
+	return size != 0 && ((vaddr | size) & (page_size - 1)) == 0 &&
+	       vaddr >= kExtendedMemoryBase && vaddr < kExtendedMemoryBase + kExtendedMemorySize &&
+	       size <= kExtendedMemoryBase + kExtendedMemorySize - vaddr;
+}
+
+int UnmapAmmMemory(uint64_t vaddr, size_t size) {
+	std::lock_guard<std::recursive_mutex> memory_operation_lock(g_memory_operation_mutex);
+	if (!IsAmmMemoryRange(vaddr, size)) {
+		return KERNEL_ERROR_EINVAL;
+	}
+	const auto end = vaddr + size;
+	while (vaddr < end) {
+		VirtualRanges::Range range {};
+		// An AMM unmap accepts holes, including a completely unmapped range.
+		if (!g_virtual_ranges->Query(vaddr, 1, &range) || range.start >= end) {
+			break;
+		}
+		vaddr            = std::max(vaddr, range.start);
+		const auto chunk = std::min(end, range.start + range.size) - vaddr;
+		const int  result = UnmapMemoryRange(range, vaddr, chunk);
+		if (result != OK) {
+			return result;
+		}
+		vaddr += chunk;
+	}
+	return OK;
 }
 
 int KYTY_SYSV_ABI KernelGetDirectMemoryType(int64_t phys_addr, int* type_out, int64_t* start_out,
@@ -4166,10 +4199,8 @@ int KYTY_SYSV_ABI KernelMapDirectMemory2(void** addr, size_t len, int type, int 
 
 int MapAutomaticMemory(uint64_t vaddr, size_t size, int type, int prot) {
 	std::lock_guard<std::recursive_mutex> memory_operation_lock(g_memory_operation_mutex);
-	constexpr uint64_t                    page_size = 0x4000;
-	if (size == 0 || (vaddr & (page_size - 1)) != 0 || (size & (page_size - 1)) != 0 ||
-	    vaddr < kExtendedMemoryBase || vaddr >= kExtendedMemoryBase + kExtendedMemorySize ||
-	    size > kExtendedMemoryBase + kExtendedMemorySize - vaddr) {
+	constexpr uint64_t page_size = 0x4000;
+	if (!IsAmmMemoryRange(vaddr, size)) {
 		return KERNEL_ERROR_EINVAL;
 	}
 
