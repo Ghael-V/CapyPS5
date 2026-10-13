@@ -1382,8 +1382,11 @@ private:
 				    ImpliesNonzero(guard, test->Arg(arg ^ 1u))) return true;
 		}
 		const auto* inst = guard.TryInstruction();
-		return inst != nullptr && inst->GetOpcode() == ValueOpcode::LogicalAnd &&
-		       (Implies(inst->Arg(0), required) || Implies(inst->Arg(1), required));
+		if (inst == nullptr) return false;
+		if (inst->GetOpcode() == ValueOpcode::LogicalAnd)
+			return Implies(inst->Arg(0), required) || Implies(inst->Arg(1), required);
+		return inst->GetOpcode() == ValueOpcode::LogicalOr &&
+		       Implies(inst->Arg(0), required) && Implies(inst->Arg(1), required);
 	}
 
 	Value EqualLocalValue(Value guard, const auto& matches) const {
@@ -1628,39 +1631,74 @@ private:
 		return selected;
 	}
 
+	const Inst* SelectorReadValue(Value value, Value active,
+	                              DescriptorSource::IndirectDescriptor::SelectorRead& selector) const {
+		const auto* read = ActiveValue(value, active).TryInstruction();
+		if (read != nullptr && read->GetOpcode() == ValueOpcode::UMin32) {
+			if (ImmediateU32(read->Arg(1), selector.maximum)) value = read->Arg(0);
+			else if (ImmediateU32(read->Arg(0), selector.maximum)) value = read->Arg(1);
+			else return nullptr;
+			read = ActiveValue(value, active).TryInstruction();
+		}
+		if (read != nullptr && read->GetOpcode() == ValueOpcode::BitFieldUExtract) {
+			uint32_t width;
+			if (!ImmediateU32(read->Arg(1), selector.bit_offset) ||
+			    !ImmediateU32(read->Arg(2), width) || selector.bit_offset >= 32u ||
+			    width == 0u || width > 32u - selector.bit_offset) return nullptr;
+			selector.bit_mask = width == 32u ? UINT32_MAX : (1u << width) - 1u;
+			read = ActiveValue(read->Arg(0), active).TryInstruction();
+		}
+		return read;
+	}
+
 	bool MatchUniformizedMaterialKey(Value key, const Inst& image,
 	                                DescriptorSource::IndirectDescriptor& indirect,
 	                                DescriptorSource& material_source) {
 		const auto* selected = UniformizedMaterialValue(key, image);
 		if (selected == nullptr) return false;
 		const auto active = selected->Arg(0).Resolve();
-		const auto* read = selected->Arg(1).Resolve().TryInstruction();
+		DescriptorSource::IndirectDescriptor::SelectorRead selector;
+		const auto* read = SelectorReadValue(selected->Arg(1), active, selector);
 		if (read == nullptr || read->GetOpcode() != ValueOpcode::LoadAddressU32 ||
-		    read->NumArgs() != 4u || !EquivalentValue(m_program, read->Arg(3), active))
+		    read->NumArgs() != 4u || !Implies(active, read->Arg(3)))
 			return false;
 		uint32_t high = 1u;
 		if (!ImmediateU32(read->Arg(2), high) || high != 0u) return false;
 		const auto memory_index = read->Flags<MemoryFlags>().index;
 		if (memory_index >= m_program.memory_info.size()) return false;
 		const auto& memory = m_program.memory_info[memory_index];
-		if (memory.kind != ResourceKind::Global || memory.data_bits != 32u ||
+		if (memory.kind != ResourceKind::Global || memory.address_is_full || memory.offset > INT32_MAX ||
+		    memory.data_bits != 32u ||
 		    memory.data_dwords != 1u || !MemoryIndexBelongsTo(memory_index, *read)) return false;
 		const auto* material_handle = read->Arg(0).Resolve().TryInstruction();
 		if (material_handle == nullptr ||
 		    material_handle->GetOpcode() != ValueOpcode::GetAddressResource ||
 		    !MakeRuntimeTableSource(*read, material_source)) return false;
-		AffineOffset offset;
-		if (!MatchAffineOffset(read->Arg(1), active, offset) || offset.index.IsEmpty() ||
-		    offset.stride == 0u || offset.offset + memory.offset > UINT32_MAX ||
-		    offset.offset + memory.offset + 31u * offset.stride + 4u >
-		        static_cast<uint64_t>(UINT32_MAX) + 1u) return false;
-		const auto mask = BoundedSetBitMask(offset.index, active);
-		if (mask.IsEmpty()) return false;
-		indirect.selector.emplace(DescriptorSource::IndirectDescriptor::SelectorRead{.source = InternSource(material_source),
-		                              .stride = static_cast<uint32_t>(offset.stride),
-		                              .offset = static_cast<uint32_t>(offset.offset + memory.offset)});
-		indirect.key_count = Value(32u);
-		indirect.selector_mask = mask;
+		const auto bits = PossibleU32Bits(ActiveValue(read->Arg(1), active));
+		const auto shift = std::countr_zero(bits);
+		const auto count = bits == 0u ? 0u : uint64_t {bits >> shift} + 1u;
+		if (shift >= 2u && count != 0u && count <= MaxIndirectDescriptorProbes &&
+		    std::has_single_bit(count) && uint64_t {bits} + memory.offset + 4u <= UINT32_MAX + 1ull) {
+			selector.stride = 1u << shift;
+			selector.offset = memory.offset;
+			indirect.key_count = Value(static_cast<uint32_t>(count));
+			indirect.selector_first = Value(0u);
+		} else {
+			AffineOffset offset;
+			if (!MatchAffineOffset(read->Arg(1), active, offset) || offset.index.IsEmpty() ||
+			    offset.stride == 0u || offset.offset + memory.offset > UINT32_MAX ||
+			    offset.offset + memory.offset + 31u * offset.stride + 4u >
+			        static_cast<uint64_t>(UINT32_MAX) + 1u) return false;
+			const auto mask = BoundedSetBitMask(offset.index, active);
+			if (mask.IsEmpty()) return false;
+			selector.stride = static_cast<uint32_t>(offset.stride);
+			selector.offset = static_cast<uint32_t>(offset.offset + memory.offset);
+			indirect.key_count = Value(32u);
+			indirect.selector_mask = mask;
+		}
+		selector.source = InternSource(material_source);
+		selector.global = true;
+		indirect.selector = std::move(selector);
 		return true;
 	}
 
@@ -2230,13 +2268,8 @@ private:
 
 	bool MatchScalarMaterialKey(Value key, DescriptorSource::IndirectDescriptor& indirect,
 	                            DescriptorSource& material_source) {
-		const auto* read = key.Resolve().TryInstruction();
-		uint32_t maximum = UINT32_MAX;
-		if (read != nullptr && read->GetOpcode() == ValueOpcode::UMin32) {
-			if (ImmediateU32(read->Arg(1), maximum)) read = read->Arg(0).Resolve().TryInstruction();
-			else if (ImmediateU32(read->Arg(0), maximum)) read = read->Arg(1).Resolve().TryInstruction();
-			else return false;
-		}
+		DescriptorSource::IndirectDescriptor::SelectorRead selector;
+		const auto* read = SelectorReadValue(key, Value(true), selector);
 		if (read == nullptr) return false;
 		uint32_t memory_index = 0;
 		const auto* memory = ScalarReadMemory(*read, memory_index);
@@ -2292,9 +2325,10 @@ private:
 			}
 		}
 		if (!MakeRuntimeTableSource(*read, material_source)) return false;
-		indirect.selector.emplace(DescriptorSource::IndirectDescriptor::SelectorRead {
-		    .source = InternSource(material_source), .stride = stride,
-		    .offset = offset + (memory->offset & ~3u), .maximum = maximum});
+		selector.source = InternSource(material_source);
+		selector.stride = stride;
+		selector.offset = offset + (memory->offset & ~3u);
+		indirect.selector = std::move(selector);
 		indirect.key_count = count;
 		if (rows) indirect.selector->rows.emplace(
 		    DescriptorSource::IndirectDescriptor::SelectorRead::CountedRows {

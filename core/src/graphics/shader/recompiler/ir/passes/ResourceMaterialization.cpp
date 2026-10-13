@@ -218,16 +218,14 @@ void MarkCleanReads(const std::unordered_set<const Inst*>& planned_reads,
 	}
 }
 
-bool ReadScalarTable(uint64_t base, uint64_t size, uint64_t dynamic_offset,
-                     const SrtRuntime& runtime, std::span<uint32_t> words) {
-	const auto offset = dynamic_offset & ~uint64_t {3};
+bool ReadTable(uint64_t base, uint64_t size, uint64_t offset,
+               const SrtRuntime& runtime, std::span<uint32_t> words) {
 	const auto count = std::min<uint64_t>(words.size(), offset < size ? (size - offset) / 4u : 0u);
 	std::ranges::fill(words.subspan(count), 0u);
 	if (count == 0u) {
 		return true;
 	}
-	base &= AddressMask & ~uint64_t {3};
-	if (offset > AddressMask - base) {
+	if (base > AddressMask || offset > AddressMask - base) {
 		return false;
 	}
 	const auto address = base + offset;
@@ -235,6 +233,11 @@ bool ReadScalarTable(uint64_t base, uint64_t size, uint64_t dynamic_offset,
 	return prefix.size_bytes() - 1u <= AddressMask - address &&
 	       runtime.read_specialization_memory != nullptr &&
 	       runtime.read_specialization_memory(runtime.userdata, address, prefix);
+}
+
+bool ReadScalarTable(uint64_t base, uint64_t size, uint64_t offset,
+                     const SrtRuntime& runtime, std::span<uint32_t> words) {
+	return ReadTable(base & AddressMask & ~uint64_t {3}, size, offset & ~uint64_t {3}, runtime, words);
 }
 
 bool NormalizeIndirectStoreBuffer(DescriptorValue& value, bool indexed, bool formatted) {
@@ -308,14 +311,19 @@ bool MaterializeIndirectDescriptor(const ResourcePlan&                         p
 		}
 		return true;
 	};
+	const auto read_selector = [&](uint64_t base, uint64_t size, uint64_t offset,
+	                               std::span<uint32_t> words) {
+		return selector->global ? ReadTable(base, size, offset, runtime, words)
+		                        : ReadScalarTable(base, size, offset, runtime, words);
+	};
 	const auto read_keys = [&](uint64_t base, uint64_t size, uint64_t first,
 	                           uint64_t step, uint64_t count) {
 		keys.resize(count);
 		if (step == 4u) {
-			return ReadScalarTable(base, size, first, runtime, keys);
+			return read_selector(base, size, first, keys);
 		}
 		for (auto& key: keys) {
-			if (!ReadScalarTable(base, size, first, runtime, {&key, 1}))
+			if (!read_selector(base, size, first, {&key, 1}))
 				return false;
 			first += step;
 		}
@@ -542,8 +550,8 @@ bool MaterializeIndirectDescriptor(const ResourcePlan&                         p
 				                    static_cast<uint64_t>(index) * selector->stride;
 				if (offset > UINT32_MAX) return false;
 				uint32_t key = 0;
-				if (!ReadScalarTable(material_base, UINT64_MAX, static_cast<uint32_t>(offset),
-				                     runtime, {&key, 1})) return false;
+				if (!read_selector(material_base, UINT64_MAX, static_cast<uint32_t>(offset),
+				                   {&key, 1})) return false;
 				keys.push_back(key);
 				mask &= mask - 1u;
 			}
@@ -564,8 +572,9 @@ bool MaterializeIndirectDescriptor(const ResourcePlan&                         p
 			if (count < domain_count) keys.push_back(0u); // An out-of-bounds scalar read returns zero.
 		}
 		if (selector != nullptr && selector->byte_ranges.empty()) {
-			if (selector->maximum != UINT32_MAX)
-				for (auto& key: keys) key = std::min(key, selector->maximum);
+			if (selector->bit_offset != 0u || selector->bit_mask != UINT32_MAX || selector->maximum != UINT32_MAX)
+				for (auto& key: keys)
+					key = std::min((key >> selector->bit_offset) & selector->bit_mask, selector->maximum);
 			std::ranges::sort(keys);
 			keys.erase(std::unique(keys.begin(), keys.end()), keys.end());
 		}
