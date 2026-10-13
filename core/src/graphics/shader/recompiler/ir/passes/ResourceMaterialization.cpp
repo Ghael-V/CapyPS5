@@ -460,13 +460,18 @@ bool MaterializeIndirectDescriptor(const ResourcePlan&                         p
 			    selector->stride != sizeof(masks) || selector->offset != 0u ||
 			    material.Type() != 0u || material.Stride() != sizeof(masks) ||
 			    material.SwizzleEnabled() || material.AddTid() || material.OutOfBounds() != 0u ||
-			    (material.Base48() & 3u) != 0u ||
-			    material.GetSize() / sizeof(uint32_t) > MaxIndirectDescriptorProbes) return false;
+			    (material.Base48() & 3u) != 0u) return false;
 			if (material.Format() != Prospero::BufferFormat::kInvalid) {
-				keys.resize(material.GetSize() / sizeof(uint32_t));
-				if (!keys.empty() && !ReadScalarTable(material.Base48(), material.GetSize(), 0u,
-				                                    runtime, keys)) return false;
-				for (size_t word = 0; word < keys.size(); ++word) masks[word % masks.size()] |= keys[word];
+				const auto words = material.GetSize() / sizeof(uint32_t);
+				// Bitmap storage can grow with resolution while its candidate domain stays
+				// at 128 keys. Bound scratch memory, preserving each coherent read's capture.
+				for (uint64_t first_word = 0; first_word < words; first_word += keys.size()) {
+					keys.resize(std::min<uint64_t>(words - first_word, MaxIndirectDescriptorProbes));
+					if (!ReadScalarTable(material.Base48(), material.GetSize(), first_word * 4u,
+					                     runtime, keys)) return false;
+					for (size_t word = 0; word < keys.size(); ++word) masks[word % masks.size()] |= keys[word];
+					if (std::ranges::all_of(masks, [](uint32_t mask) { return mask == UINT32_MAX; })) break;
+				}
 				keys.clear();
 				for (uint32_t word = 0; word < masks.size(); ++word) {
 					auto mask = masks[word];
