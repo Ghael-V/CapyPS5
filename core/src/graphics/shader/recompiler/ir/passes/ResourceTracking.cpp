@@ -2135,21 +2135,41 @@ private:
 			}
 			if (append.store == nullptr) return {};
 		}
-		if (std::ranges::none_of(appends, [&](const Append& at) {
+		const auto consumed = std::ranges::find_if(appends, [&](const Append& at) {
 			return at.counter == consumed_counter && at.base == read_offset.offset + read_memory->offset;
-		})) return {};
-		// Materialization validates every producer bound through this union against
-		// MaxIndirectDescriptorProbes. Thus counters, lane enumeration and byte addresses
-		// cannot wrap. Overlapping payload lists remain within the union; OOB LDS reads yield zero.
-		Value bound = appends.front().bound;
-		for (size_t index = 1; index < appends.size(); ++index) {
-			if (EquivalentValue(m_program, bound, appends[index].bound)) continue;
-			auto& maximum = m_program.value_storage.emplace_back(ValueOpcode::UMax32);
-			maximum.SetArg(0, bound);
-			maximum.SetArg(1, appends[index].bound);
-			bound = Value(&maximum);
+		});
+		if (consumed == appends.end()) return {};
+		const auto emit = [&](ValueOpcode op, std::initializer_list<Value> args) {
+			auto& node = m_program.value_storage.emplace_back(op);
+			size_t index = 0;
+			for (const auto arg: args) node.SetArg(index++, arg);
+			return Value(&node);
+		};
+		Value bound = consumed->bound;
+		Value all_bounds = bound;
+		for (const auto& append: appends) {
+			if (EquivalentValue(m_program, consumed->bound, append.bound)) continue;
+			all_bounds = emit(ValueOpcode::UMax32, {all_bounds, append.bound});
+			auto contribution = append.bound;
+			if (append.base != consumed->base) {
+				// Each list occupies at most its producer bound in DWORDs. Only a list
+				// whose possible payload span overlaps the consumed span can supply its values.
+				const auto gap = (std::max(append.base, consumed->base) -
+				                  std::min(append.base, consumed->base)) / 4u;
+				const auto overlap = emit(ValueOpcode::ULessThan32,
+				    {Value(gap), append.base < consumed->base ? append.bound : consumed->bound});
+				contribution = emit(ValueOpcode::SelectU32, {overlap, contribution, Value(0u)});
+			}
+			bound = emit(ValueOpcode::UMax32, {bound, contribution});
 		}
-		return bound;
+		if (all_bounds == consumed->bound) return bound;
+		bound = emit(ValueOpcode::SelectU32,
+		    {emit(ValueOpcode::ULessThan32, {Value(0u), consumed->bound}), bound, Value(0u)});
+		// Validate even disjoint producers: the address and counter proofs require
+		// every bound to fit the existing cap, including when the consumer is empty.
+		return emit(ValueOpcode::SelectU32,
+		    {emit(ValueOpcode::ULessThanEqual32, {all_bounds, Value(MaxIndirectDescriptorProbes)}),
+		     bound, all_bounds});
 	}
 
 	bool MatchCountedRows(const Inst& read, DescriptorSource& count_source, uint32_t& row_stride) {
