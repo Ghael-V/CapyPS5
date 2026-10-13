@@ -563,12 +563,24 @@ void CompileSrtWalker(ResourcePlan& program) {
 }
 
 SrtWalker::SrtWalker(const ResourcePlan& program, const SrtRuntime& runtime,
-                     SrtWalker* clean_evaluator, Value active_mask)
+                     SrtWalker* clean_evaluator)
     : m_program(program), m_runtime(runtime), m_clean_evaluator(clean_evaluator),
-      m_active_mask(active_mask.Resolve()),
-      m_context(AcquireContext(program)) {}
+      m_session(this),
+      m_read_policy(clean_evaluator != nullptr ? 2u : 0u), m_context(AcquireContext()) {}
 
-SrtWalker::~SrtWalker() { --m_program.Scratch().evaluation_depth; }
+SrtWalker::SrtWalker(SrtWalker& parent, Value active_mask, bool clean,
+                     SrtWalker* clean_evaluator)
+    : m_program(parent.m_program), m_runtime(clean ? CleanRuntime(parent.m_runtime) : parent.m_runtime),
+      m_clean_evaluator(clean_evaluator), m_active_mask(active_mask.Resolve()),
+      m_reachable_blocks(parent.m_reachable_blocks), m_session(parent.m_session),
+      m_read_policy((parent.m_read_policy & 1u) | (clean ? 1u : 0u) |
+                    (clean_evaluator != nullptr ? 2u : 0u)), m_context(AcquireContext()) {}
+
+SrtWalker::~SrtWalker() {
+	if (m_session != this) return;
+	for (auto& context: m_program.Scratch().evaluation_contexts)
+		if (context.session == this) context.session = nullptr;
+}
 
 bool SrtWalker::Evaluate(Value value, uint32_t& result) {
 	uint64_t wide = 0;
@@ -579,14 +591,27 @@ bool SrtWalker::Evaluate(Value value, uint32_t& result) {
 	return true;
 }
 
-ResourcePlan::EvaluationContext& SrtWalker::AcquireContext(const ResourcePlan& program) {
-	auto& scratch = program.Scratch();
-	if (scratch.evaluation_depth == scratch.evaluation_contexts.size()) {
-		scratch.evaluation_contexts.emplace_back();
+ResourcePlan::EvaluationContext& SrtWalker::AcquireContext() {
+	ResourcePlan::EvaluationContext* unused = nullptr;
+	for (auto& context: m_program.Scratch().evaluation_contexts) {
+		if (context.session == m_session && context.active_mask == m_active_mask &&
+		    context.read_policy == m_read_policy) return context;
+		if (context.session == nullptr && unused == nullptr) unused = &context;
 	}
-	auto& context = scratch.evaluation_contexts[scratch.evaluation_depth++];
-	context.generation += 2;
+	auto& context = unused != nullptr ? *unused : m_program.Scratch().evaluation_contexts.emplace_back();
+	context.session = m_session;
+	context.active_mask = m_active_mask;
+	context.read_policy = m_read_policy;
+	context.generation += 4;
 	return context;
+}
+
+void SrtWalker::ResetUnknowns() {
+	for (auto& context: m_program.Scratch().evaluation_contexts) {
+		if (context.session != m_session) continue;
+		for (auto& entry: context.values)
+			if (entry.generation == (context.generation | 2u)) entry.generation = 0;
+	}
 }
 
 float SrtWalker::Float32(uint64_t bits) {
@@ -648,8 +673,10 @@ bool SrtWalker::EvaluateWide(Value value, uint64_t& result) {
 		result = m_context.values[index].value;
 		return true;
 	}
-	// The low generation bit marks an instruction that is still being evaluated.
-	if (m_context.values[index].generation == (m_context.generation | 1u)) {
+	// Visiting and completed-unknown entries both stop repeated evaluation in this
+	// context. Only completed unknowns are retried when reachability becomes tighter.
+	if (m_context.values[index].generation == (m_context.generation | 1u) ||
+	    m_context.values[index].generation == (m_context.generation | 2u)) {
 		return false;
 	}
 	m_context.values[index].generation = m_context.generation | 1u;
@@ -658,7 +685,7 @@ bool SrtWalker::EvaluateWide(Value value, uint64_t& result) {
 	// Recursive evaluation may grow the dense memo vector.
 	auto& memo = m_context.values[index];
 	if (!evaluated) {
-		memo.generation = 0;
+		memo.generation = m_context.generation | 2u;
 		if (t_srt_failed_opcode == ValueOpcode::Void) {
 			t_srt_failed_opcode = inst->GetOpcode(); // the deepest failure comes back first
 		}
@@ -837,9 +864,8 @@ bool SrtWalker::EvaluateInst(const Inst& inst, uint64_t& result) {
 			if (!m_active_mask.IsEmpty() && inst.Arg(1).Resolve() == m_active_mask) {
 				return EvaluateWide(inst.Arg(0), result);
 			}
-			const auto clean_runtime = CleanRuntime(m_runtime);
-			SrtWalker  clean_active(m_program, clean_runtime, nullptr, inst.Arg(1));
-			SrtWalker  active(m_program, m_runtime, &clean_active, inst.Arg(1));
+			SrtWalker clean_active(*this, inst.Arg(1), true);
+			SrtWalker active(*this, inst.Arg(1), false, &clean_active);
 			return active.EvaluateWide(inst.Arg(0), result);
 		}
 		case ValueOpcode::BitCastU32F32:
@@ -1179,9 +1205,8 @@ bool SrtWalker::EvaluateInst(const Inst& inst, uint64_t& result) {
 			if (!left) {
 				// Only lanes satisfying the left EXEC factor can make the conjunction
 				// true. Use a separate memo so this assumption cannot escape its RHS.
-				SrtWalker active(m_program, m_clean_evaluator != nullptr
-				    ? CleanRuntime(m_runtime) : m_runtime, nullptr, inst.Arg(0).Resolve());
-				active.m_reachable_blocks = m_reachable_blocks;
+				SrtWalker active(m_clean_evaluator != nullptr ? *m_clean_evaluator : *this,
+				                 inst.Arg(0));
 				if (active.EvaluateWide(inst.Arg(1), b) && b == 0u) {
 					result = 0u;
 					return true;
@@ -1367,8 +1392,12 @@ bool SrtWalker::RefreshFlatBufferInterpreted(std::vector<uint32_t>& flat) {
 	auto& reachable = m_program.Scratch().reachable_blocks;
 	auto& pending = m_program.Scratch().pending_blocks;
 	visited.assign(m_program.control_flow.size(), 1u);
+	ResetUnknowns();
 	m_reachable_blocks = &visited;
-	if (m_clean_evaluator != nullptr) m_clean_evaluator->m_reachable_blocks = &visited;
+	if (m_clean_evaluator != nullptr) {
+		m_clean_evaluator->ResetUnknowns();
+		m_clean_evaluator->m_reachable_blocks = &visited;
+	}
 	for (;;) {
 		reachable.assign(m_program.control_flow.size(), 0u);
 		pending.clear();
@@ -1394,6 +1423,8 @@ bool SrtWalker::RefreshFlatBufferInterpreted(std::vector<uint32_t>& flat) {
 		if (m_program.control_phi_predecessors.empty()) break;
 		// Only unknown values need another evaluation: successful Phi facts remain
 		// true as their possible predecessors shrink. Keep uniform-read memos stable.
+		ResetUnknowns();
+		if (m_clean_evaluator != nullptr) m_clean_evaluator->ResetUnknowns();
 	}
 	flat.assign(m_program.srt_reads.size(), 0u);
 	active.assign(m_program.descriptor_sources.size(), 1u);
