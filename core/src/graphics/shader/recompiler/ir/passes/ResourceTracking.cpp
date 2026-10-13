@@ -2754,10 +2754,36 @@ private:
 				// Materialization captures the count and descriptor reads; renderer alias
 				// checks reject writes to those ranges while unrelated stores remain valid.
 				indirect.key_count = guarded_count;
-			} else if (m_shader_writes == ShaderWrites::None) {
-				if (const auto* bound = BoundedLoop(key, handle.Parent())) {
+			} else {
+				uint32_t first = 0;
+				const auto* bound = BoundedInduction(key, handle.Parent(),
+				    [&](uint32_t initial, uint32_t step) {
+					    first = initial;
+					    return initial <= INT32_MAX && step == 1u;
+				    }, [&](const Inst& compare, uint32_t) {
+					    return (compare.GetOpcode() == ValueOpcode::SLessThan32 ||
+					            (first == 0u && compare.GetOpcode() == ValueOpcode::ULessThan32)) &&
+					           ValidateRuntimeValue(m_program, compare.Arg(1), RuntimeValueType::Integer);
+				    });
+				if (bound != nullptr) {
 					indirect.key_count = bound->Arg(1);
 					indirect.signed_count = bound->GetOpcode() == ValueOpcode::SLessThan32;
+					if (first != 0u) {
+						// Clamp before enumerating: negative signed bounds have no reachable keys.
+						auto& nonempty = m_program.value_storage.emplace_back(ValueOpcode::SGreaterThanEqual32);
+						nonempty.SetArg(0, bound->Arg(1));
+						nonempty.SetArg(1, Value(first));
+						auto& length = m_program.value_storage.emplace_back(ValueOpcode::ISub32);
+						length.SetArg(0, bound->Arg(1));
+						length.SetArg(1, Value(first));
+						auto& count = m_program.value_storage.emplace_back(ValueOpcode::SelectU32);
+						count.SetArg(0, Value(&nonempty));
+						count.SetArg(1, Value(&length));
+						count.SetArg(2, Value(0u));
+						indirect.key_count = Value(&count);
+						indirect.selector_first = Value(first);
+						indirect.signed_count = false;
+					}
 				}
 			}
 			if (indirect.key_count.IsEmpty() &&
