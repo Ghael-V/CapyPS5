@@ -367,7 +367,7 @@ uint32_t LoadSubwordInBounds(ValueEmitContext& ctx, const MemoryResourceAccess& 
 
 uint32_t LoadWordPrepared(ValueEmitContext& ctx, const IR::Inst& inst, const IR::MemoryInfo& mem,
                           const MemoryResourceAccess& resource) {
-	const auto index = DwordIndex(ctx, inst, mem);
+	const auto index = DwordIndex(ctx, inst, mem, resource.byte_offset);
 	return EmitValueOrZeroIfCondition(
 	    ctx.state, EmitMemoryElementInBounds(ctx.state, resource, index),
 	    [&]() { return LoadWordInBounds(ctx, resource, index); });
@@ -383,7 +383,7 @@ uint32_t LoadWord(ValueEmitContext& ctx, const IR::Inst& inst, IR::MemoryInfo me
 uint32_t LoadSubwordPrepared(ValueEmitContext& ctx, const IR::Inst& inst, const IR::MemoryInfo& mem,
                              const MemoryResourceAccess& resource, uint32_t bits,
                              bool sign_extend) {
-	const auto address = ByteAddress(ctx, inst, mem);
+	const auto address = ByteAddress(ctx, inst, mem, resource.byte_offset);
 	const auto index = Binary(
 	    ctx.state, spv::OpShiftRightLogical, TypeU32(ctx.state), address,
 	    ConstantU32(ctx.state, std::countr_zero(resource.element_bits / 8u)));
@@ -545,7 +545,7 @@ void StoreSubwordInBounds(ValueEmitContext& ctx, const IR::MemoryInfo& mem,
 
 void StoreSubwordPrepared(ValueEmitContext& ctx, const IR::Inst& inst, const IR::MemoryInfo& mem,
                           const MemoryResourceAccess& resource, uint32_t bits, uint32_t data) {
-	const auto address = ByteAddress(ctx, inst, mem);
+	const auto address = ByteAddress(ctx, inst, mem, resource.byte_offset);
 	const auto index = Binary(
 	    ctx.state, spv::OpShiftRightLogical, TypeU32(ctx.state), address,
 	    ConstantU32(ctx.state, std::countr_zero(resource.element_bits / 8u)));
@@ -682,22 +682,8 @@ void StoreWord(ValueEmitContext& ctx, const IR::Inst& inst, IR::MemoryInfo mem) 
 			});
 			return;
 		}
-		const auto merge = state.builder.AllocateId();
-		std::vector<uint32_t> labels(buffer.indirect_resources.size());
-		std::vector<uint32_t> branches {spv::OpSwitch, selected, merge};
-		for (uint32_t i = 0; i < labels.size(); ++i) {
-			labels[i] = state.builder.AllocateId();
-			branches.push_back(i);
-			branches.push_back(labels[i]);
-		}
-		state.builder.AddFunction(spv::OpSelectionMerge, merge, spv::SelectionControlMaskNone);
-		state.builder.AddFunction(branches);
-		for (uint32_t i = 0; i < labels.size(); ++i) {
-			EmitLabel(state, labels[i]);
-			store(buffer.indirect_resources[i]);
-			state.builder.AddFunction(spv::OpBranch, merge);
-		}
-		EmitLabel(state, merge);
+		EmitIndexSwitch(state, selected, buffer.indirect_resources.size(), 0u,
+		                [&](uint32_t item) { store(buffer.indirect_resources[item]); });
 	});
 }
 
@@ -755,7 +741,7 @@ PreparedFormattedMemory PrepareFormattedMemory(ValueEmitContext& ctx, const IR::
 	PreparedFormattedMemory plan;
 	plan.info      = info;
 	plan.resource  = resource;
-	const auto start = ByteAddress(ctx, inst, mem);
+	const auto start = ByteAddress(ctx, inst, mem, resource.byte_offset);
 	// Check the whole, unaligned format span before aligning the actual memory address.
 	const auto end = Binary(ctx.state, spv::OpIAdd, TypeU32(ctx.state), start,
 	                        ConstantU32(ctx.state, info.byte_size - 1u));
