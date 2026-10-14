@@ -480,6 +480,7 @@ struct PipelineCache::ProgramCache {
 		};
 		if constexpr (std::is_same_v<InputInfo, ShaderComputeInputInfo>) {
 			runtime.workgroup_counts = input_info.workgroup_counts;
+			runtime.indirect_args_address = input_info.indirect_args_address;
 		}
 		bool source_changed = false;
 		if (entry != programs.end()) {

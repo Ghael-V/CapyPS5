@@ -324,9 +324,10 @@ bool MaterializeIndirectDescriptor(const ResourcePlan&                         p
 	                              !indirect.selector && indirect.workgroup_axis == UINT32_MAX;
 	const auto evaluate_count = [&](uint32_t& count) {
 		if (indirect.workgroup_axis != UINT32_MAX) {
-			if (indirect.workgroup_axis >= runtime.workgroup_counts.size()) return false;
-			count = runtime.workgroup_counts[indirect.workgroup_axis];
-			return count != 0u;
+			if (runtime.workgroup_counts.size() != 3u || indirect.workgroup_axis >= 3u) return false;
+			count = std::ranges::find(runtime.workgroup_counts, 0u) != runtime.workgroup_counts.end()
+			    ? 0u : runtime.workgroup_counts[indirect.workgroup_axis];
+			return true;
 		}
 		if (!clean.Evaluate(indirect.key_count, count)) return false;
 		if (indirect.signed_count && std::bit_cast<int32_t>(count) < 0) count = 0;
@@ -363,14 +364,28 @@ bool MaterializeIndirectDescriptor(const ResourcePlan&                         p
 	const auto read_keys = [&](uint64_t base, uint64_t size, uint64_t first,
 	                           uint64_t step, uint64_t count) {
 		keys.resize(count);
+		if (count == 0u) return true;
 		if (step == 4u) {
 			return read_selector(base, size, first, keys);
 		}
-		for (auto& key: keys) {
-			if (!read_selector(base, size, first, {&key, 1}))
+		if (step < 4u) return false;
+		for (uint64_t copied = 0; copied < count;) {
+			const auto offset = first + copied * step;
+			// Scalar reads align each strided offset independently.
+			const auto bias = selector->global ? 0u : offset & 3u;
+			const auto length = std::min(count - copied,
+			    1u + (uint64_t {MaxIndirectDescriptorProbes - 1u} * 4u - bias) / step);
+			keys.resize(count + (bias + (length - 1u) * step) / 4u + 1u);
+			const auto batch = std::span(keys).subspan(count);
+			if (!read_selector(base, size, offset, batch)) {
+				keys.resize(count);
 				return false;
-			first += step;
+			}
+			for (uint64_t index = 0; index < length; ++index)
+				keys[copied + index] = batch[(bias + index * step) / 4u];
+			copied += length;
 		}
+		keys.resize(count);
 		return true;
 	};
 	uint64_t table_base = 0;
@@ -590,7 +605,8 @@ bool MaterializeIndirectDescriptor(const ResourcePlan&                         p
 			     uint64_t {first} + count > material.NumRecords())) return false;
 			const auto end = count != 0u
 			    ? (uint64_t {first} + count - 1u) * step + selector->offset + 4u : 0u;
-			if (end > uint64_t {UINT32_MAX} + 1u || end > size)
+			if (end > uint64_t {UINT32_MAX} + 1u ||
+			    (indirect.workgroup_axis == UINT32_MAX && end > size))
 				return false;
 			if (!read_keys(base, size, uint64_t {first} * step + selector->offset, step, count))
 				return false;
@@ -1532,11 +1548,16 @@ bool MaterializeResources(const ResourcePlan& program, const SrtRuntime& runtime
 	     runtime.read_specialization_memory == nullptr)) {
 		return MaterializeFail("resource tracking incomplete or no specialization-memory reader");
 	}
-	const bool capture_reads = program.capture_specialization_reads || !program.source_reads.empty();
+	const auto uses_workgroup_count = [](const DescriptorSource& source) {
+		return source.indirect_descriptor && source.indirect_descriptor->workgroup_axis != UINT32_MAX;
+	};
+	const bool capture_reads = program.capture_specialization_reads || !program.source_reads.empty() ||
+	    (runtime.indirect_args_address != 0u &&
+	     std::ranges::any_of(program.descriptor_sources, uses_workgroup_count));
 	auto& reads = snapshot.specialization_reads;
 	reads = program.source_reads;
 	SrtReadCapture capture {runtime, reads};
-	const auto observed = capture_reads ? capture.ObservedRuntime() : runtime;
+	auto observed = capture_reads ? capture.ObservedRuntime() : runtime;
 	SrtWalker clean(program, CleanRuntime(observed));
 	SrtWalker walker(program, observed,
 	                 capture_reads || program.requires_specialization_memory ? &clean : nullptr);
@@ -1549,6 +1570,18 @@ bool MaterializeResources(const ResourcePlan& program, const SrtRuntime& runtime
 		return MaterializeFail(reason.c_str());
 	}
 	const auto active = std::span<const uint8_t>(program.Scratch().active_sources);
+	std::array<uint32_t, 3> workgroup_counts {};
+	if (runtime.indirect_args_address != 0u) {
+		for (uint32_t source = 0; source < program.descriptor_sources.size(); ++source) {
+			if ((!active.empty() && !active[source]) ||
+			    !uses_workgroup_count(program.descriptor_sources[source])) continue;
+			if ((runtime.indirect_args_address & 3u) != 0u ||
+			    !ReadTable(runtime.indirect_args_address, sizeof(workgroup_counts), 0u,
+			               observed, workgroup_counts)) return false;
+			observed.workgroup_counts = workgroup_counts;
+			break;
+		}
+	}
 	snapshot.uniform_fill = {};
 	const auto& fill = program.uniform_fill;
 	const auto words = fill.fill.words;

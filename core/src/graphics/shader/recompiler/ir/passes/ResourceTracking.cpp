@@ -2390,6 +2390,7 @@ private:
 		const auto* memory = ScalarReadMemory(*read, memory_index);
 		Value index;
 		Value count;
+		uint32_t workgroup_axis = UINT32_MAX;
 		DescriptorSource count_source;
 		uint32_t row_stride = 0;
 		uint32_t offset = 0, stride = 0;
@@ -2398,19 +2399,21 @@ private:
 		if (MatchTableOffset(read->Arg(1), index, offset, stride) &&
 		    ((offset | stride | memory->offset) & 3u) == 0u &&
 		    uint64_t {offset} + memory->offset <= UINT32_MAX) {
+			workgroup_axis = WorkgroupAxis(index);
 			const auto* bound = BoundedLoop(index, read->Parent());
 			if (bound != nullptr && bound->GetOpcode() == ValueOpcode::ULessThan32) {
 				count = bound->Arg(1);
 			}
 		}
 		// Raw pointers have no V# bounds for enumerating an unbounded selector domain.
-		if (memory->kind == ResourceKind::ScalarAddress && count.IsEmpty()) return false;
-		const bool rows = count.IsEmpty() && memory->offset == 0u &&
+		if (memory->kind == ResourceKind::ScalarAddress && count.IsEmpty() &&
+		    workgroup_axis == UINT32_MAX) return false;
+		const bool rows = count.IsEmpty() && workgroup_axis == UINT32_MAX && memory->offset == 0u &&
 		    MatchCountedRows(*read, count_source, row_stride);
 		if (rows) {
 			stride = 4u;
 			offset = 0u;
-		} else if (count.IsEmpty()) {
+		} else if (count.IsEmpty() && workgroup_axis == UINT32_MAX) {
 			auto address = read->Arg(1);
 			auto active = Value(true);
 			const auto* lane = address.Resolve().TryInstruction();
@@ -2441,17 +2444,18 @@ private:
 		}
 		// A bounded image heap already supports GPU selection. Only enumerate a
 		// narrower proven selector domain instead of scanning unrelated material data.
-		if (require_bound && count.IsEmpty() && !rows) return false;
+		if (require_bound && count.IsEmpty() && workgroup_axis == UINT32_MAX && !rows) return false;
 		if (!MakeRuntimeTableSource(*read, material_source)) return false;
 		selector.source = InternSource(material_source);
 		selector.stride = stride;
 		selector.offset = offset + (memory->offset & ~3u);
 		indirect.selector = std::move(selector);
 		indirect.key_count = count;
+		indirect.workgroup_axis = workgroup_axis;
 		if (rows) indirect.selector->rows.emplace(
 		    DescriptorSource::IndirectDescriptor::SelectorRead::CountedRows {
 		        .source = InternSource(count_source), .stride = row_stride});
-		if (!count.IsEmpty()) indirect.selector_first = Value(0u);
+		if (!count.IsEmpty() || workgroup_axis != UINT32_MAX) indirect.selector_first = Value(0u);
 		return true;
 	}
 
@@ -3276,6 +3280,11 @@ private:
 			indirect.table_scalar = true;
 			return finish();
 		}
+		DescriptorSource material_source;
+		if (!plan.split_offsets && MatchScalarMaterialKey(key, indirect, material_source, true)) {
+			plan.retain_reads = true;
+			return finish();
+		}
 		if (!legacy_store) {
 			if (table_source.dword_count == 2u && !plan.split_offsets) {
 				const auto maximum = SelectorMaximum(key);
@@ -3333,7 +3342,6 @@ private:
 		    !ImmediateU32(read->Arg(2), offset) || offset != 0u ||
 		    !ImmediateU32(read->Arg(3), scalar) || scalar != 0u ||
 		    !EquivalentValue(m_program, selected->Arg(0), read->Arg(4))) return false;
-		DescriptorSource material_source;
 		if (!MakeRuntimeTableSource(*read, material_source) ||
 		    !BoundedSelectedIndex(read->Arg(1), read->Arg(4), indirect)) return false;
 		indirect.selector.emplace(DescriptorSource::IndirectDescriptor::SelectorRead{.source = InternSource(material_source),

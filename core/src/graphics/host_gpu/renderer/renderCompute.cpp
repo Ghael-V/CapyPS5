@@ -755,6 +755,7 @@ void RenderExecutor::DispatchIndirect(uint64_t submit_id, CommandBuffer& buffer,
 	}
 	ShaderComputeInputInfo input_info {};
 	input_info.async_compute = async_compute;
+	input_info.indirect_args_address = args_addr;
 	const auto compute_program = m_context.GetPipelineCache().GetComputeProgram(
 	    cs_regs, buffer.GetRegisters().GetShaderRegisters(), input_info);
 	buffer.EndRendering();
