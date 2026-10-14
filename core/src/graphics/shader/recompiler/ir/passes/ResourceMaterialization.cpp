@@ -140,7 +140,7 @@ bool ValidatePackedUnormSampling(const ResourcePlan& program, const ResourceSnap
 	for (const auto& pair: program.info.sampled_pairs) {
 		if (pair.image != image_index) continue;
 		if (pair.sampler >= snapshot.samplers.size() ||
-		    !program.info.samplers[pair.sampler].indirect_resources.empty()) {
+		    program.descriptor_sources[program.info.samplers[pair.sampler].source].indirect_descriptor) {
 			return SpecializationFail("packed UNorm sampling requires a direct sampler");
 		}
 		ShaderSamplerResource sampler;
@@ -393,11 +393,16 @@ bool MaterializeIndirectDescriptor(const ResourcePlan&                         p
 			      (table.Stride() & 3u) != 0u || table.Stride() < indirect.table_record_bytes)))
 				return false;
 			const bool affine = indirect.table_stride != 0u;
-			const uint64_t step = affine ? uint64_t {1} << std::countr_zero(indirect.table_stride) : 4u;
-			const uint64_t first = ((indirect.table_offset % step) & ~uint64_t {3}) +
+			const auto* pointer = indirect.pointer_table ? &*indirect.pointer_table : nullptr;
+			const uint64_t step = pointer != nullptr ? indirect.table_stride
+			    : affine ? uint64_t {1} << std::countr_zero(indirect.table_stride) : 4u;
+			const uint64_t first = ((pointer != nullptr ? indirect.table_offset
+			    : indirect.table_offset % step) & ~uint64_t {3}) +
 			                       (indirect.table_immediate & ~3u);
+			const uint64_t domain = pointer != nullptr ? uint64_t {pointer->maximum} + 1u
+			                                           : (uint64_t {1} << 32u) / step;
 			const auto count = table_size >= first + 4u
-			    ? std::min((table_size - first - 4u) / step + 1u, (uint64_t {1} << 32u) / step)
+			    ? std::min((table_size - first - 4u) / step + 1u, domain)
 			    : 0u;
 			if (affine && count > MaxIndirectDescriptorProbes) return false;
 			// Affine SMEM offsets wrap in U32 before adding the aligned immediate.
@@ -411,7 +416,13 @@ bool MaterializeIndirectDescriptor(const ResourcePlan&                         p
 			snapshot.flattened_srt.resize(mapping_offset + 2u, 0u);
 			for (uint32_t word = 0; word < count; ++word) {
 				DescriptorValue candidate {.dword_count = dword_count};
-				if (affine) {
+				if (pointer != nullptr) {
+					std::array<uint32_t, 2> address {};
+					if (!ReadScalarTable(table_base, table_size, first + word * step, runtime, address) ||
+					    !ReadScalarTable((uint64_t {address[1]} << 32u) | address[0], UINT64_MAX,
+					                     pointer->offset, runtime,
+					                     std::span(candidate.dwords).first(dword_count))) return false;
+				} else if (affine) {
 					if (!ReadScalarTable(table_base, table_size, first + word * step, runtime,
 					                     std::span(candidate.dwords).first(dword_count))) return false;
 				} else {
@@ -1678,18 +1689,28 @@ bool MaterializeResources(const ResourcePlan& program, const SrtRuntime& runtime
 		}
 	}
 	snapshot.samplers.resize(program.info.samplers.size());
-	for (uint32_t i = 0; i < program.info.samplers.size(); ++i) {
-		auto source = program.info.samplers[i].source;
-		if (source >= program.descriptor_sources.size()) return MaterializeFail("sampler source past the plan");
-		const auto& descriptor = program.descriptor_sources[source];
-		if (descriptor.indirect_descriptor) {
-			if (descriptor.indirect_descriptor->sources.empty()) return MaterializeFail("indirect sampler without sources");
-			source = descriptor.indirect_descriptor->sources[0];
+	specialization.samplers.assign(program.info.samplers.size(), {});
+	for (uint32_t i = 0; i < snapshot.samplers.size(); ++i) {
+		const auto base_index =
+		    i < program.info.samplers.size() ? i : specialization.samplers[i].indirect_root;
+		if (base_index >= program.info.samplers.size()) return false;
+		if (i < program.info.samplers.size()) {
+			auto source = program.info.samplers[i].source;
+			const auto* descriptor = Source(program, source);
+			if (descriptor == nullptr) return MaterializeFail("sampler source past the plan");
+			const auto* indirect = descriptor->indirect_descriptor ? &*descriptor->indirect_descriptor : nullptr;
+			if (indirect != nullptr && indirect->sources.empty()) {
+				snapshot.samplers[i] = {.dword_count = 4u};
+				if ((active.empty() || active[source]) && !MaterializeIndirectDescriptor(
+				        program, *indirect, i, 4u, observed, clean, snapshot, snapshot.samplers,
+				        specialization.samplers, ShaderInfo::MaxSamplers,
+				        [](DescriptorValue&) { return true; })) return false;
+			} else {
+				if (indirect != nullptr) source = indirect->sources[0];
+				if (!evaluate(source, snapshot.samplers[i])) return MaterializeFail("sampler descriptor could not be evaluated");
+			}
 		}
-		if (!evaluate(source, snapshot.samplers[i])) {
-			return MaterializeFail("sampler descriptor could not be evaluated");
-		}
-		if (program.info.samplers[i].gather_lod) {
+		if (program.info.samplers[base_index].gather_lod) {
 			const auto control = snapshot.samplers[i].dwords[2];
 			const auto filter = (control >> 26u) & 3u;
 			// MipNone always selects the base level. Explicit point gathers currently require
@@ -1707,7 +1728,8 @@ bool MaterializeResources(const ResourcePlan& program, const SrtRuntime& runtime
 void ApplyResourceSpecialization(Program& program, const ResourceSpecialization& specialization) {
 	EXIT_IF(!program.resource_tracking_complete || program.shader_info_complete);
 	EXIT_IF(program.info.buffers.size() > specialization.buffers.size() ||
-	        program.info.images.size() > specialization.images.size());
+	        program.info.images.size() > specialization.images.size() ||
+	        program.info.samplers.size() > specialization.samplers.size());
 
 	auto& buffers = program.info.buffers;
 	const auto original_buffer_count = buffers.size();
@@ -1763,10 +1785,30 @@ void ApplyResourceSpecialization(Program& program, const ResourceSpecialization&
 		}
 	}
 
-	SamplerPlan sampler_plan;
-	EXIT_IF(!BuildSamplerPlan(program.info, sampler_plan));
 	auto& samplers      = program.info.samplers;
 	auto& sampled_pairs = program.info.sampled_pairs;
+	const auto base_sampler_count = samplers.size();
+	samplers.reserve(specialization.samplers.size());
+	for (uint32_t index = 0; index < specialization.samplers.size(); ++index) {
+		const auto& source = specialization.samplers[index];
+		if (index >= samplers.size()) {
+			EXIT_IF(source.indirect_root >= base_sampler_count);
+			samplers.push_back(samplers[source.indirect_root]);
+			samplers.back().indirect_resources.clear();
+		}
+		samplers[index].indirect_root = source.indirect_root;
+		samplers[index].indirect_mapping_offset = source.indirect_mapping_offset;
+		samplers[index].indirect_search_iterations = source.indirect_search_iterations;
+	}
+	for (uint32_t index = 0; index < samplers.size(); ++index) {
+		const auto root = samplers[index].indirect_root;
+		if (root != SamplerResource::NoIndirectSampler) {
+			EXIT_IF(root >= samplers.size());
+			samplers[root].indirect_resources.push_back(index);
+		}
+	}
+	SamplerPlan sampler_plan;
+	EXIT_IF(!BuildSamplerPlan(program.info, sampler_plan));
 	const auto original_sampler_count = samplers.size();
 	samplers.reserve(sampler_plan.sampler_count);
 	for (uint32_t index = 0; index < sampler_plan.sampler_count; index++) {

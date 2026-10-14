@@ -877,8 +877,13 @@ std::array<ImageSampler, 2> LoadImageSamplers(ValueEmitContext& ctx, const IR::I
 			const auto* handle = inst.Arg(1).ResolveInstruction();
 			if (handle == nullptr || handle->GetOpcode() != IR::ValueOpcode::GetSamplerResource)
 				ctx.Fail(inst, "has invalid finite sampler key provenance");
+			auto selected = ctx.Def(handle->Arg(0));
+			if (samplers[index].indirect_root != IR::SamplerResource::NoIndirectSampler)
+				selected = EmitIndirectResourceIndex(state, selected,
+				    samplers[index].indirect_mapping_offset,
+				    samplers[index].indirect_search_iterations, 0u);
 			array_index = EmitIndexSwitch(
-			    state, ctx.Def(handle->Arg(0)), static_cast<uint32_t>(candidates.size()),
+			    state, selected, static_cast<uint32_t>(candidates.size()),
 			    TypeU32(state), [&](uint32_t ordinal) { return ConstantU32(state, candidates[ordinal]); });
 		}
 		sampler = {LoadSamplerDescriptor(state, index, array_index), array_index != 0u};

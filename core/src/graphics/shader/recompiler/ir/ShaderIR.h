@@ -194,10 +194,15 @@ RawSignedStorageFormat(const ImageResource& image, Prospero::BufferFormat format
 }
 
 struct SamplerResource {
+	static constexpr uint32_t NoIndirectSampler = UINT32_MAX;
+
 	uint32_t source                = 0;
 	uint32_t first_use_pc          = 0;
 	// Native filtering/border variants share the original sampler's runtime descriptor.
 	uint32_t snapshot_index        = 0;
+	uint32_t indirect_root = NoIndirectSampler;
+	uint32_t indirect_mapping_offset = 0;
+	uint32_t indirect_search_iterations = 0;
 	std::vector<uint32_t> indirect_resources;
 	bool     force_point_filtering = false;
 	bool     depth_compare         = false;
@@ -590,6 +595,12 @@ struct ShaderInfo {
 
 struct DescriptorSource {
 	struct IndirectDescriptor {
+		struct PointerTable {
+			uint32_t maximum = 0;
+			uint32_t offset = 0;
+
+			bool operator==(const PointerTable&) const = default;
+		};
 		struct SelectorRead {
 			struct CountedRows {
 				uint32_t source = UINT32_MAX;
@@ -612,6 +623,7 @@ struct DescriptorSource {
 			bool operator==(const SelectorRead& other) const = default;
 		};
 		std::optional<SelectorRead> selector;
+		std::optional<PointerTable> pointer_table;
 		uint32_t table_source    = 0;
 		uint32_t table_offset    = 0;
 		uint32_t table_immediate = 0;

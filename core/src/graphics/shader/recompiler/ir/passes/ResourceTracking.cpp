@@ -51,10 +51,13 @@ uint32_t PossibleU32Bits(Value value, const auto& normalize) {
 				if (inst->NumArgs() != 0u) bits = merged;
 				break;
 			}
-			case ValueOpcode::ShiftLeftLogical32: {
+			case ValueOpcode::ShiftLeftLogical32:
+			case ValueOpcode::ShiftRightLogical32: {
 				const auto shift = inst->Arg(1).Resolve();
-				if (shift.IsImmediate() && shift.GetType() == Type::U32)
-					bits = arg(0) << (shift.U32() & 31u);
+				if (shift.IsImmediate() && shift.GetType() == Type::U32) {
+					bits = inst->GetOpcode() == ValueOpcode::ShiftLeftLogical32
+					    ? arg(0) << (shift.U32() & 31u) : arg(0) >> (shift.U32() & 31u);
+				}
 				break;
 			}
 			default: break;
@@ -422,6 +425,13 @@ public:
 		std::vector<std::pair<const IndirectDescriptorPlan*, Value>> buffer_selections;
 		for (const auto& plan: m_indirect_descriptors) {
 			auto key = plan.key;
+			if (m_sources[plan.source].indirect_descriptor->pointer_table) {
+				auto* block = plan.handle->Parent();
+				const auto where = std::ranges::find_if(block->Instructions(),
+				    [&](const Inst& inst) { return &inst == plan.handle; });
+				key = Value(&*block->PrependNewInst(
+				    where, ValueOpcode::ShiftLeftLogical32, {key, Value(2u)}));
+			}
 			if (plan.table_read != nullptr) {
 				const auto* anchor = plan.table_indexed ? plan.handle : plan.table_read;
 				auto* block = anchor->Parent();
@@ -1049,7 +1059,8 @@ private:
 			if (current.indirect_descriptor.has_value()) {
 				const auto& a = *current.indirect_descriptor;
 				const auto& b = *descriptor.indirect_descriptor;
-				if (a.selector != b.selector || a.table_source != b.table_source ||
+				if (a.selector != b.selector || a.pointer_table != b.pointer_table ||
+				    a.table_source != b.table_source ||
 				    a.table_offset != b.table_offset || a.table_immediate != b.table_immediate ||
 				    a.table_stride != b.table_stride || a.indexed != b.indexed ||
 				    a.workgroup_axis != b.workgroup_axis || a.sources != b.sources ||
@@ -2902,6 +2913,74 @@ private:
 		return true;
 	}
 
+	bool TryMakeNestedDescriptor(Inst& handle, const DescriptorSource& descriptor,
+	                             IndirectDescriptorPlan& plan) {
+		if (handle.GetOpcode() != ValueOpcode::GetImageResource &&
+		    handle.GetOpcode() != ValueOpcode::GetSamplerResource) return false;
+		const Inst* pointer = nullptr;
+		uint32_t descriptor_offset = 0;
+		for (uint32_t word = 0; word < handle.NumArgs(); ++word) {
+			const auto* read = descriptor.dwords[word].Resolve().TryInstruction();
+			uint32_t index, offset;
+			const auto* memory = read != nullptr ? ScalarReadMemory(*read, index) : nullptr;
+			if (memory == nullptr || memory->kind != ResourceKind::ScalarAddress ||
+			    memory->offset > INT32_MAX || !ImmediateU32(read->Arg(1), offset) ||
+			    !AvailableBefore(*read, handle)) return false;
+			const auto* address = read->Arg(0).Resolve().TryInstruction();
+			const uint64_t current_offset = uint64_t {offset & ~3u} + (memory->offset & ~3u);
+			if (address == nullptr || address->GetOpcode() != ValueOpcode::GetAddressResource ||
+			    address->NumArgs() != 2u || current_offset > UINT32_MAX ||
+			    (pointer != nullptr && (!EquivalentValue(m_program, Value(pointer), Value(address)) ||
+			                            current_offset != uint64_t {descriptor_offset} + word * 4u)))
+				return false;
+			if (word == 0u) descriptor_offset = static_cast<uint32_t>(current_offset);
+			pointer = address;
+		}
+		// An out-of-bounds pointer pair is zero. Guest mappings exclude the first
+		// 16 KiB page, so these pointed reads have the existing null-image semantics.
+		if (pointer == nullptr || uint64_t {descriptor_offset} + handle.NumArgs() * 4u > 0x4000u)
+			return false;
+		const auto* low = pointer->Arg(0).Resolve().TryInstruction();
+		const auto* high = pointer->Arg(1).Resolve().TryInstruction();
+		uint32_t low_index, high_index;
+		const auto* low_memory = low != nullptr ? ScalarReadMemory(*low, low_index) : nullptr;
+		const auto* high_memory = high != nullptr ? ScalarReadMemory(*high, high_index) : nullptr;
+		if (low_memory == nullptr || high_memory == nullptr ||
+		    low_memory->kind != ResourceKind::ScalarBuffer ||
+		    high_memory->kind != ResourceKind::ScalarBuffer ||
+		    low_memory->offset > INT32_MAX || high_memory->offset > INT32_MAX ||
+		    (low_memory->offset & ~3u) + 4u != (high_memory->offset & ~3u) ||
+		    !EquivalentValue(m_program, low->Arg(0), high->Arg(0)) ||
+		    !EquivalentValue(m_program, low->Arg(1), high->Arg(1)) ||
+		    !AvailableBefore(*low, *pointer) || !AvailableBefore(*high, *pointer)) return false;
+		Value key;
+		DescriptorSource::IndirectDescriptor indirect;
+		if (!MatchTableOffset(low->Arg(1), key, indirect.table_offset, indirect.table_stride) ||
+		    indirect.table_stride < 8u || (indirect.table_stride & 3u) != 0u) return false;
+		const auto maximum = SelectorMaximum(key);
+		if (maximum > UINT32_MAX / 4u ||
+		    uint64_t {maximum} * indirect.table_stride + indirect.table_offset > UINT32_MAX ||
+		    (key.TryInstruction() != nullptr && !AvailableBefore(*key.Instruction(), handle)))
+			return false;
+		DescriptorSource table_source;
+		if (!MakeRuntimeTableSource(*low, table_source) || table_source.dword_count != 4u)
+			return false;
+		indirect.table_source = InternSource(table_source);
+		indirect.table_immediate = low_memory->offset & ~3u;
+		indirect.table_scalar = true;
+		indirect.pointer_table = {{maximum, descriptor_offset}};
+		DescriptorSource source;
+		source.dword_count = handle.NumArgs();
+		source.dwords.fill(Value(0u));
+		std::copy_n(table_source.dwords.begin(), 4u, source.dwords.begin());
+		source.indirect_descriptor = indirect;
+		plan.handle = &handle;
+		plan.source = InternSource(source);
+		plan.key = key;
+		plan.roots = source.dwords;
+		return true;
+	}
+
 	bool TryMakeIndirectImage(Inst& handle, const DescriptorSource& descriptor,
 	                          IndirectDescriptorPlan& plan) {
 		if (handle.GetOpcode() != ValueOpcode::GetImageResource || handle.NumArgs() != 8u) return RejectIndirect(__LINE__);
@@ -3272,6 +3351,9 @@ private:
 			return SelectorMaximum(inst->Arg(arg), bounds, depth + 1u, guard);
 		};
 		switch (inst->GetOpcode()) {
+			case ValueOpcode::ReadLane:
+				// ReadLane ignores EXEC; only context-free bounds on every source lane apply.
+				return PossibleU32Bits(inst->Arg(0));
 			case ValueOpcode::Phi: {
 				const auto initial = InitialCandidateMask(value);
 				if (!initial.IsEmpty()) return SelectorMaximum(initial, bounds, depth + 1u, guard);
@@ -3505,12 +3587,13 @@ private:
 					uint32_t bad_dword = 0;
 					if (ValidateSource(descriptor, bad_dword)) return;
 					IndirectDescriptorPlan plan;
-					if (sampler ? TryMakeFiniteDescriptor(*handle, plan)
+					if (TryMakeNestedDescriptor(*handle, descriptor, plan) ||
+					    (sampler ? TryMakeFiniteDescriptor(*handle, plan)
 					             : (((m_indirect_reject_line = 0), false) ||
 					                TryMakeIndirectImage(*handle, descriptor, plan) ||
 					                ((m_image_reject_line = m_indirect_reject_line), (m_indirect_reject_line = 0), false) ||
 					                TryMakeFiniteDescriptor(*handle, plan) ||
-					                TryMakeIndirectBuffer(*handle, descriptor, plan))) {
+					                TryMakeIndirectBuffer(*handle, descriptor, plan)))) {
 						for (const auto& previous: m_indirect_descriptors) {
 							if (plan.reads[0] != nullptr && previous.reads[0] == plan.reads[0] &&
 							    !EquivalentValue(m_program, previous.key, plan.key))
@@ -3668,7 +3751,7 @@ private:
 		const auto* descriptor = Source(source);
 		if (descriptor != nullptr && descriptor->indirect_descriptor) {
 			const auto& sources = descriptor->indirect_descriptor->sources;
-			if (sources.empty()) Fail(pc, "finite sampler has no candidates");
+			if (sources.empty()) return root;
 			std::vector<uint32_t> resources {root};
 			for (size_t i = 1; i < sources.size(); ++i) {
 				const auto candidate = AddSampler(sources[i], pc);
