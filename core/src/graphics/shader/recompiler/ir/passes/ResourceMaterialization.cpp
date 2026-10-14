@@ -751,7 +751,9 @@ static bool BuildResourceSpecialization(const ResourcePlan& program, ResourceSna
 			if (image.indirect_root != ImageResource::NoIndirectImage) {
 				return SpecializationFail("packed UNorm sampling requires a direct image");
 			}
-			if (!ValidatePackedUnormSampling(program, snapshot, i)) return false;
+			if (std::ranges::any_of(program.info.sampled_pairs,
+			                       [&](const auto& pair) { return pair.image == i; }) &&
+			    !ValidatePackedUnormSampling(program, snapshot, i)) return false;
 		}
 		if (storage) {
 			// 32-bit SINT atomics run on the R32_UINT view (see ValidateStorageTexture).
