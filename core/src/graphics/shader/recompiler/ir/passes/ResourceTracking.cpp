@@ -3071,9 +3071,21 @@ private:
 		if (table_source.dword_count == 2u && MatchPackedScalarKey(key, indirect)) return finish();
 		if (table_source.dword_count == 2u) {
 			const auto* bound = BoundedLoop(key, handle.Parent());
-			if (bound == nullptr) return false;
-			indirect.key_count = bound->Arg(1);
-			indirect.signed_count = bound->GetOpcode() == ValueOpcode::SLessThan32;
+			if (bound != nullptr) {
+				indirect.key_count = bound->Arg(1);
+				indirect.signed_count = bound->GetOpcode() == ValueOpcode::SLessThan32;
+			} else {
+				// EXEC implications must describe the same iteration as the selected value.
+				if (m_native_cfg.irreducible || !m_native_cfg.back_edges.empty()) return false;
+				const auto* lane = key.Resolve().TryInstruction();
+				if (lane == nullptr || lane->GetOpcode() != ValueOpcode::ReadFirstLane ||
+				    !std::ranges::all_of(handle.Uses(), [&](const Use& use) {
+					    return Implies(use.user->Arg(5), lane->Arg(1));
+				    })) return false;
+				const auto maximum = SelectorMaximum(lane->Arg(0), {}, 0u, lane->Arg(1));
+				if (maximum >= MaxIndirectDescriptorProbes) return false;
+				indirect.key_count = Value(maximum + 1u);
+			}
 			return finish();
 		}
 		if (table_source.dword_count != 4u || table_offset != 0u || table_immediate != 0u || indexed)
@@ -3150,8 +3162,16 @@ private:
 		switch (inst->GetOpcode()) {
 			case ValueOpcode::Phi: {
 				const auto initial = InitialCandidateMask(value);
-				return initial.IsEmpty() ? UINT32_MAX
-				    : SelectorMaximum(initial, bounds, depth + 1u, guard);
+				if (!initial.IsEmpty()) return SelectorMaximum(initial, bounds, depth + 1u, guard);
+				if (m_native_cfg.irreducible || !m_native_cfg.back_edges.empty() ||
+				    inst->NumArgs() == 0u || (inst->Parent() != nullptr && InCycle(inst->Parent())))
+					return UINT32_MAX;
+				uint32_t result = 0u;
+				for (uint32_t arm = 0; arm < inst->NumArgs(); ++arm) {
+					result = std::max(result, maximum(arm));
+					if (result == UINT32_MAX) break;
+				}
+				return result;
 			}
 			case ValueOpcode::BitFieldUExtract: {
 				uint32_t width;
