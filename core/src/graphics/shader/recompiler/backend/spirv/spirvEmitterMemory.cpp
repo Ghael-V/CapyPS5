@@ -1139,32 +1139,11 @@ uint32_t LoadIndirectFormattedX(ValueEmitContext& ctx, const IR::Inst& inst) {
 			                  Binary(state, spv::OpShiftLeftLogical, TypeU32(state), byte,
 			                         ConstantU32(state, 3)));
 		    });
-		return EmitIndexSwitch(
-		    state, buffer.format, format_count, TypeU32(state), [&](uint32_t format) {
-			    const auto info = Format::GetFormatInfo(static_cast<Prospero::BufferFormat>(format));
-			    if (info.type == Format::ComponentType::Unknown) return ConstantU32(state, 0);
-			    const auto constant = Select(
-			        state, TypeU32(state),
-			        Binary(state, spv::OpIEqual, TypeBool(state), buffer.selector, ConstantU32(state, 1)),
-			        FormattedConstant(ctx, info, FormattedSourceKind::One), ConstantU32(state, 0));
-			    return EmitValueOrDefaultIfCondition(
-			        state, Binary(state, spv::OpUGreaterThanEqual, TypeBool(state), buffer.selector,
-			                      ConstantU32(state, 4)),
-			        TypeU32(state), constant, [&]() {
-				        const auto emit_component = [&](uint32_t component) {
-					        return LoadFormattedComponent(
-					            ctx, info, {FormattedSourceKind::Memory, component},
-					            [&](uint32_t) { return raw; },
-					            [&](uint32_t, uint32_t bits) {
-						            return Binary(state, spv::OpBitwiseAnd, TypeU32(state), raw,
-						                          ConstantU32(state, bits == 8u ? 0xffu : 0xffffu));
-					            });
-				        };
-				        if (!info.packed_bitfield) return emit_component(0u);
-				        return EmitIndexSwitch(state, component, info.component_count, TypeU32(state),
-				                               emit_component);
-			        });
-		    });
+		const auto result = state.builder.AllocateId();
+		state.builder.AddFunction(spv::OpFunctionCall, TypeU32(state), result,
+		                          state.indirect_format_function, buffer.format, buffer.selector,
+		                          component, raw);
+		return result;
 	});
 }
 
@@ -1297,6 +1276,64 @@ void FlushBdaFault(EmitterState& state) {
 	EmitIfCondition(state,
 	                Binary(state, spv::OpINotEqual, TypeBool(state), page, ConstantU32(state, ~0u)),
 	                [&]() { RecordBdaFault(state, page); });
+}
+
+void DefineConvertIndirectBufferFormat(ValueEmitContext& ctx) {
+	auto& state = ctx.state;
+	const auto needed = std::ranges::any_of(state.program.blocks, [&](const IR::Block* block) {
+		return std::ranges::any_of(*block, [&](const IR::Inst& inst) {
+			if (inst.GetOpcode() != IR::ValueOpcode::LoadBufferU32) return false;
+			const auto& memory = ctx.Memory(inst);
+			return memory.kind == IR::ResourceKind::IndirectBuffer && memory.formatted;
+		});
+	});
+	if (!needed) return;
+
+	const auto type = TypeU32(state);
+	const auto function_type = state.builder.Type(spv::OpTypeFunction, type, type, type, type, type);
+	state.indirect_format_function = state.builder.AllocateId();
+	const auto format = state.builder.AllocateId();
+	const auto selector = state.builder.AllocateId();
+	const auto component = state.builder.AllocateId();
+	const auto raw = state.builder.AllocateId();
+	state.builder.AddName(state.indirect_format_function, "convert_indirect_buffer_format");
+	state.builder.AddFunction(spv::OpFunction, type, state.indirect_format_function,
+	                          spv::FunctionControlMaskNone, function_type);
+	state.builder.AddFunction(spv::OpFunctionParameter, type, format);
+	state.builder.AddFunction(spv::OpFunctionParameter, type, selector);
+	state.builder.AddFunction(spv::OpFunctionParameter, type, component);
+	state.builder.AddFunction(spv::OpFunctionParameter, type, raw);
+	EmitLabel(state, state.builder.AllocateId());
+	constexpr auto format_count =
+	    static_cast<uint32_t>(Prospero::BufferFormat::k32_32_32_32Float) + 1u;
+	const auto result = EmitIndexSwitch(
+	    state, format, format_count, TypeU32(state), [&](uint32_t format) {
+		    const auto info = Format::GetFormatInfo(static_cast<Prospero::BufferFormat>(format));
+		    if (info.type == Format::ComponentType::Unknown) return ConstantU32(state, 0);
+		    const auto constant = Select(
+		        state, TypeU32(state),
+		        Binary(state, spv::OpIEqual, TypeBool(state), selector, ConstantU32(state, 1)),
+		        FormattedConstant(ctx, info, FormattedSourceKind::One), ConstantU32(state, 0));
+		    return EmitValueOrDefaultIfCondition(
+		        state, Binary(state, spv::OpUGreaterThanEqual, TypeBool(state), selector,
+		                      ConstantU32(state, 4)),
+		        TypeU32(state), constant, [&]() {
+			        const auto emit_component = [&](uint32_t component) {
+				        return LoadFormattedComponent(
+				            ctx, info, {FormattedSourceKind::Memory, component},
+				            [&](uint32_t) { return raw; },
+				            [&](uint32_t, uint32_t bits) {
+					            return Binary(state, spv::OpBitwiseAnd, TypeU32(state), raw,
+					                          ConstantU32(state, bits == 8u ? 0xffu : 0xffffu));
+				            });
+			        };
+			        if (!info.packed_bitfield) return emit_component(0u);
+			        return EmitIndexSwitch(state, component, info.component_count, TypeU32(state),
+			                               emit_component);
+		        });
+	    });
+	state.builder.AddFunction(spv::OpReturnValue, result);
+	state.builder.AddFunction(spv::OpFunctionEnd);
 }
 
 void DefineGetBdaPointer(EmitterState& state) {
