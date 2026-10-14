@@ -873,6 +873,7 @@ void EmitProgram(EmitterState& state) {
 		high.dispatcher_spills      = &dispatch.spills[1];
 	}
 	DefineGetBdaPointer(state);
+	DefineIndirectBufferLoads(ctx);
 	DefineConvertIndirectBufferFormat(ctx);
 	DefineBvhIntersect(state);
 	if (program.info.uses_swizzle) {

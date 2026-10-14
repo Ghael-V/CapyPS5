@@ -129,6 +129,7 @@ struct EmitterState {
 	uint32_t                                         resolution_scale        = 0;
 	uint32_t                                         scaled_image_mask       = 0;
 	uint32_t                                         indirect_format_function = 0;
+	std::map<std::array<uint32_t, 3>, uint32_t>        indirect_buffer_load_functions;
 	uint32_t                                         bvh_intersect_function  = 0;
 	uint32_t                                         gds_variable            = 0;
 	uint32_t                                         gds_length              = 0;
@@ -566,6 +567,7 @@ void DefineGetBdaPointer(EmitterState& state);
 void InitializeBdaFault(EmitterState& state);
 void FlushBdaFault(EmitterState& state);
 void DefineConvertIndirectBufferFormat(ValueEmitContext& ctx);
+void DefineIndirectBufferLoads(ValueEmitContext& ctx);
 void DefineBvhIntersect(EmitterState& state);
 uint32_t GetBdaPointer(EmitterState& state, uint32_t address);
 
