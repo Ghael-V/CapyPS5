@@ -1,5 +1,11 @@
 #include "loader/symbolDatabase.h"
 
+#include "common/logging/log.h"
+
+#if defined(__ANDROID__)
+#include <android/log.h>
+#endif
+
 #include "common/file.h"
 
 #include <fmt/format.h>
@@ -97,6 +103,14 @@ const SymbolRecord* SymbolDatabase::FindByName(const std::string& name, SymbolTy
 	for (const auto& symbol: m_symbols) {
 		if (!symbol.dbg_name.empty()) {
 			if (symbol.dbg_name.ends_with("::" + clean) || symbol.dbg_name == clean) {
+				// Name-only fallback for imports from libraries we do not know: it can bind the
+				// wrong function, so always report it.
+				LOGF_COLOR(Log::Color::Yellow, "SymbolDatabase: approximate match %s -> %s\n", name.c_str(),
+				           symbol.dbg_name.c_str());
+#if defined(__ANDROID__)
+				__android_log_print(ANDROID_LOG_WARN, "CapyPS5-Core", "SymbolDatabase: approximate match %s -> %s",
+				                    name.c_str(), symbol.dbg_name.c_str());
+#endif
 				return &symbol;
 			}
 		}

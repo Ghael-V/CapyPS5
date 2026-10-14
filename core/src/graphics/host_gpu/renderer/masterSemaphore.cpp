@@ -55,20 +55,19 @@ void MasterSemaphore::Wait(uint64_t tick) {
 	wait_info.pSemaphores    = &m_semaphore;
 	wait_info.pValues        = &tick;
 
-#if defined(__ANDROID__) || defined(ANDROID)
-	constexpr uint64_t timeout_ns = 3'000'000'000ull; // 3 seconds
-	const auto result = m_graphics.device.waitSemaphores(&wait_info, timeout_ns);
+	// Returning before the GPU reached `tick` would let callers reuse resources still in use,
+	// so only report a long stall and keep waiting.
+	constexpr uint64_t warn_ns = 3'000'000'000ull;
+	auto result = m_graphics.device.waitSemaphores(&wait_info, warn_ns);
 	if (result == vk::Result::eTimeout) {
+#if defined(__ANDROID__) || defined(ANDROID)
 		__android_log_print(ANDROID_LOG_WARN, "CapyPS5-Gpu",
-		                    "MasterSemaphore::Wait timed out waiting for tick %" PRIu64
-		                    " (current=%" PRIu64 ", gpu=%" PRIu64 ")",
+		                    "MasterSemaphore::Wait: tick %" PRIu64 " not reached after 3 s"
+		                    " (current=%" PRIu64 ", gpu=%" PRIu64 "), still waiting",
 		                    tick, CurrentTick(), KnownGpuTick());
-		Refresh();
-		return;
-	}
-#else
-	const auto result = m_graphics.device.waitSemaphores(&wait_info, UINT64_MAX);
 #endif
+		result = m_graphics.device.waitSemaphores(&wait_info, UINT64_MAX);
+	}
 	EXIT_NOT_IMPLEMENTED(result != vk::Result::eSuccess);
 	Refresh();
 }

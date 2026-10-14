@@ -7,6 +7,7 @@
 #include "libs/errno.h"
 
 #include <algorithm>
+#include <chrono>
 
 namespace Libs::Graphics {
 
@@ -61,17 +62,34 @@ bool RenderContext::HandleFault(PageFaultAccess access, uint64_t fault_vaddr) no
 	if (!IsMapped(fault_vaddr, fault_size)) {
 		return false;
 	}
+	// A fault we cannot clear retries immediately and forever. Legitimate repeats (the guest
+	// rewriting a page the GPU re-protected) are spread across frames, so only a burst of
+	// back-to-back faults on one page counts as a loop.
+	static thread_local uint64_t last_fault_page = 0;
+	static thread_local uint32_t repeat_count    = 0;
+	static thread_local std::chrono::steady_clock::time_point last_fault_time {};
+	const uint64_t fault_page = fault_vaddr >> 12u;
+	const auto     now        = std::chrono::steady_clock::now();
+	repeat_count = (fault_page == last_fault_page && now - last_fault_time < std::chrono::milliseconds(1))
+	                   ? repeat_count + 1
+	                   : 0;
+	last_fault_page = fault_page;
+	last_fault_time = now;
+	if (repeat_count > 1000) {
+		LOGF("RenderContext::HandleFault: unresolvable %s fault at 0x%016" PRIx64 "\n",
+		     access == PageFaultAccess::Write ? "write" : "read", fault_vaddr);
+		repeat_count = 0;
+		return false;
+	}
 	if (access == PageFaultAccess::Write) {
 		m_buffer_cache.InvalidateMemory(fault_vaddr, fault_size);
 		m_texture_cache.InvalidateMemory(fault_vaddr, fault_size);
-		return true;
 	} else {
-		if (m_buffer_cache.HasGpuDirtyBytes(fault_vaddr, fault_size)) {
-			m_buffer_cache.ReadMemory(fault_vaddr, fault_size);
-			return true;
-		}
-		return false;
+		// Upstream behaviour: ReadMemory also clears stale GPU-dirty protection when there is
+		// nothing to download, so the faulting access can be retried.
+		m_buffer_cache.ReadMemory(fault_vaddr, fault_size);
 	}
+	return true;
 }
 
 bool RenderContext::InvalidateMemory(uint64_t vaddr, uint64_t size) {

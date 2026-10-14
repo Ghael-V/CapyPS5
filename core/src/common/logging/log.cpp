@@ -2,6 +2,7 @@
 #include "common/logging/log.h"
 
 #include "common/assert.h"
+#include "common/debugFlags.h"
 #include "common/emulatorConfig.h"
 
 #include <cstdio>
@@ -58,9 +59,25 @@ static bool HasStyle(fmt::text_style style) {
 	return style != fmt::text_style {};
 }
 
+#if defined(__ANDROID__) || defined(ANDROID) || defined(KYTY_PLATFORM_ANDROID)
+// Android has no console: LOGF output goes to logcat, but only when explicitly requested with
+// `adb shell setprop debug.capy.verbose 1`. Formatting and sending thousands of lines per
+// second to logd otherwise steals CPU time from the game.
+bool AndroidVerbose() {
+	static Common::DebugFlags::CachedValue verbose("debug.capy.verbose", 0);
+	return verbose.Get() != 0;
+}
+
+void AndroidLog(int priority, std::string_view text) {
+	__android_log_print(priority, "CapyPS5-Core", "%.*s", static_cast<int>(text.size()), text.data());
+}
+#endif
+
 void WriteStdout(std::string_view text, fmt::text_style style = {}) {
 #if defined(__ANDROID__) || defined(ANDROID) || defined(KYTY_PLATFORM_ANDROID)
-	__android_log_print(ANDROID_LOG_INFO, "CapyPS5-Core", "%.*s", static_cast<int>(text.size()), text.data());
+	(void)style;
+	AndroidLog(ANDROID_LOG_INFO, text);
+	return;
 #endif
 	if (HasStyle(style)) {
 		fmt::print(stdout, style, "{}", text);
@@ -117,7 +134,12 @@ static void WriteImpl(std::string_view text, fmt::text_style style = {}) {
 	}
 
 #if defined(__ANDROID__) || defined(ANDROID) || defined(KYTY_PLATFORM_ANDROID)
-	__android_log_print(ANDROID_LOG_INFO, "CapyPS5-Core", "%.*s", static_cast<int>(text.size()), text.data());
+	if (AndroidVerbose()) {
+		AndroidLog(ANDROID_LOG_INFO, text);
+	}
+	if (g_direction != Direction::File) {
+		return;
+	}
 #endif
 
 	if (!g_initialized) {
@@ -148,6 +170,11 @@ void WriteToConsoleAndLog(std::string_view text) {
 }
 
 void WriteFatal(std::string_view text) {
+#if defined(__ANDROID__) || defined(ANDROID) || defined(KYTY_PLATFORM_ANDROID)
+	AndroidLog(ANDROID_LOG_ERROR, text);
+	Flush();
+	return;
+#endif
 	if (g_direction == Direction::Silent || !g_initialized) {
 		WriteStdout(text);
 	} else {
@@ -158,6 +185,12 @@ void WriteFatal(std::string_view text) {
 }
 
 void WriteFatal(fmt::text_style style, std::string_view text) {
+#if defined(__ANDROID__) || defined(ANDROID) || defined(KYTY_PLATFORM_ANDROID)
+	(void)style;
+	AndroidLog(ANDROID_LOG_ERROR, text);
+	Flush();
+	return;
+#endif
 	if (g_direction == Direction::Silent || !g_initialized) {
 		WriteStdout(text, style);
 	} else {
@@ -192,7 +225,7 @@ Direction GetDirection() {
 
 bool IsSilent() {
 #if defined(__ANDROID__) || defined(ANDROID) || defined(KYTY_PLATFORM_ANDROID)
-	return false;
+	return !AndroidVerbose() && g_direction != Direction::File;
 #else
 	// Before init LOGF must keep writing to stdout, so report non-silent.
 	return g_initialized && g_direction == Direction::Silent;

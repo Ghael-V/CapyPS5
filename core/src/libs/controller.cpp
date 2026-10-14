@@ -3,6 +3,7 @@
 #include <SDL3/SDL.h>
 #include "common/assert.h"
 #include "common/common.h"
+#include "common/debugFlags.h"
 #include "common/emulatorConfig.h"
 #include "common/logging/log.h"
 #include "common/stringUtils.h"
@@ -22,7 +23,7 @@
 
 #ifdef __ANDROID__
 #include <android/log.h>
-#define ALOGI(...) __android_log_print(ANDROID_LOG_INFO, "CapyPS5-Pad", __VA_ARGS__)
+#define ALOGI(...)                                                                                 	do {                                                                                           		if (Common::DebugFlags::Verbose()) {                                                       			__android_log_print(ANDROID_LOG_INFO, "CapyPS5-Pad", __VA_ARGS__);                     		}                                                                                          	} while (0)
 #define ALOGW(...) __android_log_print(ANDROID_LOG_WARN, "CapyPS5-Pad", __VA_ARGS__)
 #else
 #define ALOGI(...)

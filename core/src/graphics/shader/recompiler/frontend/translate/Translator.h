@@ -172,6 +172,7 @@ private:
 	void V_MAD_I16(const Decoder::Instruction& inst);
 	void V_MAD_U32_U16(const Decoder::Instruction& inst);
 	void V_MAD_I32_I16(const Decoder::Instruction& inst);
+	void LegacyFloatMultiply(const Decoder::Instruction& inst, bool accumulate);
 	void PackedInteger16Shift(const Decoder::Instruction& inst, IR::ValueOpcode opcode,
 	                          bool arithmetic);
 	void PackedInteger16Binary(const Decoder::Instruction& inst, IR::ValueOpcode opcode);

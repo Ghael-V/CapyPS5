@@ -861,7 +861,7 @@ static bool ResolvePrimitiveRestart(const CommandBuffer& buffer,
 	// Scan before preparing draw resources: readback can restart the command buffer.
 	EXIT_NOT_IMPLEMENTED(source.address == 0);
 	std::vector<uint8_t> buffer_data(source.size);
-	if (!Libs::LibKernel::Memory::TryReadSparseBacking(source.address, buffer_data.data(), source.size)) {
+	if (!Libs::LibKernel::Memory::ReadGuestMemory(source.address, buffer_data.data(), source.size)) {
 		return false;
 	}
 	const auto* indices = buffer_data.data();

@@ -223,13 +223,11 @@ static HW::AaConfig ParseAaConfig(uint32_t value) {
 }
 
 KYTY_HW_CTX_PARSER(HwCtxSetAaConfig) {
-	auto num_values = KYTY_PM4_LEN(cmd_id) - 2u;
-	for (uint32_t i = 0; i < num_values; i++) {
-		if (cmd_offset + i == Pm4::PA_SC_AA_CONFIG) {
-			cp.GetCtx().SetAaConfig(ParseAaConfig(buffer[i]));
-		}
+	// Handles one register; CpOpSetContextReg walks multi-register packets.
+	if (cmd_offset == Pm4::PA_SC_AA_CONFIG) {
+		cp.GetCtx().SetAaConfig(ParseAaConfig(buffer[0]));
 	}
-	return num_values;
+	return 1;
 }
 
 KYTY_HW_CTX_PARSER(HwCtxSetAaSampleControl) {
@@ -525,65 +523,54 @@ KYTY_HW_CTX_PARSER(HwCtxSetAaMask) {
 }
 
 KYTY_HW_CTX_PARSER(HwCtxSetBlendControl) {
-	auto num_values = KYTY_PM4_LEN(cmd_id) - 2u;
-	for (uint32_t i = 0; i < num_values; i++) {
-		uint32_t param = (cmd_offset + i - Pm4::CB_BLEND0_CONTROL);
-		if (param < 8) {
-			cp.GetCtx().SetBlendControl(param, DecodeBlendControl(buffer[i]));
-		}
+	// Consumes the contiguous CB_BLENDn_CONTROL registers; the dispatcher handles the rest.
+	const auto num_values = KYTY_PM4_LEN(cmd_id) - 2u;
+	uint32_t   count      = 0;
+	for (; count < num_values && cmd_offset + count - Pm4::CB_BLEND0_CONTROL < 8u; count++) {
+		cp.GetCtx().SetBlendControl(cmd_offset + count - Pm4::CB_BLEND0_CONTROL,
+		                            DecodeBlendControl(buffer[count]));
 	}
-	return num_values;
+	return std::max(count, 1u);
 }
 
 KYTY_HW_CTX_PARSER(HwCtxSetClipControl) {
-	auto num_values = KYTY_PM4_LEN(cmd_id) - 2u;
-	for (uint32_t i = 0; i < num_values; i++) {
-		if (cmd_offset + i == Pm4::PA_CL_CLIP_CNTL) {
-			cp.GetCtx().SetClipControl(DecodeClipControl(buffer[i]));
-		}
+	// Handles one register; CpOpSetContextReg walks multi-register packets.
+	if (cmd_offset == Pm4::PA_CL_CLIP_CNTL) {
+		cp.GetCtx().SetClipControl(DecodeClipControl(buffer[0]));
 	}
-	return num_values;
+	return 1;
 }
 
 KYTY_HW_CTX_PARSER(HwCtxSetColorControl) {
-	auto num_values = KYTY_PM4_LEN(cmd_id) - 2u;
-	for (uint32_t i = 0; i < num_values; i++) {
-		if (cmd_offset + i == Pm4::CB_COLOR_CONTROL) {
-			cp.GetCtx().SetColorControl(DecodeColorControl(buffer[i]));
-		}
+	// Handles one register; CpOpSetContextReg walks multi-register packets.
+	if (cmd_offset == Pm4::CB_COLOR_CONTROL) {
+		cp.GetCtx().SetColorControl(DecodeColorControl(buffer[0]));
 	}
-	return num_values;
+	return 1;
 }
 
 KYTY_HW_CTX_PARSER(HwCtxSetColorInfo) {
-	auto num_values = KYTY_PM4_LEN(cmd_id) - 2u;
-	for (uint32_t i = 0; i < num_values; i++) {
-		auto reg = (cmd_offset + i) & (Pm4::CX_NUM - 1);
-		if (g_hw_ctx_indirect_func[reg] != nullptr) {
-			g_hw_ctx_indirect_func[reg](cp, cmd_offset + i, buffer[i]);
-		}
+	// Handles one register; CpOpSetContextReg walks multi-register packets.
+	if (auto* func = g_hw_ctx_indirect_func[cmd_offset & (Pm4::CX_NUM - 1)]; func != nullptr) {
+		func(cp, cmd_offset, buffer[0]);
 	}
-	return num_values;
+	return 1;
 }
 
 KYTY_HW_CTX_PARSER(HwCtxSetDepthClear) {
-	auto num_values = KYTY_PM4_LEN(cmd_id) - 2u;
-	for (uint32_t i = 0; i < num_values; i++) {
-		if (cmd_offset + i == Pm4::DB_DEPTH_CLEAR) {
-			cp.GetCtx().SetDepthClearValue(*reinterpret_cast<const float*>(&buffer[i]));
-		}
+	// Handles one register; CpOpSetContextReg walks multi-register packets.
+	if (cmd_offset == Pm4::DB_DEPTH_CLEAR) {
+		cp.GetCtx().SetDepthClearValue(*reinterpret_cast<const float*>(&buffer[0]));
 	}
-	return num_values;
+	return 1;
 }
 
 KYTY_HW_CTX_PARSER(HwCtxSetDepthControl) {
-	auto num_values = KYTY_PM4_LEN(cmd_id) - 2u;
-	for (uint32_t i = 0; i < num_values; i++) {
-		if (cmd_offset + i == Pm4::DB_DEPTH_CONTROL) {
-			cp.GetCtx().SetDepthControl(DecodeDepthControl(buffer[i]));
-		}
+	// Handles one register; CpOpSetContextReg walks multi-register packets.
+	if (cmd_offset == Pm4::DB_DEPTH_CONTROL) {
+		cp.GetCtx().SetDepthControl(DecodeDepthControl(buffer[0]));
 	}
-	return num_values;
+	return 1;
 }
 
 static void HwCtxSetDepthShadingRateEncodingRegister(CommandProcessor& cp, uint32_t value) {
@@ -613,13 +600,11 @@ static HW::EqaaControl ParseEqaaControl(uint32_t value) {
 }
 
 KYTY_HW_CTX_PARSER(HwCtxSetEqaaControl) {
-	auto num_values = KYTY_PM4_LEN(cmd_id) - 2u;
-	for (uint32_t i = 0; i < num_values; i++) {
-		if (cmd_offset + i == Pm4::DB_EQAA) {
-			cp.GetCtx().SetEqaaControl(ParseEqaaControl(buffer[i]));
-		}
+	// Handles one register; CpOpSetContextReg walks multi-register packets.
+	if (cmd_offset == Pm4::DB_EQAA) {
+		cp.GetCtx().SetEqaaControl(ParseEqaaControl(buffer[0]));
 	}
-	return num_values;
+	return 1;
 }
 
 KYTY_HW_CTX_PARSER(HwCtxSetGenericScissor) {
@@ -705,29 +690,25 @@ KYTY_HW_CTX_PARSER(HwCtxSetClipRect) {
 }
 
 KYTY_HW_CTX_PARSER(HwCtxSetHardwareScreenOffset) {
-	auto num_values = KYTY_PM4_LEN(cmd_id) - 2u;
-	for (uint32_t i = 0; i < num_values; i++) {
-		if (cmd_offset + i == Pm4::PA_SU_HARDWARE_SCREEN_OFFSET) {
-			uint32_t x = KYTY_PM4_GET(buffer[i], PA_SU_HARDWARE_SCREEN_OFFSET, HW_SCREEN_OFFSET_X);
-			uint32_t y = KYTY_PM4_GET(buffer[i], PA_SU_HARDWARE_SCREEN_OFFSET, HW_SCREEN_OFFSET_Y);
-			cp.GetCtx().SetHardwareScreenOffset(x, y);
-		}
+	// Handles one register; CpOpSetContextReg walks multi-register packets.
+	if (cmd_offset == Pm4::PA_SU_HARDWARE_SCREEN_OFFSET) {
+		uint32_t x = KYTY_PM4_GET(buffer[0], PA_SU_HARDWARE_SCREEN_OFFSET, HW_SCREEN_OFFSET_X);
+		uint32_t y = KYTY_PM4_GET(buffer[0], PA_SU_HARDWARE_SCREEN_OFFSET, HW_SCREEN_OFFSET_Y);
+		cp.GetCtx().SetHardwareScreenOffset(x, y);
 	}
-	return num_values;
+	return 1;
 }
 
 KYTY_HW_CTX_PARSER(HwCtxSetWindowOffset) {
-	auto num_values = KYTY_PM4_LEN(cmd_id) - 2u;
-	for (uint32_t i = 0; i < num_values; i++) {
-		if (cmd_offset + i == Pm4::PA_SC_WINDOW_OFFSET) {
-			int offset_x = static_cast<int16_t>(
-			    static_cast<uint16_t>(KYTY_PM4_GET(buffer[i], PA_SC_WINDOW_OFFSET, WINDOW_X)));
-			int offset_y = static_cast<int16_t>(
-			    static_cast<uint16_t>(KYTY_PM4_GET(buffer[i], PA_SC_WINDOW_OFFSET, WINDOW_Y)));
-			cp.GetCtx().SetWindowOffset(offset_x, offset_y);
-		}
+	// Handles one register; CpOpSetContextReg walks multi-register packets.
+	if (cmd_offset == Pm4::PA_SC_WINDOW_OFFSET) {
+		int offset_x = static_cast<int16_t>(
+		    static_cast<uint16_t>(KYTY_PM4_GET(buffer[0], PA_SC_WINDOW_OFFSET, WINDOW_X)));
+		int offset_y = static_cast<int16_t>(
+		    static_cast<uint16_t>(KYTY_PM4_GET(buffer[0], PA_SC_WINDOW_OFFSET, WINDOW_Y)));
+		cp.GetCtx().SetWindowOffset(offset_x, offset_y);
 	}
-	return num_values;
+	return 1;
 }
 
 KYTY_HW_CTX_PARSER(HwCtxSetWindowScissor) {
@@ -744,28 +725,24 @@ KYTY_HW_CTX_PARSER(HwCtxSetWindowScissor) {
 }
 
 KYTY_HW_CTX_PARSER(HwCtxSetLineControl) {
-	auto num_values = KYTY_PM4_LEN(cmd_id) - 2u;
-	for (uint32_t i = 0; i < num_values; i++) {
-		if (cmd_offset + i == Pm4::PA_SU_LINE_CNTL) {
-			auto line_width = KYTY_PM4_GET(buffer[i], PA_SU_LINE_CNTL, WIDTH);
-			if (line_width == 8) {
-				cp.GetCtx().SetLineWidth(1.0f);
-			} else {
-				cp.GetCtx().SetLineWidth(static_cast<float>(line_width) / 8.0f);
-			}
+	// Handles one register; CpOpSetContextReg walks multi-register packets.
+	if (cmd_offset == Pm4::PA_SU_LINE_CNTL) {
+		auto line_width = KYTY_PM4_GET(buffer[0], PA_SU_LINE_CNTL, WIDTH);
+		if (line_width == 8) {
+			cp.GetCtx().SetLineWidth(1.0f);
+		} else {
+			cp.GetCtx().SetLineWidth(static_cast<float>(line_width) / 8.0f);
 		}
 	}
-	return num_values;
+	return 1;
 }
 
 KYTY_HW_CTX_PARSER(HwCtxSetModeControl) {
-	auto num_values = KYTY_PM4_LEN(cmd_id) - 2u;
-	for (uint32_t i = 0; i < num_values; i++) {
-		if (cmd_offset + i == Pm4::PA_SU_SC_MODE_CNTL) {
-			cp.GetCtx().SetModeControl(DecodeModeControl(buffer[i]));
-		}
+	// Handles one register; CpOpSetContextReg walks multi-register packets.
+	if (cmd_offset == Pm4::PA_SU_SC_MODE_CNTL) {
+		cp.GetCtx().SetModeControl(DecodeModeControl(buffer[0]));
 	}
-	return num_values;
+	return 1;
 }
 
 static void HwCtxSetPolyOffsetRegister(CommandProcessor& cp, uint32_t cmd_offset, uint32_t value) {
@@ -827,33 +804,27 @@ KYTY_HW_CTX_PARSER(HwCtxSetPsInput) {
 	return count;
 }
 KYTY_HW_CTX_PARSER(HwCtxSetRenderControl) {
-	auto num_values = KYTY_PM4_LEN(cmd_id) - 2u;
-	for (uint32_t i = 0; i < num_values; i++) {
-		if (cmd_offset + i == Pm4::DB_RENDER_CONTROL) {
-			cp.GetCtx().SetRenderControl(DecodeRenderControl(buffer[i]));
-		}
+	// Handles one register; CpOpSetContextReg walks multi-register packets.
+	if (cmd_offset == Pm4::DB_RENDER_CONTROL) {
+		cp.GetCtx().SetRenderControl(DecodeRenderControl(buffer[0]));
 	}
-	return num_values;
+	return 1;
 }
 
 KYTY_HW_CTX_PARSER(HwCtxSetRenderTargetMask) {
-	auto num_values = KYTY_PM4_LEN(cmd_id) - 2u;
-	for (uint32_t i = 0; i < num_values; i++) {
-		if (cmd_offset + i == Pm4::CB_TARGET_MASK) {
-			cp.GetCtx().SetRenderTargetMask(buffer[i]);
-		}
+	// Handles one register; CpOpSetContextReg walks multi-register packets.
+	if (cmd_offset == Pm4::CB_TARGET_MASK) {
+		cp.GetCtx().SetRenderTargetMask(buffer[0]);
 	}
-	return num_values;
+	return 1;
 }
 
 KYTY_HW_CTX_PARSER(HwCtxSetScanModeControl) {
-	auto num_values = KYTY_PM4_LEN(cmd_id) - 2u;
-	for (uint32_t i = 0; i < num_values; i++) {
-		if (cmd_offset + i == Pm4::PA_SC_MODE_CNTL_0) {
-			cp.GetCtx().SetScanModeControl(DecodeScanModeControl(buffer[i]));
-		}
+	// Handles one register; CpOpSetContextReg walks multi-register packets.
+	if (cmd_offset == Pm4::PA_SC_MODE_CNTL_0) {
+		cp.GetCtx().SetScanModeControl(DecodeScanModeControl(buffer[0]));
 	}
-	return num_values;
+	return 1;
 }
 
 KYTY_HW_CTX_PARSER(HwCtxSetScreenScissor) {
@@ -870,43 +841,35 @@ KYTY_HW_CTX_PARSER(HwCtxSetScreenScissor) {
 }
 
 KYTY_HW_CTX_PARSER(HwCtxSetShaderStages) {
-	auto num_values = KYTY_PM4_LEN(cmd_id) - 2u;
-	for (uint32_t i = 0; i < num_values; i++) {
-		if (cmd_offset + i == Pm4::VGT_SHADER_STAGES_EN) {
-			cp.GetCtx().SetShaderStages(buffer[i]);
-		}
+	// Handles one register; CpOpSetContextReg walks multi-register packets.
+	if (cmd_offset == Pm4::VGT_SHADER_STAGES_EN) {
+		cp.GetCtx().SetShaderStages(buffer[0]);
 	}
-	return num_values;
+	return 1;
 }
 
 KYTY_HW_CTX_PARSER(HwCtxSetStencilClear) {
-	auto num_values = KYTY_PM4_LEN(cmd_id) - 2u;
-	for (uint32_t i = 0; i < num_values; i++) {
-		if (cmd_offset + i == Pm4::DB_STENCIL_CLEAR) {
-			cp.GetCtx().SetStencilClearValue(KYTY_PM4_GET(buffer[i], DB_STENCIL_CLEAR, CLEAR));
-		}
+	// Handles one register; CpOpSetContextReg walks multi-register packets.
+	if (cmd_offset == Pm4::DB_STENCIL_CLEAR) {
+		cp.GetCtx().SetStencilClearValue(KYTY_PM4_GET(buffer[0], DB_STENCIL_CLEAR, CLEAR));
 	}
-	return num_values;
+	return 1;
 }
 
 KYTY_HW_CTX_PARSER(HwCtxSetStencilControl) {
-	auto num_values = KYTY_PM4_LEN(cmd_id) - 2u;
-	for (uint32_t i = 0; i < num_values; i++) {
-		if (cmd_offset + i == Pm4::DB_STENCIL_CONTROL) {
-			cp.GetCtx().SetStencilControl(DecodeStencilControl(buffer[i]));
-		}
+	// Handles one register; CpOpSetContextReg walks multi-register packets.
+	if (cmd_offset == Pm4::DB_STENCIL_CONTROL) {
+		cp.GetCtx().SetStencilControl(DecodeStencilControl(buffer[0]));
 	}
-	return num_values;
+	return 1;
 }
 
 KYTY_HW_CTX_PARSER(HwCtxSetStencilInfo) {
-	auto num_values = KYTY_PM4_LEN(cmd_id) - 2u;
-	for (uint32_t i = 0; i < num_values; i++) {
-		if (cmd_offset + i == Pm4::DB_STENCIL_INFO) {
-			cp.GetCtx().SetDepthStencilInfo(HW::DepthStencilInfo::Decode(buffer[i]));
-		}
+	// Handles one register; CpOpSetContextReg walks multi-register packets.
+	if (cmd_offset == Pm4::DB_STENCIL_INFO) {
+		cp.GetCtx().SetDepthStencilInfo(HW::DepthStencilInfo::Decode(buffer[0]));
 	}
-	return num_values;
+	return 1;
 }
 
 KYTY_HW_CTX_PARSER(HwCtxSetStencilMask) {
@@ -950,13 +913,11 @@ KYTY_HW_CTX_PARSER(HwCtxSetViewportScaleOffset) {
 }
 
 KYTY_HW_CTX_PARSER(HwCtxSetViewportTransformControl) {
-	auto num_values = KYTY_PM4_LEN(cmd_id) - 2u;
-	for (uint32_t i = 0; i < num_values; i++) {
-		if (cmd_offset + i == Pm4::PA_CL_VTE_CNTL) {
-			cp.GetCtx().SetViewportTransformControl(buffer[i]);
-		}
+	// Handles one register; CpOpSetContextReg walks multi-register packets.
+	if (cmd_offset == Pm4::PA_CL_VTE_CNTL) {
+		cp.GetCtx().SetViewportTransformControl(buffer[0]);
 	}
-	return num_values;
+	return 1;
 }
 
 KYTY_HW_CTX_PARSER(HwCtxSetViewportZ) {
@@ -1355,12 +1316,16 @@ KYTY_CP_OP_PARSER(CpOpGetLodStats) {
 	const auto buffer_size = buffer[0];
 	uint64_t dst_addr = (buffer[1] & 0xffffffc0u) | (static_cast<uint64_t>(buffer[2]) << 32u);
 
-	if (dst_addr != 0 && buffer_size != 0 && buffer_size <= 1024 * 1024) {
-		std::vector<uint8_t> zero_buf(buffer_size, 0);
+	if (dst_addr != 0 && buffer_size != 0 &&
+	    Libs::LibKernel::Memory::IsHostRangeMapped(dst_addr, buffer_size)) {
+		// Write through the guest mapping (as upstream does); the backing store misses heap memory.
+		auto* dst = reinterpret_cast<uint8_t*>(dst_addr);
+		std::memset(dst, 0, buffer_size);
+		// Hack (upstream): report the stats as ready.
 		if (buffer_size >= sizeof(uint32_t)) {
-			*reinterpret_cast<uint32_t*>(zero_buf.data()) = 1;
+			const uint32_t ready = 1;
+			std::memcpy(dst, &ready, sizeof(ready));
 		}
-		Libs::LibKernel::Memory::TryWriteBacking(dst_addr, zero_buf.data(), buffer_size);
 	}
 
 	return 4;
@@ -1455,7 +1420,7 @@ KYTY_CP_OP_PARSER(CpOpCondExec) {
 	EXIT_NOT_IMPLEMENTED(payload_dw + exec_count >= dw);
 
 	uint32_t cond_val = 0;
-	if (!Libs::LibKernel::Memory::TryReadSparseBacking(addr, &cond_val, sizeof(cond_val)) || cond_val == 0) {
+	if (!Libs::LibKernel::Memory::ReadGuestMemory(addr, &cond_val, sizeof(cond_val)) || cond_val == 0) {
 		return payload_dw + exec_count;
 	}
 
@@ -1491,7 +1456,7 @@ KYTY_CP_OP_PARSER(CpOpBranch) {
 
 	uint64_t compare_val = 0;
 	if (compare_addr != nullptr) {
-		if (!Libs::LibKernel::Memory::TryReadSparseBacking(reinterpret_cast<uint64_t>(compare_addr), &compare_val, sizeof(compare_val))) {
+		if (!Libs::LibKernel::Memory::ReadGuestMemory(reinterpret_cast<uint64_t>(compare_addr), &compare_val, sizeof(compare_val))) {
 			compare_val = 0;
 		}
 	}
@@ -2415,28 +2380,31 @@ KYTY_CP_OP_PARSER(CpOpSetContextReg) {
 		return KYTY_PM4_LEN(cmd_id) - 1u;
 	}
 
-	auto pfunc = g_hw_ctx_func[cmd_offset & (Pm4::CX_NUM - 1)];
-
-	if (pfunc == nullptr) {
-		auto num_values = KYTY_PM4_LEN(cmd_id) - 2u;
-		for (uint32_t i = 0; i < num_values; i++) {
-			auto reg = (cmd_offset + i) & (Pm4::CX_NUM - 1);
-			if (cmd_offset + i < Pm4::CX_NUM && g_hw_ctx_indirect_func[reg] != nullptr) {
-				g_hw_ctx_indirect_func[reg](cp, cmd_offset + i, buffer[1 + i]);
-			} else {
-				LOGF_COLOR(Log::Color::Yellow, "CpOpSetContextReg: unhandled CX reg 0x%" PRIx32 " = 0x%" PRIx32 "\n", cmd_offset + i, buffer[1 + i]);
-			}
+	// Walk the packet register by register. Dedicated parsers receive a header describing the
+	// registers left in the packet and report how many they consumed; registers without one
+	// go through the indirect table. Dropping registers here corrupts render state.
+	const auto num_values = KYTY_PM4_LEN(cmd_id) - 2u;
+	uint32_t   i          = 0;
+	while (i < num_values) {
+		const auto reg = cmd_offset + i;
+		if (reg >= Pm4::CX_NUM) {
+			LOGF_COLOR(Log::Color::Yellow, "CpOpSetContextReg: out-of-range CX reg 0x%" PRIx32 "\n", reg);
+			break;
 		}
-		return num_values + 1u;
+		if (auto pfunc = g_hw_ctx_func[reg]; pfunc != nullptr) {
+			const auto remaining = (cmd_id & 0xc000ffffu) | ((num_values - i) << 16u);
+			const auto consumed  = pfunc(cp, remaining, reg, buffer + 1 + i, dw);
+			i += std::clamp<uint32_t>(consumed, 1u, num_values - i);
+			continue;
+		}
+		if (auto ifunc = g_hw_ctx_indirect_func[reg]; ifunc != nullptr) {
+			ifunc(cp, reg, buffer[1 + i]);
+		} else {
+			LOGF_COLOR(Log::Color::Yellow, "CpOpSetContextReg: unhandled CX reg 0x%" PRIx32 " = 0x%" PRIx32 "\n", reg, buffer[1 + i]);
+		}
+		i++;
 	}
-
-	auto s = pfunc(cp, cmd_id, cmd_offset, buffer + 1, dw);
-
-	if (s == 0) {
-		s = 1;
-	}
-
-	return s + 1;
+	return num_values + 1u;
 }
 
 KYTY_CP_OP_PARSER(CpOpSetShaderReg) {

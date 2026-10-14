@@ -1188,20 +1188,9 @@ void FlipQueue::Wait(VideoOutConfig& cfg, int index) {
 		return std::any_of(m_requests.begin(), m_requests.end(), matches) ||
 		       std::any_of(m_cpu_requests.begin(), m_cpu_requests.end(), matches);
 	};
-#if defined(__ANDROID__) || defined(ANDROID)
-	int wait_count = 0;
-	while (has_request()) {
-		if (!m_done_cond_var.WaitFor(&m_mutex, 50000)) {
-			if (++wait_count > 20) {
-				break;
-			}
-		}
-	}
-#else
 	while (has_request()) {
 		m_done_cond_var.Wait(&m_mutex);
 	}
-#endif
 }
 
 bool FlipQueue::Flip(uint32_t micros) {

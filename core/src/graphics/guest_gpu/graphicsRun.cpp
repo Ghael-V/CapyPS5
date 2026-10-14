@@ -148,13 +148,14 @@ void GuestGpu::SendCommandSync(Common::UniqueFunction<void>&& command) {
 		operation();
 		done->release();
 	});
-#if defined(__ANDROID__) || defined(ANDROID)
+	// Callers use the command's results, so never return before it ran. Report long stalls.
 	if (!done->try_acquire_for(std::chrono::seconds(3))) {
-		__android_log_print(ANDROID_LOG_WARN, "CapyPS5-Gpu", "GuestGpu::SendCommandSync timed out waiting for GPU thread");
-	}
-#else
-	done->acquire();
+#if defined(__ANDROID__) || defined(ANDROID)
+		__android_log_print(ANDROID_LOG_WARN, "CapyPS5-Gpu",
+		                    "GuestGpu::SendCommandSync: GPU thread busy for >3 s, still waiting");
 #endif
+		done->acquire();
+	}
 }
 
 void GuestGpu::Submit(std::span<const uint32_t> draw_commands,
@@ -193,20 +194,16 @@ void GuestGpu::SubmitFlipPreparation(uint64_t request_id) {
 
 void GuestGpu::SuspendPoint() {
 	EXIT_IF(IsGpuThread() || CommandScheduler::InDeferredOperation());
+	// Never continue before the GPU reached the point: a timeout here (the old Android code used
+	// 50 ms) lets the guest CPU recycle command buffers the GPU thread has not parsed yet, which
+	// corrupts the PM4 stream (flicker, crashes on garbage addresses). Only report long stalls.
+	if (!m_suspend_point_ready->Acquire(std::chrono::milliseconds(2000))) {
 #if defined(__ANDROID__) || defined(ANDROID)
-	// Upstream waits forever. A short timeout lets the guest CPU run ahead and recycle command
-	// buffers the GPU thread has not parsed yet, which corrupts the PM4 stream (flicker,
-	// crashes on garbage addresses). Keep only a long safety net and report when it fires.
-	static Common::DebugFlags::CachedValue suspend_ms("debug.capy.suspend_ms", 2000);
-	if (!m_suspend_point_ready->Acquire(std::chrono::milliseconds(suspend_ms.Get()))) {
-		static std::atomic<uint32_t> timeouts {0};
 		__android_log_print(ANDROID_LOG_WARN, "CapyPS5-Gpu",
-		                    "SuspendPoint: GPU did not reach the suspend point in %lld ms [#%u]",
-		                    static_cast<long long>(suspend_ms.Get()), timeouts.fetch_add(1) + 1);
-	}
-#else
-	m_suspend_point_ready->Acquire();
+		                    "SuspendPoint: GPU busy for >2 s, still waiting");
 #endif
+		m_suspend_point_ready->Acquire();
+	}
 	Submission submission;
 	submission.type = SubmissionType::SuspendPoint;
 	Enqueue(std::move(submission));
@@ -361,7 +358,7 @@ void CommandProcessor::WaitRegMem(uint32_t func, const T* addr, T ref, T mask, u
 
 	(void)poll;
 	T val = 0;
-	if (!Libs::LibKernel::Memory::TryReadSparseBacking(reinterpret_cast<uint64_t>(addr), &val, sizeof(val))) {
+	if (!Libs::LibKernel::Memory::ReadGuestMemory(reinterpret_cast<uint64_t>(addr), &val, sizeof(val))) {
 		static std::atomic<uint32_t> unmapped_wait_log {0};
 		if (unmapped_wait_log.fetch_add(1) < 16) {
 			LOGF("WaitRegMem: unmapped guest address 0x%016" PRIx64 " (bypassing wait)\n",
@@ -384,11 +381,10 @@ void CommandProcessor::WaitRegMem(uint32_t func, const T* addr, T ref, T mask, u
 		           pass ? "PASS" : "SUSPEND");
 	}
 	if (!pass) {
-		// How long an unsatisfied wait may block before it is bypassed. Long waits let the
-		// guest recycle the command buffer we are stalled in (it then parses as garbage), so
-		// keep this short until the missing label writes are found. Tunable on device with
-		// `adb shell setprop debug.capy.wait_us <microseconds>`.
-		static Common::DebugFlags::CachedValue wait_us("debug.capy.wait_us", 2000);
+		// Upstream waits forever. Keep a long safety net so a label we never emulate cannot hang
+		// the GPU thread, and log it: every timeout is a missing write that needs fixing.
+		// Tunable on device with `adb shell setprop debug.capy.wait_us <microseconds>`.
+		static Common::DebugFlags::CachedValue wait_us("debug.capy.wait_us", 1000000);
 		const auto kWaitTimeout = std::chrono::microseconds(wait_us.Get());
 		if (g_current_execution != nullptr) {
 			const auto now = std::chrono::steady_clock::now();
@@ -852,7 +848,7 @@ void Pm4TraceAnomaly(const char* reason, const uint32_t* packet) {
 		std::string raw;
 		for (int i = -8; i < 16; i++) {
 			uint32_t value = 0;
-			if (Libs::LibKernel::Memory::TryReadSparseBacking(reinterpret_cast<uint64_t>(packet + i), &value,
+			if (Libs::LibKernel::Memory::ReadGuestMemory(reinterpret_cast<uint64_t>(packet + i), &value,
 			                                                  sizeof(value))) {
 				raw += fmt::format("{}{:08x} ", i == 0 ? "[" : "", value);
 			}
@@ -1038,7 +1034,7 @@ void CommandProcessor::SetPredication(uint32_t condition, uint32_t op, uint32_t 
 			// One begin/end pair per DB; bit 63 marks each counter ready.
 			constexpr uint64_t ready_bit = 1ull << 63u;
 			std::array<uint64_t, 32> results {};
-			if (!Libs::LibKernel::Memory::TryReadSparseBacking(reinterpret_cast<uint64_t>(address), results.data(), sizeof(results))) {
+			if (!Libs::LibKernel::Memory::ReadGuestMemory(reinterpret_cast<uint64_t>(address), results.data(), sizeof(results))) {
 				m_predicate_skip = false;
 				return;
 			}
@@ -1062,7 +1058,7 @@ void CommandProcessor::SetPredication(uint32_t condition, uint32_t op, uint32_t 
 				value = 0;
 				break;
 			}
-			if (!Libs::LibKernel::Memory::TryReadSparseBacking(reinterpret_cast<uint64_t>(address), &value, sizeof(value))) {
+			if (!Libs::LibKernel::Memory::ReadGuestMemory(reinterpret_cast<uint64_t>(address), &value, sizeof(value))) {
 				value = 0;
 			}
 			break;
@@ -1186,7 +1182,7 @@ void CommandProcessor::DrawIndirectMulti(uint32_t data_offset, uint32_t max_coun
 
 		if (!indexed) {
 			DrawIndirectArgs args {};
-			if (!Libs::LibKernel::Memory::TryReadSparseBacking(args_addr, &args, sizeof(args))) {
+			if (!Libs::LibKernel::Memory::ReadGuestMemory(args_addr, &args, sizeof(args))) {
 				continue;
 			}
 			PatchIndirectDrawOffsets(*this, registers, args.start_vertex_location,
@@ -1201,7 +1197,7 @@ void CommandProcessor::DrawIndirectMulti(uint32_t data_offset, uint32_t max_coun
 		}
 
 		DrawIndexedIndirectArgs args {};
-		if (!Libs::LibKernel::Memory::TryReadSparseBacking(args_addr, &args, sizeof(args))) {
+		if (!Libs::LibKernel::Memory::ReadGuestMemory(args_addr, &args, sizeof(args))) {
 			continue;
 		}
 		PatchIndirectDrawOffsets(*this, registers, args.base_vertex_location,

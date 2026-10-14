@@ -466,7 +466,7 @@ vk::Buffer BufferCache::UploadCopies(Buffer& buffer, std::span<vk::BufferCopy> c
 	if (mapped != nullptr) {
 		for (auto& copy: copies) {
 			const auto address = buffer.CpuAddress() + copy.dstOffset;
-			if (!Libs::LibKernel::Memory::TryReadSparseBacking(address, mapped + copy.srcOffset, copy.size)) {
+			if (!Libs::LibKernel::Memory::ReadGuestMemory(address, mapped + copy.srcOffset, copy.size)) {
 				std::memset(mapped + copy.srcOffset, 0, copy.size);
 			}
 			copy.srcOffset += base_offset;
@@ -479,7 +479,7 @@ vk::Buffer BufferCache::UploadCopies(Buffer& buffer, std::span<vk::BufferCopy> c
 	                                         vk::BufferUsageFlagBits::eTransferSrc, total_size);
 	for (const auto& copy: copies) {
 		const auto address = buffer.CpuAddress() + copy.dstOffset;
-		if (!Libs::LibKernel::Memory::TryReadSparseBacking(address, temporary->Mapped().data() + copy.srcOffset, copy.size)) {
+		if (!Libs::LibKernel::Memory::ReadGuestMemory(address, temporary->Mapped().data() + copy.srcOffset, copy.size)) {
 			std::memset(temporary->Mapped().data() + copy.srcOffset, 0, copy.size);
 		}
 	}
@@ -516,7 +516,7 @@ std::pair<Buffer*, uint64_t> BufferCache::ObtainBuffer(uint64_t vaddr, uint64_t 
 		    m_graphics.physical_device_properties.limits.minUniformBufferOffsetAlignment, 1);
 		auto [mapped, offset] = m_stream_buffer.Map(size, alignment, false);
 		if (mapped != nullptr) {
-			if (!Libs::LibKernel::Memory::TryReadSparseBacking(vaddr, mapped, size)) {
+			if (!Libs::LibKernel::Memory::ReadGuestMemory(vaddr, mapped, size)) {
 				std::memset(mapped, 0, size);
 			}
 			m_stream_buffer.Commit();
@@ -586,16 +586,14 @@ void BufferCache::FillBuffer(uint64_t vaddr, uint64_t size, uint32_t value, bool
 	}
 	(void)m_texture_cache.ClearMeta(vaddr);
 	if (!IsRegionGpuModified(vaddr, size)) {
-		std::vector<uint32_t> pattern(std::min<size_t>(size / sizeof(uint32_t), 4096 / sizeof(uint32_t)), value);
-		uint64_t offset = 0;
-		const uint64_t chunk_bytes = pattern.size() * sizeof(uint32_t);
-		while (offset < size) {
-			const uint64_t cur_bytes = std::min<uint64_t>(chunk_bytes, size - offset);
-			if (!Libs::LibKernel::Memory::TryWriteBacking(vaddr + offset, pattern.data(), cur_bytes)) {
-				break;
-			}
-			offset += cur_bytes;
+		// Write through the guest mapping (as upstream does) so write faults invalidate cached
+		// buffers and images. The backing store alone misses guest heap memory.
+		if (!Libs::LibKernel::Memory::IsHostRangeMapped(vaddr, size)) {
+			LOGF("BufferCache: fill of unmapped range vaddr=0x%016" PRIx64 " size=0x%016" PRIx64 " skipped\n", vaddr, size);
+			return;
 		}
+		auto* destination = reinterpret_cast<uint32_t*>(vaddr);
+		std::fill(destination, destination + size / sizeof(uint32_t), value);
 		return;
 	}
 
@@ -620,18 +618,14 @@ void BufferCache::CopyBuffer(uint64_t dst_vaddr, uint64_t src_vaddr, uint64_t si
 	}
 	if (src_memory && dst_memory && !IsRegionGpuModified(dst_vaddr, size) &&
 	    !IsRegionGpuModified(src_vaddr, size) && !m_texture_cache.FindImageFromRange(src_vaddr, size)) {
-		std::vector<uint8_t> temp(std::min<size_t>(size, 64 * 1024));
-		uint64_t offset = 0;
-		while (offset < size) {
-			const uint64_t cur_bytes = std::min<uint64_t>(temp.size(), size - offset);
-			if (!Libs::LibKernel::Memory::TryReadSparseBacking(src_vaddr + offset, temp.data(), cur_bytes)) {
-				break;
-			}
-			if (!Libs::LibKernel::Memory::TryWriteBacking(dst_vaddr + offset, temp.data(), cur_bytes)) {
-				break;
-			}
-			offset += cur_bytes;
+		// Copy through the guest mappings (as upstream does) so caches see the write.
+		if (!Libs::LibKernel::Memory::IsHostRangeMapped(src_vaddr, size) ||
+		    !Libs::LibKernel::Memory::IsHostRangeMapped(dst_vaddr, size)) {
+			LOGF("BufferCache: copy with unmapped range src=0x%016" PRIx64 " dst=0x%016" PRIx64
+			     " size=0x%016" PRIx64 " skipped\n", src_vaddr, dst_vaddr, size);
+			return;
 		}
+		std::memmove(reinterpret_cast<void*>(dst_vaddr), reinterpret_cast<const void*>(src_vaddr), size);
 		return;
 	}
 

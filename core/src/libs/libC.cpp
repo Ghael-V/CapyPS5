@@ -1,6 +1,7 @@
 #include "common/abi.h"
 #include "common/assert.h"
 #include "common/common.h"
+#include "common/debugFlags.h"
 #include "common/logging/log.h"
 #include "cpu/cpuBackend.h"
 #include "common/singleton.h"
@@ -1051,6 +1052,7 @@ FILE* KYTY_SYSV_ABI fopen(const char* pathname, const char* mode) {
 	}
 	FILE* f = ::fopen(target, mode);
 #if defined(__ANDROID__)
+	if (Common::DebugFlags::Verbose())
 	__android_log_print(ANDROID_LOG_INFO, "CapyPS5-LibC", "fopen: guest='%s' -> host='%s' (mode='%s') -> %p",
 	                    pathname, target, mode ? mode : "", f);
 #endif

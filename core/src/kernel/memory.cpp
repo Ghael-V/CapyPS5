@@ -46,6 +46,7 @@
 #include <fcntl.h>
 #include <sys/mman.h>
 #include <sys/syscall.h>
+#include <sys/uio.h>
 #include <unistd.h>
 #endif
 
@@ -971,6 +972,48 @@ static bool IsInPrtAperture(uint64_t address, uint64_t size = 1) {
 
 bool TryReadSparseBacking(uint64_t vaddr, void* data, uint64_t size) {
 	return g_guest_address_space->TryReadSparseBacking(vaddr, data, size);
+}
+
+bool ReadGuestMemory(uint64_t vaddr, void* data, uint64_t size) {
+	if (data == nullptr || size == 0 || UINT64_MAX - vaddr < size) {
+		return false;
+	}
+#if KYTY_PLATFORM == KYTY_PLATFORM_LINUX
+	// Read what the guest actually sees at vaddr. process_vm_readv on ourselves returns EFAULT
+	// for unmapped or no-access pages instead of raising SIGSEGV, which makes it safe for
+	// addresses taken from guest command streams.
+	struct iovec local {data, static_cast<size_t>(size)};
+	struct iovec remote {reinterpret_cast<void*>(vaddr), static_cast<size_t>(size)};
+	if (::process_vm_readv(::getpid(), &local, 1, &remote, 1, 0) == static_cast<ssize_t>(size)) {
+		return true;
+	}
+#else
+	// Upstream behaviour on platforms without process_vm_readv.
+	std::memcpy(data, reinterpret_cast<const void*>(vaddr), size);
+	return true;
+#endif
+	// Sparse regions without a host mapping read as zero.
+	return g_guest_address_space->TryReadSparseBacking(vaddr, data, size);
+}
+
+bool IsHostRangeMapped(uint64_t vaddr, uint64_t size) {
+	if (vaddr == 0 || size == 0 || UINT64_MAX - vaddr < size) {
+		return false;
+	}
+#if KYTY_PLATFORM == KYTY_PLATFORM_LINUX
+	// Probe one byte per page; process_vm_readv fails instead of faulting on unmapped pages.
+	constexpr uint64_t page = 4096;
+	for (uint64_t addr = vaddr & ~(page - 1); addr < vaddr + size; addr += page) {
+		uint8_t      byte = 0;
+		const auto   probe = std::max(addr, vaddr);
+		struct iovec local {&byte, 1};
+		struct iovec remote {reinterpret_cast<void*>(probe), 1};
+		if (::process_vm_readv(::getpid(), &local, 1, &remote, 1, 0) != 1) {
+			return false;
+		}
+	}
+#endif
+	return true;
 }
 
 static bool SelfTestSub64SharedPlaceholderAlias() {

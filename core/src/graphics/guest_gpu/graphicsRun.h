@@ -26,12 +26,14 @@ struct SuspendPointSync {
 	std::condition_variable m_cv;
 	bool                    m_ready = true;
 
-	// Returns false if the GPU did not reach the point in time (the wait is abandoned).
+	// Returns false (without consuming anything) if the GPU did not reach the point in time.
 	bool Acquire(std::chrono::milliseconds timeout) {
 		std::unique_lock<std::mutex> lock(m_mutex);
-		const bool reached = m_cv.wait_for(lock, timeout, [this] { return m_ready; });
-		m_ready            = false;
-		return reached;
+		if (!m_cv.wait_for(lock, timeout, [this] { return m_ready; })) {
+			return false;
+		}
+		m_ready = false;
+		return true;
 	}
 
 	void Acquire() {

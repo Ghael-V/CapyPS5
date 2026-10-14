@@ -1,4 +1,5 @@
 #include "cpu/cpuBackend.h"
+#include "common/debugFlags.h"
 #include "common/logging/log.h"
 #include "common/threads.h"
 #include "kernel/pthread.h"
@@ -43,7 +44,8 @@ void InitializeThread();
 
 #if defined(__ANDROID__) || defined(ANDROID)
 #include <android/log.h>
-#define ALOGI(...) __android_log_print(ANDROID_LOG_INFO, "CapyPS5-Cpu", __VA_ARGS__)
+// Info logs sit on hot paths (every guest callback); only emit them in verbose mode.
+#define ALOGI(...)                                                                                 	do {                                                                                           		if (Common::DebugFlags::Verbose()) {                                                       			__android_log_print(ANDROID_LOG_INFO, "CapyPS5-Cpu", __VA_ARGS__);                     		}                                                                                          	} while (0)
 #define ALOGW(...) __android_log_print(ANDROID_LOG_WARN, "CapyPS5-Cpu", __VA_ARGS__)
 #define ALOGE(...) __android_log_print(ANDROID_LOG_ERROR, "CapyPS5-Cpu", __VA_ARGS__)
 #else

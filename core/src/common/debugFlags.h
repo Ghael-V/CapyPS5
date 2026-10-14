@@ -89,6 +89,12 @@ private:
 	int64_t              m_fallback;
 };
 
+/** True when `adb shell setprop debug.capy.verbose 1` asks for detailed (hot path) logging. */
+inline bool Verbose() {
+	static CachedValue verbose("debug.capy.verbose", 0);
+	return verbose.Get() != 0;
+}
+
 } // namespace Common::DebugFlags
 
 #endif /* COMMON_DEBUG_FLAGS_H */

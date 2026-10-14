@@ -140,6 +140,28 @@ void Translator::FloatTernary(const Decoder::Instruction& inst, IR::ValueOpcode 
 	WriteOperand(DestinationOperand(inst), ir.Emit(opcode, {args[0], args[1], args[2]}));
 }
 
+void Translator::LegacyFloatMultiply(const Decoder::Instruction& inst, bool accumulate) {
+	// DX9 "legacy" rule: if either factor is +-0 the product is +0, even for inf or NaN.
+	const auto a        = IR::F32(ReadOperand(SourceAt(inst, 0), IR::Type::F32));
+	const auto b        = IR::F32(ReadOperand(SourceAt(inst, 1), IR::Type::F32));
+	const auto abs_mask = IR::U32(IR::Value(0x7fffffffu));
+	const auto zero_u32 = IR::U32(IR::Value(0u));
+	const auto a_zero   = ir.IEqual(ir.BitwiseAnd(ir.BitCastU32(a), abs_mask), zero_u32);
+	const auto b_zero   = ir.IEqual(ir.BitwiseAnd(ir.BitCastU32(b), abs_mask), zero_u32);
+	IR::U32    full;
+	IR::U32    zero_case;
+	if (accumulate) {
+		const auto c = IR::F32(ReadOperand(inst.dst, IR::Type::F32));
+		full      = ir.BitCastU32(IR::F32(ir.Emit(IR::ValueOpcode::FPFma32, {a, b, c})));
+		zero_case = ir.BitCastU32(c);
+	} else {
+		full      = ir.BitCastU32(IR::F32(ir.Emit(IR::ValueOpcode::FPMul32, {a, b})));
+		zero_case = zero_u32;
+	}
+	const auto result = ir.Select(a_zero, zero_case, ir.Select(b_zero, zero_case, full));
+	WriteOperand(DestinationOperand(inst), ir.BitCastF32(result));
+}
+
 void Translator::V_FREXP_MANT_F32(const Decoder::Instruction& inst) {
 	const auto bits = ReadU32(inst.src0);
 	const auto exponent =

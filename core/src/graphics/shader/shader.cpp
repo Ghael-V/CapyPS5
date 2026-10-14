@@ -95,22 +95,8 @@ static ShaderMapEntry ShaderGetMappedData(uint64_t addr, const char* label) {
 		}
 	}
 
-	// 2. Check 256-byte aligned base match (e.g. if addr lower bits differ)
-	const auto addr_aligned = addr & ~0xFFull;
-	if (auto iter = g_shader_map->find(addr_aligned); iter != g_shader_map->end()) {
-		LOGF_COLOR(Log::Color::Green, "%s resolved shader=0x%016" PRIx64 " via 256-byte alignment match 0x%016" PRIx64 "\n",
-		           label, addr, addr_aligned);
-		return iter->second;
-	}
-
-	// 3. Check lower 32-bit address match
-	for (const auto& [k, v] : *g_shader_map) {
-		if ((addr & 0xFFFFFFFFull) == (k & 0xFFFFFFFFull)) {
-			LOGF_COLOR(Log::Color::Green, "%s resolved shader=0x%016" PRIx64 " via 32-bit match 0x%016" PRIx64 "\n",
-			           label, addr, k);
-			return v;
-		}
-	}
+	// Do not match by aligned base or low address bits: both can return a different shader,
+	// which renders garbage instead of failing visibly.
 
 	LOGF_COLOR(Log::Color::Red, "%s shader=0x%016" PRIx64 " is missing from ShaderMap (entries=%zu):\n",
 	           label, addr, g_shader_map->size());
