@@ -240,6 +240,10 @@ BufferCache::BufferCache(GraphicContext& graphics, CommandScheduler& scheduler,
       m_texture_cache(texture_cache) {
 	std::memset(m_gds_buffer.Mapped().data(), 0, static_cast<size_t>(m_gds_buffer.Size()));
 	m_gds_buffer.Flush(0, m_gds_buffer.Size());
+#if defined(__ANDROID__)
+	__android_log_print(ANDROID_LOG_INFO, "CapyPS5-Gpu", "BufferCache: stream buffer coherent=%d, staging coherent=%d",
+	                    m_stream_buffer.IsCoherent() ? 1 : 0, m_staging_buffer.IsCoherent() ? 1 : 0);
+#endif
 	SetVulkanObjectNameF(m_graphics.device, m_bda_pagetable_buffer.Handle(),
 	                     "BDA Page Table Buffer");
 	const auto null_id =
@@ -511,7 +515,15 @@ std::pair<Buffer*, uint64_t> BufferCache::ObtainBuffer(uint64_t vaddr, uint64_t 
 		const uint64_t page_addr = vaddr & ~4095ULL;
 		m_memory_tracker.MarkRegionAsCpuModified(page_addr, (vaddr + size - page_addr + 4095ULL) & ~4095ULL);
 	}
-	if (!is_written && size <= CACHING_PAGESIZE &&
+	// The stream-buffer fast path drops whole sprite batches on Adreno (measured with
+	// tools/flicker_probe.py: 4-8 bad frames in 39 with it, 0 without), so it is off by
+	// default on Android until the cause is found. `setprop debug.capy.stream 1` re-enables it.
+#if defined(__ANDROID__)
+	static Common::DebugFlags::CachedValue stream_enabled("debug.capy.stream", 0);
+#else
+	static Common::DebugFlags::CachedValue stream_enabled("debug.capy.stream", 1);
+#endif
+	if (!is_written && size <= CACHING_PAGESIZE && stream_enabled.Get() != 0 &&
 	    !Common::DebugFlags::Enabled(Common::DebugFlags::NoStreamBuffer) &&
 	    !m_memory_tracker.IsRegionGpuModified(vaddr, size) &&
 	    m_memory_tracker.IsRegionCpuModified(vaddr, size)) {
