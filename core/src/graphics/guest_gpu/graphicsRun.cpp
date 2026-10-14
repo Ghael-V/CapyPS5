@@ -410,15 +410,15 @@ void CommandProcessor::WaitRegMem(uint32_t func, const T* addr, T ref, T mask, u
 	}
 
 	(void)poll;
-	// The label may have been written by GPU work that still lives only in a cached host
-	// buffer. Upstream gets it through the read fault on the protected page; our fault-free
-	// read must download it explicitly.
-	if (auto& buffers = m_renderer.GetBufferCache();
-	    buffers.HasGpuDirtyBytes(reinterpret_cast<uint64_t>(addr), sizeof(T))) {
-		buffers.ReadMemory(reinterpret_cast<uint64_t>(addr), sizeof(T));
-	}
 	T val = 0;
-	if (!Libs::LibKernel::Memory::ReadGuestMemory(reinterpret_cast<uint64_t>(addr), &val, sizeof(val))) {
+	bool readable = Libs::LibKernel::Memory::ReadGuestMemory(reinterpret_cast<uint64_t>(addr), &val, sizeof(val));
+	if (!readable && m_renderer.GetBufferCache().HasGpuDirtyBytes(reinterpret_cast<uint64_t>(addr), sizeof(T))) {
+		// The page is GPU-owned (no access): download it like the upstream read fault would.
+		// Never download a readable page: its CPU copy may be newer than the GPU's.
+		m_renderer.GetBufferCache().ReadMemory(reinterpret_cast<uint64_t>(addr), sizeof(T));
+		readable = Libs::LibKernel::Memory::ReadGuestMemory(reinterpret_cast<uint64_t>(addr), &val, sizeof(val));
+	}
+	if (!readable) {
 		static std::atomic<uint32_t> unmapped_wait_log {0};
 		if (unmapped_wait_log.fetch_add(1) < 16) {
 			LOGF("WaitRegMem: unmapped guest address 0x%016" PRIx64 " (bypassing wait)\n",
@@ -502,6 +502,16 @@ template void CommandProcessor::WaitRegMem<uint32_t>(uint32_t, const uint32_t*, 
 template void CommandProcessor::WaitRegMem<uint64_t>(uint32_t, const uint64_t*, uint64_t, uint64_t,
                                                      uint32_t, uint32_t);
 
+void CommandProcessor::PrepareGuestWrite(const void* dst, uint64_t size) {
+	const auto address = reinterpret_cast<uint64_t>(dst);
+	if (address == 0 || size == 0) {
+		return;
+	}
+	if (auto& buffers = m_renderer.GetBufferCache(); buffers.HasGpuDirtyBytes(address, size)) {
+		buffers.ReadMemory(address, size, true);
+	}
+}
+
 void CommandProcessor::WriteData(uint32_t* dst, const uint32_t* src, uint32_t dw_num,
                                  uint32_t write_control) {
 	const uint32_t dst_sel = ((write_control >> 30u) & 0x1u) | ((write_control >> 7u) & 0x1eu);
@@ -524,6 +534,7 @@ void CommandProcessor::WriteData(uint32_t* dst, const uint32_t* src, uint32_t dw
 	}
 	Common::DebugFlags::WatchWrite("WRITE_DATA", reinterpret_cast<uint64_t>(dst), dw_num * 4ull, src[0]);
 	SyncRecord("WRITE_DATA", reinterpret_cast<uint64_t>(dst), src[0], dw_num);
+	PrepareGuestWrite(dst, (write_one_address ? 1ull : dw_num) * sizeof(uint32_t));
 
 	if (write_one_address) {
 		for (uint32_t i = 0; i < dw_num; i++) {
@@ -1432,6 +1443,7 @@ void CommandProcessor::WriteAtEndOfPipe(uint32_t cache_policy, uint32_t event_wr
 		auto* dst  = static_cast<uint32_t*>(dst_gpu_addr);
 		auto  data = static_cast<uint32_t>(value);
 		if (dst != nullptr) {
+			PrepareGuestWrite(dst, sizeof(*dst));
 			std::memcpy(dst, &data, sizeof(data));
 		}
 
@@ -1488,7 +1500,8 @@ void CommandProcessor::WriteAtEndOfPipe(uint32_t cache_policy, uint32_t event_wr
 				auto write64 = [&](bool with_writeback) {
 					auto* dst = static_cast<uint64_t*>(dst_gpu_addr);
 					if (dst != nullptr) {
-						std::memcpy(dst, &value, sizeof(value));
+						PrepareGuestWrite(dst, sizeof(*dst));
+			std::memcpy(dst, &value, sizeof(value));
 					}
 
 					if (with_interrupt) {
@@ -1594,6 +1607,7 @@ void CommandProcessor::WriteAtEndOfPipe(uint32_t cache_policy, uint32_t event_wr
 		}
 		auto* dst = static_cast<uint64_t*>(dst_gpu_addr);
 		if (dst != nullptr) {
+			PrepareGuestWrite(dst, sizeof(*dst));
 			std::memcpy(dst, &value, sizeof(value));
 		}
 		if (with_interrupt) {
@@ -1752,6 +1766,7 @@ void CommandProcessor::Flip(void* dst_gpu_addr, uint32_t value) {
 		     reinterpret_cast<uint64_t>(dst_gpu_addr), value);
 	}
 
+	PrepareGuestWrite(dst_gpu_addr, sizeof(value));
 	std::memcpy(dst_gpu_addr, &value, sizeof(value));
 	auto request = Sync::PrepareVideoOutFlip(command, m_flip.handle, m_flip.index, m_flip.flip_mode,
 	                                         m_flip.flip_arg);
@@ -1779,7 +1794,8 @@ void CommandProcessor::FlipWithInterrupt(uint32_t eop_event_type, uint32_t cache
 		     eop_event_type, cache_action);
 	}
 	if (dst_gpu_addr != nullptr) {
-		std::memcpy(dst_gpu_addr, &value, sizeof(value));
+		PrepareGuestWrite(dst_gpu_addr, sizeof(value));
+	std::memcpy(dst_gpu_addr, &value, sizeof(value));
 	}
 	auto request = Sync::PrepareVideoOutFlip(command, m_flip.handle, m_flip.index, m_flip.flip_mode,
 	                                         m_flip.flip_arg);

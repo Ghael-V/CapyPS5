@@ -157,6 +157,10 @@ public:
 	void                   SetSubmitId(uint64_t submit_id) { m_submit_id = submit_id; }
 	[[nodiscard]] bool     IsAsyncComputeQueue() const { return m_interrupt_event_id >= 0x20; }
 
+	// Makes a command-processor write to guest memory coherent with GPU-written data, as the
+	// upstream write fault on a GPU-owned page would: download first, then mark CPU-modified.
+	void PrepareGuestWrite(const void* dst, uint64_t size);
+
 private:
 	template <typename T>
 	void WriteAtEndOfPipe(uint32_t cache_policy, uint32_t event_write_dest, uint32_t eop_event_type,
