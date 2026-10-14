@@ -725,8 +725,8 @@ uint32_t StoreTexel(ValueEmitContext& ctx, const IR::MemoryInfo& mem, uint32_t d
 }
 
 template <typename Emit>
-uint32_t EmitImageAccess(ValueEmitContext& ctx, const IR::Inst& inst, uint32_t result_type,
-                         const Emit& emit) {
+auto EmitImageAccess(ValueEmitContext& ctx, const IR::Inst& inst, uint32_t result_type,
+                     const Emit& emit) {
 	auto& state = ctx.state;
 	const auto& mem = ctx.Memory(inst);
 	const auto& image = state.program.info.images.at(mem.resource);
@@ -995,37 +995,39 @@ void EmitImage(ValueEmitContext& ctx, const IR::Inst& inst) {
 		return;
 	}
 	if (op == IR::ValueOpcode::ImageWrite) {
-		const bool uint_image = image.numeric_class == Prospero::TextureNumericClass::Uint;
-		const auto dimension  = image.dimension;
 		EmitIfCondition(state, ctx.Arg(inst, 3), [&]() {
-			const auto mip_lod =
-			    state.program.info.images[mem.resource].mip_mode == IR::ImageMipMode::Dynamic
-			        ? LodU32(ctx, mem, *address, dimension)
-			        : 0u;
-			const auto coord = CoordU32(ctx, mem, *address, dimension);
-			auto texel = StoreTexel(ctx, mem, ctx.Arg(inst, 2), uint_image);
-			// `debug.capy.store_nan_zero 1` (before shaders compile): float image stores write 0
-			// for NaN and infinite components, to find the shader that starts a NaN spreading
-			// through blur and mip chains (debug.capy.export_nan_zero does pixel exports).
-			static Common::DebugFlags::CachedValue store_nan_zero("debug.capy.store_nan_zero", 0);
-			if (store_nan_zero.Get() != 0 &&
-			    image.numeric_class == Prospero::TextureNumericClass::Float) {
-				const auto vector_type = ImageVectorType(state, image.numeric_class, 4);
-				const auto bool4       = TypeBoolVector(state, 4);
-				const auto nan         = state.builder.AllocateId();
-				const auto inf         = state.builder.AllocateId();
-				const auto bad         = state.builder.AllocateId();
-				const auto zero        = state.builder.AllocateId();
-				const auto clean       = state.builder.AllocateId();
-				const auto z           = ConstantF32Value(state, 0.0f);
-				state.builder.AddFunction(spv::OpIsNan, bool4, nan, texel);
-				state.builder.AddFunction(spv::OpIsInf, bool4, inf, texel);
-				state.builder.AddFunction(spv::OpLogicalOr, bool4, bad, nan, inf);
-				state.builder.AddFunction(spv::OpCompositeConstruct, vector_type, zero, z, z, z, z);
-				state.builder.AddFunction(spv::OpSelect, vector_type, clean, bad, zero, texel);
-				texel = clean;
-			}
-			EmitStorageImageWrite(state, mem.resource, mip_lod, coord, texel);
+			EmitImageAccess(ctx, inst, 0u, [&](uint32_t resource, uint32_t array_index) {
+				const auto& candidate = state.program.info.images[resource];
+				auto selected = mem;
+				selected.resource = resource;
+				const auto mip_lod = candidate.mip_mode == IR::ImageMipMode::Dynamic
+				    ? LodU32(ctx, mem, *address, mem.image_dimension) : 0u;
+				const auto coord = CoordU32(ctx, mem, *address, candidate.dimension);
+				auto texel = StoreTexel(ctx, selected, ctx.Arg(inst, 2),
+				    candidate.numeric_class == Prospero::TextureNumericClass::Uint);
+				// `debug.capy.store_nan_zero 1` (before shaders compile): float image stores write 0
+				// for NaN and infinite components, to find the shader that starts a NaN spreading
+				// through blur and mip chains (debug.capy.export_nan_zero does pixel exports).
+				static Common::DebugFlags::CachedValue store_nan_zero("debug.capy.store_nan_zero", 0);
+				if (store_nan_zero.Get() != 0 &&
+				    candidate.numeric_class == Prospero::TextureNumericClass::Float) {
+					const auto vector_type = ImageVectorType(state, candidate.numeric_class, 4);
+					const auto bool4       = TypeBoolVector(state, 4);
+					const auto nan         = state.builder.AllocateId();
+					const auto inf         = state.builder.AllocateId();
+					const auto bad         = state.builder.AllocateId();
+					const auto zero        = state.builder.AllocateId();
+					const auto clean       = state.builder.AllocateId();
+					const auto z           = ConstantF32Value(state, 0.0f);
+					state.builder.AddFunction(spv::OpIsNan, bool4, nan, texel);
+					state.builder.AddFunction(spv::OpIsInf, bool4, inf, texel);
+					state.builder.AddFunction(spv::OpLogicalOr, bool4, bad, nan, inf);
+					state.builder.AddFunction(spv::OpCompositeConstruct, vector_type, zero, z, z, z, z);
+					state.builder.AddFunction(spv::OpSelect, vector_type, clean, bad, zero, texel);
+					texel = clean;
+				}
+				EmitStorageImageWrite(state, resource, mip_lod, coord, texel, array_index);
+			});
 		});
 		return;
 	}

@@ -78,7 +78,6 @@ vk::PhysicalDeviceVulkan12Features WindowContext::RequiredVulkan12Features() noe
 	features.bufferDeviceAddress       = VK_TRUE;
 	features.storageBuffer8BitAccess   = VK_TRUE;
 	features.shaderSampledImageArrayNonUniformIndexing = VK_TRUE;
-	features.shaderStorageBufferArrayNonUniformIndexing = VK_TRUE;
 	return features;
 }
 
@@ -313,6 +312,9 @@ static void VulkanFindPhysicalDevice(vk::Instance instance, vk::SurfaceKHR surfa
 		check_feature(features12.shaderSampledImageArrayNonUniformIndexing,
 		              "shaderSampledImageArrayNonUniformIndexing",
 		              required_features12.shaderSampledImageArrayNonUniformIndexing);
+		check_feature(features12.shaderStorageImageArrayNonUniformIndexing,
+		              "shaderStorageImageArrayNonUniformIndexing",
+		              required_features12.shaderStorageImageArrayNonUniformIndexing);
 		check_feature(features12.shaderStorageBufferArrayNonUniformIndexing,
 		              "shaderStorageBufferArrayNonUniformIndexing",
 		              required_features12.shaderStorageBufferArrayNonUniformIndexing);
@@ -605,6 +607,12 @@ static vk::Device VulkanCreateDevice(GraphicContext& graphics,
 	graphics.sampler_filter_minmax_enabled = supported_features12.samplerFilterMinmax == VK_TRUE;
 	features12.shaderBufferInt64Atomics = supported_features12.shaderBufferInt64Atomics;
 	features12.shaderOutputLayer        = supported_features12.shaderOutputLayer;
+	// Indirect storage image and buffer tables index their arrays per lane. Requested only when
+	// supported, so a driver without them still starts (uniform indices are unaffected).
+	features12.shaderStorageImageArrayNonUniformIndexing =
+	    supported_features12.shaderStorageImageArrayNonUniformIndexing;
+	features12.shaderStorageBufferArrayNonUniformIndexing =
+	    supported_features12.shaderStorageBufferArrayNonUniformIndexing;
 	features12.shaderOutputViewportIndex = supported_features12.shaderOutputViewportIndex;
 	ShaderRecompiler::g_host_features.buffer_int64_atomics =
 	    features12.shaderBufferInt64Atomics == VK_TRUE;
