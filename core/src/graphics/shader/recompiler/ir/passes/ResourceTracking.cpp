@@ -495,7 +495,16 @@ public:
 					auto* block = anchor->Parent();
 					const auto where = std::ranges::find_if(block->Instructions(),
 					    [&](const Inst& inst) { return &inst == anchor; });
-					auto& selection = *block->PrependNewInst(where, ValueOpcode::GetBufferResourceIndex, {plan.key});
+					const auto& indirect = *m_sources[plan.source].indirect_descriptor;
+					if (indirect.table_scalar) {
+						// Wrapped affine offsets span one power-of-two congruence class.
+						// Keep the existing mapping's byte key while compressing its empty gaps.
+						key = plan.reads[0]->Arg(1);
+						const auto shift = std::countr_zero(indirect.table_stride) - 2u;
+						if (shift != 0u) key = Value(&*block->PrependNewInst(
+						    where, ValueOpcode::ShiftRightLogical32, {key, Value(shift)}));
+					}
+					auto& selection = *block->PrependNewInst(where, ValueOpcode::GetBufferResourceIndex, {key});
 					selection.SetFlags(plan.handle->Flags<uint32_t>());
 					selected = Value(&selection);
 					buffer_selections.emplace_back(&plan, selected);
@@ -3126,7 +3135,14 @@ private:
 			indirect.signed_count = bound->GetOpcode() == ValueOpcode::SLessThan32;
 			return finish();
 		}
-		if (!legacy_store || table_stride != 16u) return false;
+		if (!legacy_store) {
+			// A bounded V# supplies every reachable descriptor without reading the GPU key.
+			// Separate U32 offsets could wrap each DWORD to a different table position.
+			if (table_source.dword_count != 4u || plan.split_offsets) return false;
+			indirect.table_scalar = true;
+			return finish();
+		}
+		if (table_stride != 16u) return false;
 		if (table_source.dword_count == 2u) {
 			if (!MatchPackedScalarKey(key, indirect)) {
 				// EXEC implications must describe the same iteration as the selected value.

@@ -383,17 +383,32 @@ bool MaterializeIndirectDescriptor(const ResourcePlan&                         p
 			      table.OutOfBounds() != 0u || (table_base & 3u) != 0u ||
 			      (table.Stride() & 3u) != 0u || table.Stride() < indirect.table_record_bytes)))
 				return false;
-			// Descriptor bytes are refreshed together. The GPU selects the DWORD address;
-			// no material selector or unused table field is interpreted on the CPU.
-			keys.resize(table_size / 4u);
-			if (!ReadScalarTable(table_base, table_size, 0u, runtime, keys)) return false;
+			const bool affine = indirect.table_stride != 0u;
+			const uint64_t step = affine ? uint64_t {1} << std::countr_zero(indirect.table_stride) : 4u;
+			const uint64_t first = ((indirect.table_offset % step) & ~uint64_t {3}) +
+			                       (indirect.table_immediate & ~3u);
+			const auto count = table_size >= first + 4u
+			    ? std::min((table_size - first - 4u) / step + 1u, (uint64_t {1} << 32u) / step)
+			    : 0u;
+			if (affine && count > MaxIndirectDescriptorProbes) return false;
+			// Affine SMEM offsets wrap in U32 before adding the aligned immediate.
+			// Read only their congruence class; unrestricted image tables retain a bulk read.
+			if (!affine) {
+				keys.resize(table_size / 4u);
+				if (!ReadScalarTable(table_base, table_size, 0u, runtime, keys)) return false;
+			}
 			const auto mapping_offset = snapshot.flattened_srt.size();
 			descriptors[resource_index] = {.dword_count = dword_count};
 			snapshot.flattened_srt.resize(mapping_offset + 2u, 0u);
-			for (uint32_t word = 0; word < keys.size(); ++word) {
+			for (uint32_t word = 0; word < count; ++word) {
 				DescriptorValue candidate {.dword_count = dword_count};
-				std::copy_n(keys.begin() + word, std::min<size_t>(dword_count, keys.size() - word),
-				            candidate.dwords.begin());
+				if (affine) {
+					if (!ReadScalarTable(table_base, table_size, first + word * step, runtime,
+					                     std::span(candidate.dwords).first(dword_count))) return false;
+				} else {
+					std::copy_n(keys.begin() + word, std::min<size_t>(dword_count, keys.size() - word),
+					            candidate.dwords.begin());
+				}
 				if (!normalize(candidate)) return false;
 				uint32_t ordinal;
 				if (!intern_candidate(candidate, ordinal)) return false;
