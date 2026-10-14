@@ -603,8 +603,9 @@ bool MaterializeIndirectDescriptor(const ResourcePlan&                         p
 			    (material.Type() != 0u || material.SwizzleEnabled() || material.AddTid() ||
 			     material.OutOfBounds() != 0u || uint64_t {selector->offset} + 4u > step ||
 			     uint64_t {first} + count > material.NumRecords())) return false;
-			const auto end = count != 0u
-			    ? (uint64_t {first} + count - 1u) * step + selector->offset + 4u : 0u;
+			const auto last = count != 0u ? uint64_t {first} + count - 1u : 0u;
+			if (last > UINT32_MAX) return false;
+			const auto end = count != 0u ? last * step + selector->offset + 4u : 0u;
 			if (end > uint64_t {UINT32_MAX} + 1u ||
 			    (indirect.workgroup_axis == UINT32_MAX && end > size))
 				return false;
