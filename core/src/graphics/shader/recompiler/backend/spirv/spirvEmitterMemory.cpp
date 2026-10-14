@@ -925,20 +925,6 @@ void StoreFormattedPrepared(ValueEmitContext& ctx, const IR::Inst& inst,
 	});
 }
 
-void FormattedStore(ValueEmitContext& ctx, const IR::Inst& inst, const IR::MemoryInfo& mem) {
-	EmitIfCondition(ctx.state, ctx.Arg(inst, inst.NumArgs() - 1), [&]() {
-		const auto data = ctx.Arg(inst, inst.NumArgs() - 2);
-		EmitBufferAccess(ctx, inst, mem, 0u, [&](const auto& selected, const auto& resource) {
-			const auto info = Format::GetFormatInfo(BufferFormat(ctx, selected));
-			if (info.type == Format::ComponentType::Unknown) {
-				StoreWordPrepared(ctx, inst, RebaseRawComponent(selected, 0u), resource, data);
-				return;
-			}
-			StoreFormattedPrepared(ctx, inst, selected, resource, info, data, 1u);
-		});
-	});
-}
-
 uint32_t LoadIndirectScalarBuffer(ValueEmitContext& ctx, const IR::Inst& inst) {
 	auto&       state  = ctx.state;
 	const auto& handle = *inst.Arg(0).ResolveInstruction();
@@ -1178,24 +1164,28 @@ uint32_t LoadBuffer(ValueEmitContext& ctx, const IR::Inst& inst, uint32_t compon
 	    });
 }
 
-void StoreWideBuffer(ValueEmitContext& ctx, const IR::Inst& inst, uint32_t components) {
+void StoreBuffer(ValueEmitContext& ctx, const IR::Inst& inst, uint32_t components) {
 	auto& state = ctx.state;
 	EmitIfCondition(state, ctx.Arg(inst, inst.NumArgs() - 1), [&]() {
-		const auto mem       = ctx.Memory(inst);
-		const auto resource  = PrepareMemoryResourceAccess(state, mem);
+		const auto mem = ctx.Memory(inst);
 		const auto composite = ctx.Arg(inst, inst.NumArgs() - 2);
-		const auto info = Format::GetFormatInfo(
-		    mem.formatted ? BufferFormat(ctx, mem) : Prospero::BufferFormat::kInvalid);
-		if (info.type != Format::ComponentType::Unknown) {
-			StoreFormattedPrepared(ctx, inst, mem, resource, info, composite, components);
-			return;
-		}
-		for (uint32_t component = 0; component < components; component++) {
-			const auto data = state.builder.AllocateId();
-			state.builder.AddFunction(spv::OpCompositeExtract, TypeU32(state), data, composite,
-			                          component);
-			StoreWordPrepared(ctx, inst, RebaseRawComponent(mem, component), resource, data);
-		}
+		EmitBufferAccess(ctx, inst, mem, 0u, [&](const auto& selected, const auto& resource) {
+			const auto info = Format::GetFormatInfo(
+			    selected.formatted ? BufferFormat(ctx, selected) : Prospero::BufferFormat::kInvalid);
+			if (info.type != Format::ComponentType::Unknown) {
+				StoreFormattedPrepared(ctx, inst, selected, resource, info, composite, components);
+				return;
+			}
+			for (uint32_t component = 0; component < components; component++) {
+				auto data = composite;
+				if (components != 1u) {
+					data = state.builder.AllocateId();
+					state.builder.AddFunction(spv::OpCompositeExtract, TypeU32(state), data, composite,
+					                          component);
+				}
+				StoreWordPrepared(ctx, inst, RebaseRawComponent(selected, component), resource, data);
+			}
+		});
 	});
 }
 
@@ -1688,7 +1678,7 @@ void EmitStoreMemory(ValueEmitContext& ctx, const IR::Inst& inst) {
 	if (mem.kind == IR::ResourceKind::FlatLocal)
 		StoreLocalFlat(ctx, inst);
 	else if (buffer_components > 1u)
-		StoreWideBuffer(ctx, inst, buffer_components);
+		StoreBuffer(ctx, inst, buffer_components);
 	else if (shared_components > 1u)
 		StoreWideShared(ctx, inst, shared_components);
 	else if (address_info.access == IR::AddressAccess::Write &&
@@ -1696,7 +1686,7 @@ void EmitStoreMemory(ValueEmitContext& ctx, const IR::Inst& inst) {
 		StoreBda(ctx, GuestAddress(ctx, inst, mem), ctx.Arg(inst, inst.NumArgs() - 1),
 		         ctx.Arg(inst, inst.NumArgs() - 2), address_info.data_bits, mem.coherent);
 	else if (op == IR::ValueOpcode::StoreBufferU32 && mem.formatted)
-		FormattedStore(ctx, inst, mem);
+		StoreBuffer(ctx, inst, 1u);
 	else if (type == IR::Type::U8)
 		StoreSubword(ctx, inst, mem, 8);
 	else if (type == IR::Type::U16)
