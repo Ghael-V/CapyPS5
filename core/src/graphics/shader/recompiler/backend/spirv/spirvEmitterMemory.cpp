@@ -887,6 +887,7 @@ void StoreFormattedPrepared(ValueEmitContext& ctx, const IR::Inst& inst,
                              const IR::MemoryInfo& mem, const MemoryResourceAccess& resource,
                              const Format::BufferFormatInfo& info, uint32_t data,
                              uint32_t components) {
+	if (resource.object_pointer == 0u) return;
 	// RDNA2 formatted stores transfer the entire format, zero-filling missing VGPRs.
 	const auto plan = PrepareFormattedMemory(ctx, inst, mem, resource, info);
 	EmitIfCondition(ctx.state, plan.in_bounds, [&]() {
@@ -926,14 +927,15 @@ void StoreFormattedPrepared(ValueEmitContext& ctx, const IR::Inst& inst,
 
 void FormattedStore(ValueEmitContext& ctx, const IR::Inst& inst, const IR::MemoryInfo& mem) {
 	EmitIfCondition(ctx.state, ctx.Arg(inst, inst.NumArgs() - 1), [&]() {
-		const auto resource = PrepareMemoryResourceAccess(ctx.state, mem);
-		const auto data     = ctx.Arg(inst, inst.NumArgs() - 2);
-		const auto info     = Format::GetFormatInfo(BufferFormat(ctx, mem));
-		if (info.type == Format::ComponentType::Unknown) {
-			StoreWordPrepared(ctx, inst, RebaseRawComponent(mem, 0u), resource, data);
-			return;
-		}
-		StoreFormattedPrepared(ctx, inst, mem, resource, info, data, 1u);
+		const auto data = ctx.Arg(inst, inst.NumArgs() - 2);
+		EmitBufferAccess(ctx, inst, mem, 0u, [&](const auto& selected, const auto& resource) {
+			const auto info = Format::GetFormatInfo(BufferFormat(ctx, selected));
+			if (info.type == Format::ComponentType::Unknown) {
+				StoreWordPrepared(ctx, inst, RebaseRawComponent(selected, 0u), resource, data);
+				return;
+			}
+			StoreFormattedPrepared(ctx, inst, selected, resource, info, data, 1u);
+		});
 	});
 }
 

@@ -425,7 +425,8 @@ public:
 		std::vector<std::pair<const IndirectDescriptorPlan*, Value>> buffer_selections;
 		for (const auto& plan: m_indirect_descriptors) {
 			auto key = plan.key;
-			if (m_sources[plan.source].indirect_descriptor->table_maximum) {
+			if (m_sources[plan.source].indirect_descriptor->table_maximum &&
+			    plan.handle->GetOpcode() != ValueOpcode::GetBufferResource) {
 				auto* block = plan.handle->Parent();
 				const auto where = std::ranges::find_if(block->Instructions(),
 				    [&](const Inst& inst) { return &inst == plan.handle; });
@@ -506,7 +507,10 @@ public:
 					const auto where = std::ranges::find_if(block->Instructions(),
 					    [&](const Inst& inst) { return &inst == anchor; });
 					const auto& indirect = *m_sources[plan.source].indirect_descriptor;
-					if (indirect.table_scalar) {
+					if (indirect.table_maximum) {
+						key = Value(&*block->PrependNewInst(
+						    where, ValueOpcode::ShiftLeftLogical32, {key, Value(2u)}));
+					} else if (indirect.table_scalar) {
 						// Wrapped affine offsets span one power-of-two congruence class.
 						// Keep the existing mapping's byte key while compressing its empty gaps.
 						key = plan.reads[0]->Arg(1);
@@ -533,7 +537,7 @@ public:
 					plan.handle->SetArg(dword, plan.key);
 				}
 			}
-			if (plan.reads[0] != nullptr) {
+			if (plan.reads[0] != nullptr && !plan.retain_reads) {
 				for (uint32_t word = 0; word < plan.handle->NumArgs(); ++word)
 					m_program.memory_info[plan.memory[word]].planning_only = true;
 			}
@@ -2902,7 +2906,7 @@ private:
 					       return !IndirectBufferAccess(*consumer.user);
 				       });
 			    })) {
-				return RejectIndirect(__LINE__);
+				plan.retain_reads = true;
 			}
 			plan.memory[dword] = memory_index;
 			plan.reads[dword] = read;
@@ -2911,6 +2915,15 @@ private:
 		if (!MakeRuntimeTableSource(*plan.reads[0], table_source)) {
 			return RejectIndirect(__LINE__);
 		}
+		return true;
+	}
+
+	bool SetExactTableMaximum(Value key, DescriptorSource::IndirectDescriptor& indirect) {
+		const auto maximum = SelectorMaximum(key);
+		if (maximum > UINT32_MAX / 4u ||
+		    uint64_t {maximum} * indirect.table_stride + indirect.table_offset > UINT32_MAX)
+			return false;
+		indirect.table_maximum = maximum;
 		return true;
 	}
 
@@ -2958,9 +2971,7 @@ private:
 		DescriptorSource::IndirectDescriptor indirect;
 		if (!MatchTableOffset(low->Arg(1), key, indirect.table_offset, indirect.table_stride) ||
 		    indirect.table_stride < 8u || (indirect.table_stride & 3u) != 0u) return false;
-		const auto maximum = SelectorMaximum(key);
-		if (maximum > UINT32_MAX / 4u ||
-		    uint64_t {maximum} * indirect.table_stride + indirect.table_offset > UINT32_MAX ||
+		if (!SetExactTableMaximum(key, indirect) ||
 		    (key.TryInstruction() != nullptr && !AvailableBefore(*key.Instruction(), handle)))
 			return false;
 		DescriptorSource table_source;
@@ -2969,7 +2980,6 @@ private:
 		indirect.table_source = InternSource(table_source);
 		indirect.table_immediate = low_memory->offset & ~3u;
 		indirect.table_scalar = true;
-		indirect.table_maximum = maximum;
 		indirect.pointer_offset = descriptor_offset;
 		DescriptorSource source;
 		source.dword_count = handle.NumArgs();
@@ -3256,6 +3266,11 @@ private:
 		if (const auto* bound = BoundedLoop(key, handle.Parent()); bound != nullptr) {
 			indirect.key_count = bound->Arg(1);
 			indirect.signed_count = bound->GetOpcode() == ValueOpcode::SLessThan32;
+			return finish();
+		}
+		if (table_source.dword_count == 4u && !plan.split_offsets &&
+		    plan.selection_anchor != nullptr && SetExactTableMaximum(key, indirect)) {
+			indirect.table_scalar = true;
 			return finish();
 		}
 		if (!legacy_store) {
@@ -3553,7 +3568,7 @@ private:
 	bool IsIndirectPlanningMemory(uint32_t index) const {
 		return std::any_of(m_indirect_descriptors.begin(), m_indirect_descriptors.end(),
 		                   [&](const IndirectDescriptorPlan& plan) {
-			return plan.reads[0] != nullptr &&
+			return plan.reads[0] != nullptr && !plan.retain_reads &&
 			       std::find(plan.memory.begin(), plan.memory.begin() + plan.handle->NumArgs(), index) !=
 			           plan.memory.begin() + plan.handle->NumArgs();
 		});

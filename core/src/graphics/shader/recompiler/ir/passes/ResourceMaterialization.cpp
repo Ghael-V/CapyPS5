@@ -262,11 +262,18 @@ bool NormalizeIndirectBuffer(DescriptorValue& value, bool indexed, const BufferR
 	    descriptor.OutOfBounds() != (indexed ? 0u : 3u)) {
 		return SpecializationFail("indirect buffers require exact linear index or byte bounds");
 	}
-	if (formatted_read) {
+	if (resource.formatted) {
 		const auto format = Format::GetFormatInfo(descriptor.Format());
 		if (!indexed || format.type == Format::ComponentType::Unknown)
-			return SpecializationFail("indirect formatted loads require a supported indexed format");
-		if (descriptor.Base48() == 0u || descriptor.Stride() == 0u || descriptor.NumRecords() == 0u) {
+			return SpecializationFail("indirect formatted buffers require a supported indexed format");
+		if (!formatted_read &&
+		    ((descriptor.Format() != Prospero::BufferFormat::k32UInt &&
+		      descriptor.Format() != Prospero::BufferFormat::k8SInt) ||
+		     descriptor.DstSelXYZW() != DstSel(4, 0, 0, 0) ||
+		     descriptor.Stride() != format.byte_size))
+			return SpecializationFail("indirect formatted X stores require tight SInt8 or UInt32 identity records");
+		if (formatted_read &&
+		    (descriptor.Base48() == 0u || descriptor.Stride() == 0u || descriptor.NumRecords() == 0u)) {
 			// Every index is out of bounds. Preserve the format and swizzle constants.
 			value.dwords[1] &= ~(0x3fffu << 16u);
 			value.dwords[2] = 0u;
@@ -276,14 +283,10 @@ bool NormalizeIndirectBuffer(DescriptorValue& value, bool indexed, const BufferR
 		if (descriptor.Stride() < format.byte_size ||
 		    (descriptor.Stride() & (alignment - 1u)) != 0u ||
 		    (descriptor.Base48() & (alignment - 1u)) != 0u)
-			return SpecializationFail("indirect formatted loads require aligned full-format records");
+			return SpecializationFail("indirect formatted buffers require aligned full-format records");
 	} else if ((!indexed && descriptor.Stride() != 1u) ||
 	           (indexed && resource.max_byte_extent != 1u && descriptor.Stride() != 4u)) {
 		return SpecializationFail("indirect buffer stores require exact linear DWORD or byte bounds");
-	} else if (resource.formatted && (descriptor.Format() != Prospero::BufferFormat::k32UInt ||
-	                         descriptor.DstSelXYZW() != DstSel(4, 0, 0, 0) ||
-	                         (descriptor.Base48() & 3u) != 0u)) {
-		return SpecializationFail("indirect formatted X stores require an aligned 32-bit UInt identity mapping");
 	}
 	return true;
 }
@@ -1854,16 +1857,6 @@ void ApplyResourceSpecialization(Program& program, const ResourceSpecialization&
 			auto& inst = *it;
 			if (inst.GetOpcode() == ValueOpcode::GetImageResource) {
 				inst.SetFlags(image_remap[inst.Flags<uint32_t>()]);
-				continue;
-			}
-			if (inst.GetOpcode() == ValueOpcode::StoreBufferU32) {
-				auto& memory = memory_info[inst.Flags<MemoryFlags>().index];
-				if (memory.kind == ResourceKind::Buffer && memory.formatted &&
-				    program.descriptor_sources[buffers[memory.resource].source].indirect_descriptor) {
-					// Candidate validation proved an index-only k32UInt identity store.
-					// Reuse finite raw-store dispatch and its original-index bounds check.
-					memory.formatted = false;
-				}
 				continue;
 			}
 			if (BufferAccessOf(inst.GetOpcode()) == BufferAccess::Read) {
