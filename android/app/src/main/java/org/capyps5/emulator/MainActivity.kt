@@ -1,191 +1,154 @@
 package org.capyps5.emulator
 
+import android.content.Intent
 import android.os.Bundle
+import android.os.Environment
+import android.view.InputDevice
+import android.view.KeyEvent
+import android.view.MotionEvent
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
-import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.material3.Surface
-import androidx.compose.runtime.*
-import androidx.compose.ui.Modifier
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateListOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import org.capyps5.emulator.model.GameItem
+import org.capyps5.emulator.ui.UiInput
 import org.capyps5.emulator.ui.screens.EmulationScreen
 import org.capyps5.emulator.ui.screens.HomeScreen
 import org.capyps5.emulator.ui.theme.CapyPS5Theme
+import java.io.File
+
+/** Decides whether physical controller input goes to the frontend UI or to the emulated pad. */
+object InputRouter {
+    @Volatile
+    var routeToUi = true
+        private set
+    var onPauseRequested: (() -> Unit)? = null
+    var onRouteChanged: ((Boolean) -> Unit)? = null
+
+    fun setRouteToUi(value: Boolean) {
+        if (routeToUi == value) return
+        routeToUi = value
+        onRouteChanged?.invoke(value)
+    }
+}
 
 class MainActivity : ComponentActivity() {
+
+    private lateinit var settings: Settings
+    private val libraryDir by lazy { File(Environment.getExternalStorageDirectory(), "CapyPS5") }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         window.addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
-
-        // Configure immersive fullscreen landscape mode
         WindowCompat.setDecorFitsSystemWindows(window, false)
-        val insetsController = WindowCompat.getInsetsController(window, window.decorView)
-        insetsController.systemBarsBehavior =
-            WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
-        insetsController.hide(WindowInsetsCompat.Type.systemBars())
-
-        // Initialize CapyPS5 native engine
-        NativeBridge.nativeInit(
-            filesDir = filesDir.absolutePath,
-            cacheDir = cacheDir.absolutePath
-        )
-
-        // Ensure default directories exist
-        val demoDir = java.io.File(filesDir, "demos/homebrew")
-        if (!demoDir.exists()) {
-            demoDir.mkdirs()
-        }
-        val sdcardDir = java.io.File(android.os.Environment.getExternalStorageDirectory(), "CapyPS5")
-        if (!sdcardDir.exists()) {
-            try { sdcardDir.mkdirs() } catch (_: Exception) {}
+        WindowCompat.getInsetsController(window, window.decorView).apply {
+            systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+            hide(WindowInsetsCompat.Type.systemBars())
         }
 
-        val autoLaunchElf = intent?.getStringExtra("launch_elf")
-        val autoLaunchDir = intent?.getStringExtra("launch_dir") ?: autoLaunchElf?.let { java.io.File(it).parent } ?: ""
-        val initialGame = if (!autoLaunchElf.isNullOrEmpty() && java.io.File(autoLaunchElf).exists()) {
-            val gameDir = java.io.File(autoLaunchDir)
-            var titleId = intent?.getStringExtra("title_id") ?: gameDir.name
-            var titleName = intent?.getStringExtra("title_name") ?: gameDir.name
-            val paramJson = java.io.File(gameDir, "sce_sys/param.json")
-            if (paramJson.exists()) {
-                try {
-                    val json = org.json.JSONObject(paramJson.readText())
-                    titleId = json.optString("titleId", titleId)
-                    val loc = json.optJSONObject("localizedParameters")
-                    val defLang = loc?.optJSONObject("en-US") ?: loc?.optJSONObject("default")
-                    titleName = defLang?.optString("titleName", titleName) ?: titleName
-                } catch (_: Exception) {}
-            }
-            GameItem(
-                titleId = titleId,
-                titleName = titleName,
-                directoryPath = autoLaunchDir,
-                elfPath = autoLaunchElf
-            )
-        } else null
+        settings = Settings(this)
+        NativeBridge.nativeInit(filesDir = filesDir.absolutePath, cacheDir = cacheDir.absolutePath)
+        if (!libraryDir.exists()) runCatching { libraryDir.mkdirs() }
+
+        InputRouter.onRouteChanged = { toUi -> if (toUi) releaseEmulatedPad() }
+
+        val versionText = runCatching { NativeBridge.nativeGetVersion() }.getOrDefault("CapyPS5")
+        val initialGame = intent?.getStringExtra("launch_elf")?.takeIf { File(it).exists() }?.let { elf ->
+            val dir = File(intent.getStringExtra("launch_dir") ?: File(elf).parent ?: "")
+            GameItem.fromGameDir(dir, File(elf))
+        }
 
         setContent {
             CapyPS5Theme {
-                Surface(modifier = Modifier.fillMaxSize()) {
-                    var currentGame by remember { mutableStateOf<GameItem?>(initialGame) }
-                    val games = remember {
-                        val initialList = mutableStateListOf(
-                            GameItem(
-                                titleId = "CUSA00001",
-                                titleName = "PlayStation 5 Homebrew Demo",
-                                directoryPath = demoDir.absolutePath,
-                                elfPath = java.io.File(demoDir, "eboot.bin").absolutePath
-                            )
-                        )
-                        // Scan /sdcard/CapyPS5 for ELFs and game directories
-                        if (sdcardDir.exists()) {
-                            sdcardDir.listFiles()?.forEach { f ->
-                                if (f.isFile && f.extension.lowercase() in listOf("elf", "bin", "self")) {
-                                    initialList.add(
-                                        GameItem(
-                                            titleId = "SDCARD",
-                                            titleName = f.name,
-                                            directoryPath = f.parent ?: sdcardDir.absolutePath,
-                                            elfPath = f.absolutePath
-                                        )
-                                    )
-                                } else if (f.isDirectory) {
-                                    val eboot = java.io.File(f, "eboot.bin")
-                                    if (eboot.exists()) {
-                                        var titleId = f.name
-                                        var titleName = f.name
-                                        val paramJson = java.io.File(f, "sce_sys/param.json")
-                                        if (paramJson.exists()) {
-                                            try {
-                                                val json = org.json.JSONObject(paramJson.readText())
-                                                titleId = json.optString("titleId", titleId)
-                                                val loc = json.optJSONObject("localizedParameters")
-                                                val defLang = loc?.optJSONObject("en-US") ?: loc?.optJSONObject("default")
-                                                titleName = defLang?.optString("titleName", titleName) ?: titleName
-                                            } catch (_: Exception) {}
-                                        }
-                                        initialList.add(
-                                            GameItem(
-                                                titleId = titleId,
-                                                titleName = titleName,
-                                                directoryPath = f.absolutePath,
-                                                elfPath = eboot.absolutePath
-                                            )
-                                        )
-                                    }
-                                }
-                            }
-                        }
-                        initialList
-                    }
+                var currentGame by remember { mutableStateOf(initialGame) }
+                val games = remember { mutableStateListOf<GameItem>().apply { addAll(GameItem.scan(libraryDir)) } }
 
-                    if (currentGame != null) {
-                        EmulationScreen(
-                            game = currentGame!!,
-                            onExit = {
-                                currentGame = null
+                val game = currentGame
+                if (game != null) {
+                    EmulationScreen(
+                        game = game,
+                        settings = settings,
+                        versionText = versionText,
+                        onExit = ::restartFrontend,
+                    )
+                } else {
+                    HomeScreen(
+                        games = games,
+                        libraryPath = libraryDir.absolutePath,
+                        settings = settings,
+                        versionText = versionText,
+                        onGameSelected = { currentGame = it },
+                        onAddGameFile = { uriString ->
+                            val localFile = if (uriString.startsWith("content://")) {
+                                copyUriToLocal(android.net.Uri.parse(uriString))
+                            } else {
+                                File(uriString)
                             }
-                        )
-                    } else {
-                        HomeScreen(
-                            games = games,
-                            onGameSelected = { game ->
-                                currentGame = game
-                            },
-                            onAddGameFile = { uriString ->
-                                val localFile = if (uriString.startsWith("content://")) {
-                                    copyUriToLocal(android.net.Uri.parse(uriString))
-                                } else {
-                                    java.io.File(uriString)
-                                }
-                                if (localFile != null && localFile.exists()) {
-                                    val newGame = GameItem(
-                                        titleId = "CUSTOM",
-                                        titleName = localFile.name,
-                                        directoryPath = localFile.parent ?: filesDir.absolutePath,
-                                        elfPath = localFile.absolutePath
-                                    )
-                                    games.add(newGame)
-                                    currentGame = newGame
-                                }
+                            if (localFile != null && localFile.exists()) {
+                                val newGame = GameItem(
+                                    titleId = "LOCAL",
+                                    titleName = localFile.name,
+                                    directoryPath = localFile.parent ?: filesDir.absolutePath,
+                                    elfPath = localFile.absolutePath,
+                                )
+                                games.add(newGame)
+                                currentGame = newGame
                             }
-                        )
-                    }
+                        },
+                        onRefresh = {
+                            games.clear()
+                            games.addAll(GameItem.scan(libraryDir))
+                        },
+                    )
                 }
             }
         }
     }
 
-    private fun copyUriToLocal(uri: android.net.Uri): java.io.File? {
-        return try {
-            var name = "eboot.bin"
-            contentResolver.query(uri, null, null, null, null)?.use { cursor ->
-                if (cursor.moveToFirst()) {
-                    val idx = cursor.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME)
-                    if (idx != -1) {
-                        cursor.getString(idx)?.let { name = it }
-                    }
-                }
-            }
-            val targetDir = java.io.File(filesDir, "imported")
-            if (!targetDir.exists()) targetDir.mkdirs()
-            val targetFile = java.io.File(targetDir, name)
-            contentResolver.openInputStream(uri)?.use { input ->
-                targetFile.outputStream().use { output ->
-                    input.copyTo(output)
-                }
-            }
-            targetFile
-        } catch (e: Exception) {
-            null
-        }
+    /**
+     * The native core cannot be torn down and restarted inside one process yet (guest threads and
+     * global state outlive Emulator::Run), so leaving a game relaunches the frontend in a fresh
+     * process instead of leaving a zombie emulator running.
+     */
+    private fun restartFrontend() {
+        NativeBridge.nativeStopGame()
+        val intent = Intent(this, MainActivity::class.java)
+            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK)
+        startActivity(intent)
+        finishAffinity()
+        Runtime.getRuntime().exit(0)
     }
 
-    private var physicalButtons = 0
+    private fun copyUriToLocal(uri: android.net.Uri): File? = try {
+        var name = "eboot.bin"
+        contentResolver.query(uri, null, null, null, null)?.use { cursor ->
+            if (cursor.moveToFirst()) {
+                val idx = cursor.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME)
+                if (idx != -1) cursor.getString(idx)?.let { name = it }
+            }
+        }
+        val targetDir = File(filesDir, "imported").apply { mkdirs() }
+        val targetFile = File(targetDir, name)
+        contentResolver.openInputStream(uri)?.use { input ->
+            targetFile.outputStream().use { output -> input.copyTo(output) }
+        }
+        targetFile
+    } catch (_: Exception) {
+        null
+    }
+
+    // ---- Physical controller -------------------------------------------------------------
+
+    // Buttons from key events and from axes (hat, analog triggers) are tracked separately so
+    // a stick movement never clears a d-pad press that arrived as a key event, and vice versa.
+    private var keyButtons = 0
+    private var axisButtons = 0
     private var physicalLx = 0f
     private var physicalLy = 0f
     private var physicalRx = 0f
@@ -193,68 +156,114 @@ class MainActivity : ComponentActivity() {
     private var physicalL2 = 0f
     private var physicalR2 = 0f
 
-    override fun dispatchKeyEvent(event: android.view.KeyEvent): Boolean {
-        val pressed = event.action == android.view.KeyEvent.ACTION_DOWN
-        val mask = when (event.keyCode) {
-            android.view.KeyEvent.KEYCODE_BUTTON_A -> NativeBridge.BTN_CROSS
-            android.view.KeyEvent.KEYCODE_BUTTON_B, android.view.KeyEvent.KEYCODE_BACK -> NativeBridge.BTN_CIRCLE
-            android.view.KeyEvent.KEYCODE_BUTTON_X -> NativeBridge.BTN_SQUARE
-            android.view.KeyEvent.KEYCODE_BUTTON_Y -> NativeBridge.BTN_TRIANGLE
-            android.view.KeyEvent.KEYCODE_BUTTON_L1 -> NativeBridge.BTN_L1
-            android.view.KeyEvent.KEYCODE_BUTTON_R1 -> NativeBridge.BTN_R1
-            android.view.KeyEvent.KEYCODE_BUTTON_L2 -> NativeBridge.BTN_L2
-            android.view.KeyEvent.KEYCODE_BUTTON_R2 -> NativeBridge.BTN_R2
-            android.view.KeyEvent.KEYCODE_BUTTON_THUMBL -> NativeBridge.BTN_L3
-            android.view.KeyEvent.KEYCODE_BUTTON_THUMBR -> NativeBridge.BTN_R3
-            android.view.KeyEvent.KEYCODE_BUTTON_START -> NativeBridge.BTN_START
-            android.view.KeyEvent.KEYCODE_BUTTON_SELECT -> NativeBridge.BTN_SELECT
-            android.view.KeyEvent.KEYCODE_DPAD_UP -> NativeBridge.BTN_UP
-            android.view.KeyEvent.KEYCODE_DPAD_DOWN -> NativeBridge.BTN_DOWN
-            android.view.KeyEvent.KEYCODE_DPAD_LEFT -> NativeBridge.BTN_LEFT
-            android.view.KeyEvent.KEYCODE_DPAD_RIGHT -> NativeBridge.BTN_RIGHT
-            else -> 0
-        }
-        if (mask != 0) {
-            physicalButtons = if (pressed) physicalButtons or mask else physicalButtons and mask.inv()
-            NativeBridge.nativeSendControllerInput(
-                physicalButtons, physicalLx, physicalLy, physicalRx, physicalRy, physicalL2, physicalR2
-            )
-            return true
-        }
-        return super.dispatchKeyEvent(event)
+    private fun sendPad() {
+        NativeBridge.nativeSendControllerInput(
+            keyButtons or axisButtons, physicalLx, physicalLy, physicalRx, physicalRy, physicalL2, physicalR2
+        )
     }
 
-    override fun dispatchGenericMotionEvent(event: android.view.MotionEvent): Boolean {
-        if (event.isFromSource(android.view.InputDevice.SOURCE_CLASS_JOYSTICK)) {
-            physicalLx = event.getAxisValue(android.view.MotionEvent.AXIS_X)
-            physicalLy = event.getAxisValue(android.view.MotionEvent.AXIS_Y)
-            physicalRx = event.getAxisValue(android.view.MotionEvent.AXIS_Z)
-            physicalRy = event.getAxisValue(android.view.MotionEvent.AXIS_RZ)
-            val l2Axis = maxOf(event.getAxisValue(android.view.MotionEvent.AXIS_LTRIGGER), event.getAxisValue(android.view.MotionEvent.AXIS_BRAKE))
-            val r2Axis = maxOf(event.getAxisValue(android.view.MotionEvent.AXIS_RTRIGGER), event.getAxisValue(android.view.MotionEvent.AXIS_GAS))
-            if (l2Axis > 0.1f) physicalButtons = physicalButtons or NativeBridge.BTN_L2
-            else physicalButtons = physicalButtons and NativeBridge.BTN_L2.inv()
-            if (r2Axis > 0.1f) physicalButtons = physicalButtons or NativeBridge.BTN_R2
-            else physicalButtons = physicalButtons and NativeBridge.BTN_R2.inv()
+    private fun releaseEmulatedPad() {
+        keyButtons = 0
+        axisButtons = 0
+        physicalLx = 0f; physicalLy = 0f; physicalRx = 0f; physicalRy = 0f
+        physicalL2 = 0f; physicalR2 = 0f
+        sendPad()
+    }
 
-            val hatX = event.getAxisValue(android.view.MotionEvent.AXIS_HAT_X)
-            val hatY = event.getAxisValue(android.view.MotionEvent.AXIS_HAT_Y)
-            if (hatX < -0.5f) physicalButtons = physicalButtons or NativeBridge.BTN_LEFT
-            else physicalButtons = physicalButtons and NativeBridge.BTN_LEFT.inv()
-            if (hatX > 0.5f) physicalButtons = physicalButtons or NativeBridge.BTN_RIGHT
-            else physicalButtons = physicalButtons and NativeBridge.BTN_RIGHT.inv()
-            if (hatY < -0.5f) physicalButtons = physicalButtons or NativeBridge.BTN_UP
-            else physicalButtons = physicalButtons and NativeBridge.BTN_UP.inv()
-            if (hatY > 0.5f) physicalButtons = physicalButtons or NativeBridge.BTN_DOWN
-            else physicalButtons = physicalButtons and NativeBridge.BTN_DOWN.inv()
+    private fun padMask(keyCode: Int): Int = when (keyCode) {
+        KeyEvent.KEYCODE_BUTTON_A -> NativeBridge.BTN_CROSS
+        KeyEvent.KEYCODE_BUTTON_B, KeyEvent.KEYCODE_BACK -> NativeBridge.BTN_CIRCLE
+        KeyEvent.KEYCODE_BUTTON_X -> NativeBridge.BTN_SQUARE
+        KeyEvent.KEYCODE_BUTTON_Y -> NativeBridge.BTN_TRIANGLE
+        KeyEvent.KEYCODE_BUTTON_L1 -> NativeBridge.BTN_L1
+        KeyEvent.KEYCODE_BUTTON_R1 -> NativeBridge.BTN_R1
+        KeyEvent.KEYCODE_BUTTON_L2 -> NativeBridge.BTN_L2
+        KeyEvent.KEYCODE_BUTTON_R2 -> NativeBridge.BTN_R2
+        KeyEvent.KEYCODE_BUTTON_THUMBL -> NativeBridge.BTN_L3
+        KeyEvent.KEYCODE_BUTTON_THUMBR -> NativeBridge.BTN_R3
+        KeyEvent.KEYCODE_BUTTON_START -> NativeBridge.BTN_START
+        KeyEvent.KEYCODE_BUTTON_SELECT -> NativeBridge.BTN_SELECT
+        KeyEvent.KEYCODE_DPAD_UP -> NativeBridge.BTN_UP
+        KeyEvent.KEYCODE_DPAD_DOWN -> NativeBridge.BTN_DOWN
+        KeyEvent.KEYCODE_DPAD_LEFT -> NativeBridge.BTN_LEFT
+        KeyEvent.KEYCODE_DPAD_RIGHT -> NativeBridge.BTN_RIGHT
+        else -> 0
+    }
 
-            physicalL2 = l2Axis
-            physicalR2 = r2Axis
-            NativeBridge.nativeSendControllerInput(
-                physicalButtons, physicalLx, physicalLy, physicalRx, physicalRy, physicalL2, physicalR2
-            )
+    private val pauseCombo = NativeBridge.BTN_SELECT or NativeBridge.BTN_START
+
+    override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+        val down = event.action == KeyEvent.ACTION_DOWN
+
+        if (InputRouter.routeToUi) {
+            val nav = UiInput.fromKeyCode(event.keyCode)
+            if (nav != null) {
+                if (down && event.repeatCount % 3 == 0) UiInput.emit(nav)
+                return true
+            }
+            return super.dispatchKeyEvent(event)
+        }
+
+        // In game: the guide button, or Select+Start together, opens the pause menu.
+        if (event.keyCode == KeyEvent.KEYCODE_BUTTON_MODE) {
+            if (down) InputRouter.onPauseRequested?.invoke()
             return true
         }
-        return super.dispatchGenericMotionEvent(event)
+        val mask = padMask(event.keyCode)
+        if (mask == 0) return super.dispatchKeyEvent(event)
+        if (event.repeatCount > 0) return true
+        keyButtons = if (down) keyButtons or mask else keyButtons and mask.inv()
+        if (down && keyButtons and pauseCombo == pauseCombo) {
+            InputRouter.onPauseRequested?.invoke()
+            return true
+        }
+        sendPad()
+        return true
+    }
+
+    private var lastStickNav: org.capyps5.emulator.ui.NavKey? = null
+
+    override fun dispatchGenericMotionEvent(event: MotionEvent): Boolean {
+        if (!event.isFromSource(InputDevice.SOURCE_CLASS_JOYSTICK)) return super.dispatchGenericMotionEvent(event)
+
+        val hatX = event.getAxisValue(MotionEvent.AXIS_HAT_X)
+        val hatY = event.getAxisValue(MotionEvent.AXIS_HAT_Y)
+        val lx = event.getAxisValue(MotionEvent.AXIS_X)
+        val ly = event.getAxisValue(MotionEvent.AXIS_Y)
+
+        if (InputRouter.routeToUi) {
+            // Treat the hat and left stick as a d-pad, emitting once per deflection.
+            val x = if (kotlin.math.abs(hatX) > 0.5f) hatX else lx
+            val y = if (kotlin.math.abs(hatY) > 0.5f) hatY else ly
+            val nav = when {
+                x < -0.6f -> org.capyps5.emulator.ui.NavKey.Left
+                x > 0.6f -> org.capyps5.emulator.ui.NavKey.Right
+                y < -0.6f -> org.capyps5.emulator.ui.NavKey.Up
+                y > 0.6f -> org.capyps5.emulator.ui.NavKey.Down
+                else -> null
+            }
+            if (nav != null && nav != lastStickNav) UiInput.emit(nav)
+            lastStickNav = nav
+            return true
+        }
+
+        physicalLx = lx
+        physicalLy = ly
+        physicalRx = event.getAxisValue(MotionEvent.AXIS_Z)
+        physicalRy = event.getAxisValue(MotionEvent.AXIS_RZ)
+        physicalL2 = maxOf(event.getAxisValue(MotionEvent.AXIS_LTRIGGER), event.getAxisValue(MotionEvent.AXIS_BRAKE))
+        physicalR2 = maxOf(event.getAxisValue(MotionEvent.AXIS_RTRIGGER), event.getAxisValue(MotionEvent.AXIS_GAS))
+
+        fun set(mask: Int, on: Boolean) {
+            axisButtons = if (on) axisButtons or mask else axisButtons and mask.inv()
+        }
+        set(NativeBridge.BTN_L2, physicalL2 > 0.1f)
+        set(NativeBridge.BTN_R2, physicalR2 > 0.1f)
+        set(NativeBridge.BTN_LEFT, hatX < -0.5f)
+        set(NativeBridge.BTN_RIGHT, hatX > 0.5f)
+        set(NativeBridge.BTN_UP, hatY < -0.5f)
+        set(NativeBridge.BTN_DOWN, hatY > 0.5f)
+        sendPad()
+        return true
     }
 }

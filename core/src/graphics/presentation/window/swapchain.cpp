@@ -3,6 +3,7 @@
 #include "common/emulatorConfig.h"
 #include "common/logging/log.h"
 #include "common/profiler.h"
+#include "common/telemetry.h"
 #include "common/threads.h"
 #include "gpu_blit_shaders/gpu_blit_fs_triangle_spv.h"
 #include "gpu_blit_shaders/gpu_video_out_overlay_spv.h"
@@ -901,6 +902,7 @@ Swapchain::Status Swapchain::Present() {
 			return Status::SurfaceLost;
 	}
 	m_frame_index = (m_frame_index + 1u) % static_cast<uint32_t>(m_images.size());
+	Common::Telemetry::g_host_presents.fetch_add(1, std::memory_order_relaxed);
 	return Status::Success;
 }
 

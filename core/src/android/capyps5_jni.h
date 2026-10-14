@@ -29,6 +29,9 @@ JNIEXPORT void JNICALL Java_org_capyps5_emulator_NativeBridge_nativeSendControll
     JNIEnv* env, jclass clazz, jint buttons, jfloat lx, jfloat ly, jfloat rx, jfloat ry,
     jfloat l2, jfloat r2);
 
+JNIEXPORT jlongArray JNICALL Java_org_capyps5_emulator_NativeBridge_nativeGetStats(
+    JNIEnv* env, jclass clazz);
+
 JNIEXPORT jstring JNICALL Java_org_capyps5_emulator_NativeBridge_nativeGetVersion(
     JNIEnv* env, jclass clazz);
 

@@ -7,6 +7,7 @@
 #include "common/logging/log.h"
 #include "common/profiler.h"
 #include "common/stringUtils.h"
+#include "common/telemetry.h"
 #include "common/threads.h"
 #include "common/timer.h"
 #include "graphics/guest_gpu/gpu_defs.h"
@@ -1286,6 +1287,7 @@ bool FlipQueue::Flip(uint32_t micros) {
 		requests[i - 1].cfg->mutex.Unlock();
 	}
 	if (due) {
+		Common::Telemetry::RecordGameFrame();
 		Graphics::RenderDocOnGuestFlip(m_presenter.Renderer());
 		if (Config::GraphicsDebugDumpEnabled() &&
 		    Config::GetPrintfDirection() != Config::LogDirection::Silent) {

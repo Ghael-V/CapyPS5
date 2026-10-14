@@ -32,6 +32,17 @@ object NativeBridge {
     )
     external fun nativeGetVersion(): String
 
+    /** Cumulative counters; layout matches nativeGetStats() in capyps5_jni.cpp. */
+    external fun nativeGetStats(): LongArray
+
+    const val STAT_GAME_FRAMES = 0
+    const val STAT_HOST_PRESENTS = 1
+    const val STAT_MAX_FRAME_NS = 2 // reset to 0 on every read
+    const val STAT_WAIT_TIMEOUTS = 3
+    const val STAT_WAIT_UNMAPPED = 4
+    const val STAT_NULL_BUFFERS = 5
+    const val STAT_RUNNING = 6
+
     // Button bitmasks corresponding to PS5 DualSense
     const val BTN_SELECT = 1 shl 0
     const val BTN_L3 = 1 shl 1

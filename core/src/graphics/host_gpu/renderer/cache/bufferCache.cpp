@@ -4,6 +4,7 @@
 #include "common/assert.h"
 #include "common/logging/log.h"
 #include "common/profiler.h"
+#include "common/telemetry.h"
 #include "graphics/guest_gpu/graphicsRun.h"
 #include "graphics/host_gpu/graphicContext.h"
 #include "graphics/host_gpu/renderer/cache/textureCache.h"
@@ -497,6 +498,7 @@ std::pair<Buffer*, uint64_t> BufferCache::ObtainBuffer(uint64_t vaddr, uint64_t 
 			LOGF("BufferCache: invalid buffer request (cmd_invalid=%d, vaddr=0x%016" PRIx64 ", size=%" PRIu64 "), returning null buffer\n",
 			     command.IsInvalid(), vaddr, size);
 		}
+		Common::Telemetry::g_null_buffer_fallbacks.fetch_add(1, std::memory_order_relaxed);
 		return {&m_slot_buffers[NULL_BUFFER_ID], 0};
 	}
 

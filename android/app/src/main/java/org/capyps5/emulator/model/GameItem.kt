@@ -1,10 +1,58 @@
 package org.capyps5.emulator.model
 
+import java.io.File
+
 data class GameItem(
     val titleId: String,
     val titleName: String,
     val directoryPath: String,
     val elfPath: String,
-    val iconUri: String? = null,
-    val fileSizeFormatted: String = ""
-)
+    val iconPath: String? = null,
+    val backgroundPath: String? = null,
+    val version: String? = null,
+) {
+    companion object {
+        /** Builds an item from a dumped game folder (eboot.bin + sce_sys/param.json). */
+        fun fromGameDir(dir: File, elf: File = File(dir, "eboot.bin")): GameItem {
+            var titleId = dir.name
+            var titleName = dir.name
+            var version: String? = null
+            val sceSys = File(dir, "sce_sys")
+            val paramJson = File(sceSys, "param.json")
+            if (paramJson.exists()) {
+                try {
+                    val json = org.json.JSONObject(paramJson.readText())
+                    titleId = json.optString("titleId", titleId)
+                    version = json.optString("contentVersion").ifEmpty { null }
+                    val loc = json.optJSONObject("localizedParameters")
+                    val lang = loc?.optString("defaultLanguage")?.let { loc.optJSONObject(it) }
+                        ?: loc?.optJSONObject("en-US")
+                    titleName = lang?.optString("titleName")?.ifEmpty { null } ?: titleName
+                } catch (_: Exception) {
+                }
+            }
+            return GameItem(
+                titleId = titleId,
+                titleName = titleName,
+                directoryPath = dir.absolutePath,
+                elfPath = elf.absolutePath,
+                iconPath = File(sceSys, "icon0.png").takeIf { it.exists() }?.absolutePath,
+                backgroundPath = File(sceSys, "pic0.png").takeIf { it.exists() }?.absolutePath,
+                version = version,
+            )
+        }
+
+        /** Scans a root folder for game directories and loose executables. */
+        fun scan(root: File): List<GameItem> {
+            val entries = root.listFiles() ?: return emptyList()
+            return entries.sortedBy { it.name.lowercase() }.mapNotNull { f ->
+                when {
+                    f.isDirectory && File(f, "eboot.bin").exists() -> fromGameDir(f)
+                    f.isFile && f.extension.lowercase() in setOf("elf", "self") ->
+                        GameItem(f.nameWithoutExtension, f.name, f.parent ?: root.absolutePath, f.absolutePath)
+                    else -> null
+                }
+            }.sortedBy { it.titleName.lowercase() }
+        }
+    }
+}

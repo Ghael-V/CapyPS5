@@ -6,6 +6,7 @@
 #include "graphics/host_gpu/renderer/render.h"
 #include "graphics/host_gpu/renderer/renderContext.h"
 
+#include <chrono>
 #include <cstdint>
 #include <span>
 #include <vector>
@@ -47,6 +48,8 @@ private:
 	bool                      m_suspended     = false;
 	bool                      m_made_progress = false;
 	uint32_t                  m_wait_retries  = 0;
+	// When the current unsatisfied WAIT_REG_MEM started; drives the time-based timeout.
+	std::chrono::steady_clock::time_point m_wait_start {};
 };
 
 class CommandProcessor {

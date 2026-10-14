@@ -5,6 +5,7 @@
 #include "common/logging/log.h"
 #include "common/profiler.h"
 #include "common/stringUtils.h"
+#include "common/telemetry.h"
 #include "common/threads.h"
 #include "graphics/guest_gpu/command_processor/commandProcessor.h"
 #include "graphics/guest_gpu/command_processor/pm4Dispatch.h"
@@ -352,6 +353,7 @@ void CommandProcessor::WaitRegMem(uint32_t func, const T* addr, T ref, T mask, u
 			LOGF("WaitRegMem: unmapped guest address 0x%016" PRIx64 " (bypassing wait)\n",
 			     reinterpret_cast<uint64_t>(addr));
 		}
+		Common::Telemetry::g_wait_reg_mem_unmapped.fetch_add(1, std::memory_order_relaxed);
 		if (g_current_execution != nullptr) {
 			g_current_execution->m_wait_retries = 0;
 		}
@@ -368,21 +370,38 @@ void CommandProcessor::WaitRegMem(uint32_t func, const T* addr, T ref, T mask, u
 		           pass ? "PASS" : "SUSPEND");
 	}
 	if (!pass) {
-		if (g_current_execution != nullptr && ++g_current_execution->m_wait_retries > 8) {
+		// A retry-count limit expires within microseconds because blocked submissions are
+		// re-run immediately, which silently disabled CPU/GPU synchronization. Wait for real
+		// time instead and only bypass waits that are genuinely stuck.
+		constexpr auto kWaitTimeout = std::chrono::milliseconds(100);
+		if (g_current_execution != nullptr) {
+			const auto now = std::chrono::steady_clock::now();
+			if (g_current_execution->m_wait_retries++ == 0) {
+				g_current_execution->m_wait_start = now;
+			} else if (now - g_current_execution->m_wait_start > kWaitTimeout) {
+				const auto timeouts = Common::Telemetry::g_wait_reg_mem_timeouts.fetch_add(1) + 1;
+				if (timeouts <= 32 || (timeouts & (timeouts - 1)) == 0) {
 #if defined(__ANDROID__)
-			__android_log_print(ANDROID_LOG_WARN, "CapyPS5-Gpu",
-			                    "WaitRegMem: timed out after 8 retries at addr=0x%016" PRIx64
-			                    " (val=0x%" PRIx64 " ref=0x%" PRIx64 " func=%" PRIu32 "), bypassing wait",
-			                    reinterpret_cast<uint64_t>(addr), static_cast<uint64_t>(val),
-			                    static_cast<uint64_t>(ref), func);
+					__android_log_print(ANDROID_LOG_WARN, "CapyPS5-Gpu",
+					                    "WaitRegMem: timed out after 100 ms at addr=0x%016" PRIx64
+					                    " (val=0x%" PRIx64 " ref=0x%" PRIx64 " mask=0x%" PRIx64
+					                    " func=%" PRIu32 "), bypassing wait [#%" PRIu64 "]",
+					                    reinterpret_cast<uint64_t>(addr), static_cast<uint64_t>(val),
+					                    static_cast<uint64_t>(ref), static_cast<uint64_t>(mask), func,
+					                    timeouts);
 #endif
-			LOGF_COLOR(Log::Color::Yellow,
-			           "WaitRegMem: timed out after 8 retries at addr=0x%016" PRIx64 " (val=0x%" PRIx64 " ref=0x%" PRIx64 " func=%" PRIu32 "), bypassing wait\n",
-			           reinterpret_cast<uint64_t>(addr), static_cast<uint64_t>(val),
-			           static_cast<uint64_t>(ref), func);
-			g_current_execution->m_wait_retries = 0;
-			return;
+					LOGF_COLOR(Log::Color::Yellow,
+					           "WaitRegMem: timed out after 100 ms at addr=0x%016" PRIx64 " (val=0x%" PRIx64
+					           " ref=0x%" PRIx64 " func=%" PRIu32 "), bypassing wait\n",
+					           reinterpret_cast<uint64_t>(addr), static_cast<uint64_t>(val),
+					           static_cast<uint64_t>(ref), func);
+				}
+				g_current_execution->m_wait_retries = 0;
+				return;
+			}
 		}
+		// Let the guest CPU threads run instead of spinning the GPU thread at full speed.
+		std::this_thread::yield();
 		SuspendPm4();
 	} else if (g_current_execution != nullptr) {
 		g_current_execution->m_wait_retries = 0;

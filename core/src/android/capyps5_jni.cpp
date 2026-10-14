@@ -4,6 +4,7 @@
 #include "common/file.h"
 #include "common/logging/log.h"
 #include "common/stringUtils.h"
+#include "common/telemetry.h"
 #include "common/threads.h"
 #include "common/virtualMemory.h"
 #include "emulator.h"
@@ -178,16 +179,29 @@ JNIEXPORT void JNICALL Java_org_capyps5_emulator_NativeBridge_nativeSendControll
 	if (axis_ly < 64)  pad_buttons |= Libs::Controller::PAD_BUTTON_UP;
 	if (axis_ly > 192) pad_buttons |= Libs::Controller::PAD_BUTTON_DOWN;
 
-	if (pad_buttons != 0) {
-		ALOGI("nativeSendControllerInput: pad_buttons=0x%08x (Cross=%d, Circle=%d, Options=%d)",
-		      pad_buttons,
-		      (pad_buttons & Libs::Controller::PAD_BUTTON_CROSS) ? 1 : 0,
-		      (pad_buttons & Libs::Controller::PAD_BUTTON_CIRCLE) ? 1 : 0,
-		      (pad_buttons & Libs::Controller::PAD_BUTTON_OPTIONS) ? 1 : 0);
-	}
-
 	Libs::Controller::SetState(Libs::Controller::HOST_INPUT_CONTROLLER_ID,
 	                           pad_buttons, axis_lx, axis_ly, axis_rx, axis_ry, axis_l2, axis_r2);
+}
+
+// Layout must match NativeBridge.STAT_* in Kotlin.
+JNIEXPORT jlongArray JNICALL Java_org_capyps5_emulator_NativeBridge_nativeGetStats(
+    JNIEnv* env, jclass /*clazz*/) {
+	using namespace Common::Telemetry;
+	const jlong values[] = {
+	    static_cast<jlong>(g_game_frames.load(std::memory_order_relaxed)),
+	    static_cast<jlong>(g_host_presents.load(std::memory_order_relaxed)),
+	    static_cast<jlong>(g_max_frame_ns.exchange(0, std::memory_order_relaxed)),
+	    static_cast<jlong>(g_wait_reg_mem_timeouts.load(std::memory_order_relaxed)),
+	    static_cast<jlong>(g_wait_reg_mem_unmapped.load(std::memory_order_relaxed)),
+	    static_cast<jlong>(g_null_buffer_fallbacks.load(std::memory_order_relaxed)),
+	    g_is_running.load() ? 1 : 0,
+	};
+	constexpr auto count = static_cast<jsize>(sizeof(values) / sizeof(values[0]));
+	jlongArray     array = env->NewLongArray(count);
+	if (array != nullptr) {
+		env->SetLongArrayRegion(array, 0, count, values);
+	}
+	return array;
 }
 
 JNIEXPORT jstring JNICALL Java_org_capyps5_emulator_NativeBridge_nativeGetVersion(
