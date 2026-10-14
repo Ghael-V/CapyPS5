@@ -438,7 +438,7 @@ uint32_t StorageBufferPackedStride(const EmitterState& state, const IR::MemoryIn
 
 Prospero::BufferFormat StorageBufferFormat(const EmitterState& state, const IR::MemoryInfo& mem);
 
-bool UsesSharedIndirectBufferStore(const EmitterState& state, uint32_t resource);
+bool UsesSharedIndirectBufferAccess(const EmitterState& state, uint32_t resource);
 
 void EmitMemoryOffsets(EmitterState& state);
 
@@ -457,7 +457,8 @@ struct MemoryResourceAccess {
 
 uint32_t EmitIndirectResourceIndex(EmitterState& state, uint32_t key, uint32_t mapping_offset,
                                    uint32_t search_iterations, uint32_t default_resource);
-MemoryResourceAccess PrepareMemoryResourceAccess(EmitterState& state, const IR::MemoryInfo& mem);
+MemoryResourceAccess PrepareMemoryResourceAccess(EmitterState& state, const IR::MemoryInfo& mem,
+                                                 uint32_t array_index = 0u);
 
 MemoryResourceAccess PrepareStorageBufferResourceAccess(EmitterState&         state,
                                                         const IR::MemoryInfo& mem,

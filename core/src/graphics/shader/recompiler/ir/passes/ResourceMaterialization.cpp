@@ -240,16 +240,38 @@ bool ReadScalarTable(uint64_t base, uint64_t size, uint64_t offset,
 	return ReadTable(base & AddressMask & ~uint64_t {3}, size, offset & ~uint64_t {3}, runtime, words);
 }
 
-bool NormalizeIndirectStoreBuffer(DescriptorValue& value, bool indexed, bool formatted) {
+bool NormalizeIndirectBuffer(DescriptorValue& value, bool indexed, const BufferResource& resource) {
 	ShaderBufferResource descriptor;
 	if (!DecodeBufferDescriptor(value, descriptor)) return false;
+	const bool formatted_read = resource.formatted && resource.read && !resource.written;
 	if (descriptor.Type() != 0u || descriptor.Format() == Prospero::BufferFormat::kInvalid ||
-	    descriptor.Base48() == 0u || descriptor.GetSize() == 0u) {
+	    (!formatted_read && (descriptor.Base48() == 0u || descriptor.GetSize() == 0u))) {
 		value.dwords.fill(0u);
-	} else if (descriptor.Stride() != (indexed ? 4u : 1u) || descriptor.SwizzleEnabled() ||
-	           descriptor.AddTid() || descriptor.OutOfBounds() != (indexed ? 0u : 3u)) {
+		return true;
+	}
+	if (descriptor.SwizzleEnabled() || descriptor.AddTid() ||
+	    descriptor.OutOfBounds() != (indexed ? 0u : 3u)) {
+		return SpecializationFail("indirect buffers require exact linear index or byte bounds");
+	}
+	if (formatted_read) {
+		const auto format = Format::GetFormatInfo(descriptor.Format());
+		if (!indexed || format.type == Format::ComponentType::Unknown)
+			return SpecializationFail("indirect formatted loads require a supported indexed format");
+		if (descriptor.Base48() == 0u || descriptor.Stride() == 0u || descriptor.NumRecords() == 0u) {
+			// Every index is out of bounds. Preserve the format and swizzle constants.
+			value.dwords[1] &= ~(0x3fffu << 16u);
+			value.dwords[2] = 0u;
+			return true;
+		}
+		const auto alignment = std::min(4u, format.byte_size);
+		if (descriptor.Stride() < format.byte_size ||
+		    (descriptor.Stride() & (alignment - 1u)) != 0u ||
+		    (descriptor.Base48() & (alignment - 1u)) != 0u)
+			return SpecializationFail("indirect formatted loads require aligned full-format records");
+	} else if ((!indexed && descriptor.Stride() != 1u) ||
+	           (indexed && resource.max_byte_extent != 1u && descriptor.Stride() != 4u)) {
 		return SpecializationFail("indirect buffer stores require exact linear DWORD or byte bounds");
-	} else if (formatted && (descriptor.Format() != Prospero::BufferFormat::k32UInt ||
+	} else if (resource.formatted && (descriptor.Format() != Prospero::BufferFormat::k32UInt ||
 	                         descriptor.DstSelXYZW() != DstSel(4, 0, 0, 0) ||
 	                         (descriptor.Base48() & 3u) != 0u)) {
 		return SpecializationFail("indirect formatted X stores require an aligned 32-bit UInt identity mapping");
@@ -261,7 +283,8 @@ bool IsBoundedDescriptorTable(const ResourcePlan& program,
                               const DescriptorSource::IndirectDescriptor& indirect) {
 	const auto* table = Source(program, indirect.table_source);
 	return indirect.sources.empty() && !indirect.selector &&
-	       indirect.workgroup_axis == UINT32_MAX && table != nullptr && table->dword_count == 4u;
+	       indirect.key_count.IsEmpty() && indirect.workgroup_axis == UINT32_MAX &&
+	       table != nullptr && table->dword_count == 4u;
 }
 
 template <typename Specialization, typename Normalize>
@@ -398,7 +421,7 @@ bool MaterializeIndirectDescriptor(const ResourcePlan&                         p
 				key_count = runtime.workgroup_counts[indirect.workgroup_axis];
 				if (key_count == 0u) return false;
 			} else {
-				if (table_value.dword_count != 2u || !evaluate_count(key_count))
+				if (!evaluate_count(key_count))
 					return false;
 			}
 			if (!indirect.selector_first.IsEmpty() && !clean.Evaluate(indirect.selector_first, first_key))
@@ -1523,8 +1546,8 @@ bool MaterializeResources(const ResourcePlan& program, const SrtRuntime& runtime
 					        program, *source->indirect_descriptor, i, 4u, observed, clean, snapshot,
 					        snapshot.buffers, specialization.buffers, ShaderInfo::MaxBuffers,
 					        [&](DescriptorValue& value) {
-						        return NormalizeIndirectStoreBuffer(
-						            value, source->indirect_descriptor->indexed_store, base.formatted);
+						        return NormalizeIndirectBuffer(
+						            value, source->indirect_descriptor->indexed, base);
 					        }))
 						return MaterializeFail("indirect buffer descriptor could not be materialized");
 				}
@@ -1769,7 +1792,8 @@ void ApplyResourceSpecialization(Program& program, const ResourceSpecialization&
 				const auto& memory = memory_info[inst.Flags<MemoryFlags>().index];
 				// Planning-only reads have no bound buffer: memory.resource indexes nothing.
 				if (memory.kind == ResourceKind::Buffer && !memory.planning_only &&
-				    specialization.buffers[memory.resource].zero_stride_oob) {
+				    specialization.buffers[memory.resource].zero_stride_oob &&
+				    buffers[memory.resource].indirect_root == BufferResource::NoIndirectBuffer) {
 					// Bounds mode 0 checks offset >= stride, so zero stride
 					// makes every vector read out of bounds regardless of its address.
 					const auto count = BufferComponentCount(inst.GetOpcode());

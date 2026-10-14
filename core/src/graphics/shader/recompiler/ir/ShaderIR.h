@@ -607,7 +607,7 @@ struct DescriptorSource {
 		uint32_t table_stride    = 0;
 		uint32_t table_record_bytes = 0;
 		bool     table_scalar = false;
-		bool     indexed_store = false;
+		bool     indexed = false;
 		bool     signed_count = false;
 		uint32_t workgroup_axis  = UINT32_MAX;
 		Value    key_count;

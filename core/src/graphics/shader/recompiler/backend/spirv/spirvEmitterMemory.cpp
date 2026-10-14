@@ -365,6 +365,85 @@ uint32_t LoadWordInBounds(ValueEmitContext& ctx, const MemoryResourceAccess& res
 uint32_t LoadSubwordInBounds(ValueEmitContext& ctx, const MemoryResourceAccess& resource,
                              uint32_t address, uint32_t index, uint32_t bits, bool sign_extend);
 
+template <typename Fn>
+auto EmitBufferAccess(ValueEmitContext& ctx, const IR::Inst& inst, IR::MemoryInfo mem,
+                      uint32_t components, Fn&& emit) {
+	auto& state = ctx.state;
+	constexpr bool has_result = !std::is_void_v<
+	    std::invoke_result_t<Fn, const IR::MemoryInfo&, const MemoryResourceAccess&>>;
+	const auto access = [&](uint32_t resource) {
+		mem.resource = resource;
+		if (mem.kind == IR::ResourceKind::Buffer) {
+			const auto& buffer = state.program.info.buffers[resource];
+			if (buffer.packed_stride == 0u &&
+			    buffer.source < state.program.descriptor_sources.size() &&
+			    state.program.descriptor_sources[buffer.source].indirect_descriptor) {
+				// Empty candidates still carry the format/swizzle needed for OOB loads.
+				return emit(mem, MemoryResourceAccess{});
+			}
+		}
+		return emit(mem, PrepareMemoryResourceAccess(state, mem));
+	};
+	if (mem.kind != IR::ResourceKind::Buffer ||
+	    state.program.info.buffers[mem.resource].indirect_root != mem.resource) {
+		return access(mem.resource);
+	}
+	const auto& buffer = state.program.info.buffers[mem.resource];
+	const auto& handle = *inst.Arg(0).ResolveInstruction();
+	const auto selected = ctx.Arg(handle, 0);
+	const auto shared = UsesSharedIndirectBufferAccess(state, mem.resource);
+	const auto selected_access = [&]() {
+		if (shared) {
+			const auto root_slot = buffer.descriptor_index;
+			const auto child_slot = state.program.info.buffers[buffer.indirect_resources[1]].descriptor_index;
+			auto slot = EmitAddU32(state, selected, ConstantU32(state, child_slot - 1u));
+			if (child_slot != root_slot + 1u) {
+				slot = Select(state, TypeU32(state),
+				    Binary(state, spv::OpIEqual, TypeBool(state), selected, ConstantU32(state, 0u)),
+				    ConstantU32(state, root_slot), slot);
+			}
+			return emit(mem, PrepareMemoryResourceAccess(state, mem, slot));
+		}
+		return EmitIndexSwitch(state, selected, buffer.indirect_resources.size(),
+		                       has_result ? TypeU32Composite(state, components) : 0u,
+		                       [&](uint32_t item) { return access(buffer.indirect_resources[item]); });
+	};
+	if constexpr (!has_result) {
+		if (!shared) return selected_access();
+	}
+	const auto valid = Binary(state, spv::OpULessThan, TypeBool(state), selected,
+	                          ConstantU32(state, buffer.indirect_resources.size()));
+	if constexpr (has_result) {
+		return EmitValueOrDefaultIfCondition(state, valid, TypeU32Composite(state, components),
+		                                    ConstantU32CompositeZero(state, components), selected_access);
+	} else {
+		EmitIfCondition(state, valid, selected_access);
+	}
+}
+
+uint32_t BufferIndexInBounds(ValueEmitContext& ctx, const IR::Inst& inst,
+                             const IR::MemoryInfo& mem, const MemoryResourceAccess& resource,
+                             uint32_t payload_in_bounds) {
+	if (mem.kind != IR::ResourceKind::Buffer) return payload_in_bounds;
+	auto& state = ctx.state;
+	const auto& buffer = state.program.info.buffers[mem.resource];
+	const auto& sources = state.program.descriptor_sources;
+	if (buffer.source >= sources.size() || !sources[buffer.source].indirect_descriptor ||
+	    !sources[buffer.source].indirect_descriptor->indexed) return payload_in_bounds;
+	const auto bytes = Binary(state, spv::OpIMul, TypeU32(state), resource.length,
+	                          ConstantU32(state, resource.element_bits / 8u));
+	const auto available = Binary(state, spv::OpISub, TypeU32(state), bytes, resource.byte_offset);
+	// Test the original index before multiplication can wrap. A truncated binding
+	// may omit final-record padding; the payload check below still checks every byte.
+	const auto last_record = Binary(state, spv::OpUDiv, TypeU32(state),
+	    Binary(state, spv::OpISub, TypeU32(state), available, ConstantU32(state, 1u)),
+	    ConstantU32(state, buffer.packed_stride & 0x3fffu));
+	return AndCondition(state, payload_in_bounds,
+	    AndCondition(state,
+	        Binary(state, spv::OpUGreaterThan, TypeBool(state), bytes, resource.byte_offset),
+	        Binary(state, spv::OpULessThanEqual, TypeBool(state), ctx.Arg(inst, 1), last_record)));
+}
+
 uint32_t LoadWordPrepared(ValueEmitContext& ctx, const IR::Inst& inst, const IR::MemoryInfo& mem,
                           const MemoryResourceAccess& resource) {
 	const auto index = DwordIndex(ctx, inst, mem, resource.byte_offset);
@@ -545,20 +624,23 @@ void StoreSubwordInBounds(ValueEmitContext& ctx, const IR::MemoryInfo& mem,
 
 void StoreSubwordPrepared(ValueEmitContext& ctx, const IR::Inst& inst, const IR::MemoryInfo& mem,
                           const MemoryResourceAccess& resource, uint32_t bits, uint32_t data) {
+	if (resource.object_pointer == 0u) return;
 	const auto address = ByteAddress(ctx, inst, mem, resource.byte_offset);
 	const auto index = Binary(
 	    ctx.state, spv::OpShiftRightLogical, TypeU32(ctx.state), address,
 	    ConstantU32(ctx.state, std::countr_zero(resource.element_bits / 8u)));
 	EmitIfCondition(
-	    ctx.state, EmitMemoryElementInBounds(ctx.state, resource, index), [&]() {
+	    ctx.state, BufferIndexInBounds(ctx, inst, mem, resource,
+	        EmitMemoryElementInBounds(ctx.state, resource, index)), [&]() {
 		    StoreSubwordInBounds(ctx, mem, resource, address, index, bits, data);
 	    });
 }
 
 void StoreSubword(ValueEmitContext& ctx, const IR::Inst& inst, IR::MemoryInfo mem, uint32_t bits) {
 	EmitIfCondition(ctx.state, ctx.Arg(inst, inst.NumArgs() - 1), [&]() {
-		const auto resource = PrepareMemoryResourceAccess(ctx.state, mem);
-		StoreSubwordPrepared(ctx, inst, mem, resource, bits, ctx.Arg(inst, inst.NumArgs() - 2));
+		EmitBufferAccess(ctx, inst, mem, 0u, [&](const auto& selected, const auto& resource) {
+			StoreSubwordPrepared(ctx, inst, selected, resource, bits, ctx.Arg(inst, inst.NumArgs() - 2));
+		});
 	});
 }
 
@@ -615,75 +697,20 @@ void StoreLocalFlat(ValueEmitContext& ctx, const IR::Inst& inst) {
 
 void StoreWordPrepared(ValueEmitContext& ctx, const IR::Inst& inst, const IR::MemoryInfo& mem,
                        const MemoryResourceAccess& resource, uint32_t data) {
-	auto& state = ctx.state;
-	const auto source = mem.kind == IR::ResourceKind::Buffer
-	                        ? state.program.info.buffers[mem.resource].source : UINT32_MAX;
-	const auto& sources = state.program.descriptor_sources;
-	const auto* indirect = source < sources.size() && sources[source].indirect_descriptor
-	                           ? &*sources[source].indirect_descriptor : nullptr;
-	uint32_t index = 0;
-	uint32_t in_bounds = 0;
-	if (indirect != nullptr && indirect->indexed_store) {
-		// The resource plan proves stride-four, index-only stores. Check the original
-		// index before any byte multiplication can wrap it into the buffer.
-		const auto prefix = Binary(state, spv::OpShiftRightLogical, TypeU32(state),
-		                           resource.byte_offset, ConstantU32(state, 2));
-		const auto guest_index = ctx.Arg(inst, 1);
-		const auto records = Binary(state, spv::OpISub, TypeU32(state), resource.length, prefix);
-		in_bounds = AndCondition(state,
-		    Binary(state, spv::OpULessThanEqual, TypeBool(state), prefix, resource.length),
-		    Binary(state, spv::OpULessThan, TypeBool(state), guest_index, records));
-		index = EmitAddU32(state, guest_index, prefix);
-	} else {
-		index = DwordIndex(ctx, inst, mem, resource.byte_offset);
-		in_bounds = EmitMemoryElementInBounds(state, resource, index);
-	}
-	EmitIfCondition(state, in_bounds, [&]() {
+	if (resource.object_pointer == 0u) return;
+	const auto index = DwordIndex(ctx, inst, mem, resource.byte_offset);
+	const auto in_bounds = BufferIndexInBounds(ctx, inst, mem, resource,
+	    EmitMemoryElementInBounds(ctx.state, resource, index));
+	EmitIfCondition(ctx.state, in_bounds, [&]() {
 		StoreWordInBounds(ctx, resource, index, data);
 	});
 }
 
 void StoreWord(ValueEmitContext& ctx, const IR::Inst& inst, IR::MemoryInfo mem) {
-	auto& state = ctx.state;
-	EmitIfCondition(state, ctx.Arg(inst, inst.NumArgs() - 1), [&]() {
-		const auto data = ctx.Arg(inst, inst.NumArgs() - 2);
-		const auto store = [&](uint32_t resource) {
-			if (mem.kind == IR::ResourceKind::Buffer) {
-				const auto& buffer = state.program.info.buffers[resource];
-				if (buffer.packed_stride == 0u &&
-				    buffer.source < state.program.descriptor_sources.size() &&
-				    state.program.descriptor_sources[buffer.source].indirect_descriptor) return;
-			}
-			mem.resource = resource;
-			const auto access = PrepareMemoryResourceAccess(state, mem);
-			StoreWordPrepared(ctx, inst, mem, access, data);
-		};
-		if (mem.kind != IR::ResourceKind::Buffer ||
-		    state.program.info.buffers[mem.resource].indirect_root != mem.resource) {
-			store(mem.resource);
-			return;
-		}
-		const auto& buffer = state.program.info.buffers[mem.resource];
-		const auto* handle = inst.Arg(0).ResolveInstruction();
-		if (handle == nullptr || buffer.indirect_resources.empty() ||
-		    state.flattened_srt_variable == 0 || buffer.indirect_search_iterations == 0u) {
-			ctx.Fail(inst, "has no indirect buffer runtime mapping");
-			return;
-		}
-		const auto selected = EmitIndirectResourceIndex(
-		    state, ctx.Arg(*handle, 0), buffer.indirect_mapping_offset,
-		    buffer.indirect_search_iterations, UINT32_MAX);
-		if (UsesSharedIndirectBufferStore(state, mem.resource)) {
-			EmitIfCondition(state, Binary(state, spv::OpULessThan, TypeBool(state), selected,
-			                             ConstantU32(state, buffer.indirect_resources.size())), [&]() {
-				const auto slot = EmitAddU32(state, selected, ConstantU32(state, buffer.descriptor_index));
-				const auto access = PrepareStorageBufferResourceAccess(state, mem, state.storage_buffers[2], slot);
-				StoreWordPrepared(ctx, inst, mem, access, data);
-			});
-			return;
-		}
-		EmitIndexSwitch(state, selected, buffer.indirect_resources.size(), 0u,
-		                [&](uint32_t item) { store(buffer.indirect_resources[item]); });
+	EmitIfCondition(ctx.state, ctx.Arg(inst, inst.NumArgs() - 1), [&]() {
+		EmitBufferAccess(ctx, inst, mem, 0u, [&](const auto& selected, const auto& resource) {
+			StoreWordPrepared(ctx, inst, selected, resource, ctx.Arg(inst, inst.NumArgs() - 2));
+		});
 	});
 }
 
@@ -747,9 +774,9 @@ PreparedFormattedMemory PrepareFormattedMemory(ValueEmitContext& ctx, const IR::
 	                        ConstantU32(ctx.state, info.byte_size - 1u));
 	const auto last_index = Binary(ctx.state, spv::OpShiftRightLogical, TypeU32(ctx.state), end,
 	                               ConstantU32(ctx.state, std::countr_zero(resource.element_bits / 8u)));
-	plan.in_bounds = AndCondition(
+	plan.in_bounds = BufferIndexInBounds(ctx, inst, mem, resource, AndCondition(
 	    ctx.state, Binary(ctx.state, spv::OpUGreaterThanEqual, TypeBool(ctx.state), end, start),
-	    EmitMemoryElementInBounds(ctx.state, plan.resource, last_index));
+	    EmitMemoryElementInBounds(ctx.state, plan.resource, last_index)));
 	plan.base = Binary(ctx.state, spv::OpBitwiseAnd, TypeU32(ctx.state), start,
 	                   ConstantU32(ctx.state, ~(std::min(4u, info.byte_size) - 1u)));
 	return plan;
@@ -806,10 +833,11 @@ uint32_t LoadFormattedPrepared(ValueEmitContext& ctx, const IR::Inst& inst,
                                const Format::BufferFormatInfo& info, uint32_t components) {
 	auto&      state = ctx.state;
 	const auto count = mem.data_bits == 16u ? mem.component_count : components;
-	const auto plan  = PrepareFormattedMemory(ctx, inst, mem, resource, info);
-	const auto value = EmitValueOrDefaultIfCondition(
-	    state, plan.in_bounds, TypeU32Composite(state, count),
-	    FormattedOutOfBoundsValue(ctx, mem, plan, count), [&]() {
+	const auto plan = resource.object_pointer == 0u ? PreparedFormattedMemory{.info = info}
+	                                              : PrepareFormattedMemory(ctx, inst, mem, resource, info);
+	const auto out_of_bounds = FormattedOutOfBoundsValue(ctx, mem, plan, count);
+	const auto value = resource.object_pointer == 0u ? out_of_bounds : EmitValueOrDefaultIfCondition(
+	    state, plan.in_bounds, TypeU32Composite(state, count), out_of_bounds, [&]() {
 		    std::array<uint32_t, 4> values {};
 		    for (uint32_t component = 0; component < count; component++) {
 			    values[component] = LoadFormattedInBounds(ctx, mem, plan, component);
@@ -1152,18 +1180,20 @@ uint32_t LoadBuffer(ValueEmitContext& ctx, const IR::Inst& inst, uint32_t compon
 		    if (mem.kind == IR::ResourceKind::IndirectBuffer) {
 			    return LoadIndirectBuffer(ctx, inst, components);
 		    }
-		    const auto resource = PrepareMemoryResourceAccess(state, mem);
-		    const auto info = Format::GetFormatInfo(
-		        mem.formatted ? BufferFormat(ctx, mem) : Prospero::BufferFormat::kInvalid);
-		    if (info.type != Format::ComponentType::Unknown) {
-			    return LoadFormattedPrepared(ctx, inst, mem, resource, info, components);
-		    }
-		    std::array<uint32_t, 4> values {};
-		    for (uint32_t component = 0; component < components; component++) {
-			    values[component] =
-			        LoadWordPrepared(ctx, inst, RebaseRawComponent(mem, component), resource);
-		    }
-		    return ConstructU32Composite(state, components, values);
+		    return EmitBufferAccess(ctx, inst, mem, components, [&](const auto& selected, const auto& resource) {
+			    const auto info = Format::GetFormatInfo(
+			        selected.formatted ? BufferFormat(ctx, selected) : Prospero::BufferFormat::kInvalid);
+			    if (info.type != Format::ComponentType::Unknown) {
+				    return LoadFormattedPrepared(ctx, inst, selected, resource, info, components);
+			    }
+			    if (resource.object_pointer == 0u) return ConstantU32CompositeZero(state, components);
+			    std::array<uint32_t, 4> values {};
+			    for (uint32_t component = 0; component < components; component++) {
+				    values[component] =
+				        LoadWordPrepared(ctx, inst, RebaseRawComponent(selected, component), resource);
+			    }
+			    return ConstructU32Composite(state, components, values);
+		    });
 	    });
 }
 
@@ -1569,6 +1599,13 @@ void EmitReadConstBuffer(ValueEmitContext& ctx, const IR::Inst& inst) {
 		           return EmitNative<spv::OpLoad, IR::Type::U32>(
 		               state, EmitMemoryElementPointer(state, access, element));
 	           }));
+}
+
+uint32_t EmitGetBufferResourceIndex(ValueEmitContext& ctx, const IR::Inst& inst) {
+	const auto& buffer = ctx.state.program.info.buffers.at(inst.Flags<uint32_t>());
+	if (buffer.indirect_resources.empty()) return ConstantU32(ctx.state, 0u);
+	return EmitIndirectResourceIndex(ctx.state, ctx.Arg(inst, 0), buffer.indirect_mapping_offset,
+	                                 buffer.indirect_search_iterations, UINT32_MAX);
 }
 
 void EmitLoadMemory(ValueEmitContext& ctx, const IR::Inst& inst) {

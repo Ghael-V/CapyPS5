@@ -419,6 +419,7 @@ public:
 				memory.sampler = patch.sampler;
 			}
 		}
+		std::vector<std::pair<const IndirectDescriptorPlan*, Value>> buffer_selections;
 		for (const auto& plan: m_indirect_descriptors) {
 			auto key = plan.key;
 			if (plan.table_read != nullptr) {
@@ -477,8 +478,32 @@ public:
 					plan.handle->SetArg(word, Value(0u));
 				continue;
 			}
-			if (plan.handle->NumArgs() == 4u) {
-				plan.handle->SetArg(0, plan.key);
+			if (plan.handle->GetOpcode() == ValueOpcode::GetBufferResource) {
+				Value selected;
+				for (const auto& [previous, value]: buffer_selections) {
+					if (plan.selection_anchor != nullptr && previous->reads == plan.reads &&
+					    previous->source == plan.source &&
+					    previous->handle->Flags<uint32_t>() == plan.handle->Flags<uint32_t>() &&
+					    EquivalentValue(m_program, previous->key, plan.key) &&
+					    AvailableBefore(*value.Instruction(), *plan.handle)) {
+						selected = value;
+						break;
+					}
+				}
+				if (selected.IsEmpty()) {
+					const auto* anchor = plan.selection_anchor != nullptr ? plan.selection_anchor : plan.handle;
+					auto* block = anchor->Parent();
+					const auto where = std::ranges::find_if(block->Instructions(),
+					    [&](const Inst& inst) { return &inst == anchor; });
+					auto& selection = *block->PrependNewInst(where, ValueOpcode::GetBufferResourceIndex, {plan.key});
+					selection.SetFlags(plan.handle->Flags<uint32_t>());
+					selected = Value(&selection);
+					buffer_selections.emplace_back(&plan, selected);
+				}
+				plan.handle->SetArg(0, selected);
+				for (uint32_t word = 1; word < 4u; ++word) plan.handle->SetArg(word, Value(0u));
+			} else if (plan.handle->NumArgs() == 4u) {
+				plan.handle->SetArg(0, key);
 				for (uint32_t word = 1; word < 4u; ++word) plan.handle->SetArg(word, Value(0u));
 			} else {
 				if (plan.reads[0] == nullptr) plan.handle->SetArg(0, key);
@@ -553,6 +578,7 @@ private:
 		bool retain_reads = false;
 		bool table_indexed = false;
 		const Inst* table_read = nullptr;
+		const Inst* selection_anchor = nullptr;
 	};
 
 	// Last line that rejected an indirect descriptor plan (diagnostics in Fail).
@@ -1016,7 +1042,7 @@ private:
 				const auto& b = *descriptor.indirect_descriptor;
 				if (a.selector != b.selector || a.table_source != b.table_source ||
 				    a.table_offset != b.table_offset || a.table_immediate != b.table_immediate ||
-				    a.table_stride != b.table_stride || a.indexed_store != b.indexed_store ||
+				    a.table_stride != b.table_stride || a.indexed != b.indexed ||
 				    a.workgroup_axis != b.workgroup_axis || a.sources != b.sources ||
 				    a.signed_count != b.signed_count ||
 				    !EquivalentValue(m_program, a.key_count, b.key_count) ||
@@ -2708,6 +2734,25 @@ private:
 		return true;
 	}
 
+	bool IndirectBufferAccess(const Inst& inst) const {
+		const auto opcode = inst.GetOpcode();
+		if (opcode != ValueOpcode::StoreBufferU32 && opcode != ValueOpcode::StoreBufferU8 &&
+		    opcode != ValueOpcode::LoadBufferU32x2) return false;
+		const auto index = inst.Flags<MemoryFlags>().index;
+		if (index >= m_program.memory_info.size()) return false;
+		const auto& memory = m_program.memory_info[index];
+		if (memory.kind != ResourceKind::Buffer || memory.typed || memory.idxen == memory.offen ||
+		    (memory.idxen && (memory.offset != 0u || inst.Arg(2).Resolve() != Value(0u))) ||
+		    inst.Arg(3).Resolve() != Value(0u)) return false;
+		if (opcode == ValueOpcode::StoreBufferU32)
+			return !memory.formatted || (memory.idxen && memory.data_bits == 32u && memory.data_dwords == 1u);
+		if (!memory.idxen) return false;
+		if (opcode == ValueOpcode::StoreBufferU8)
+			return !memory.formatted && memory.data_bits == 8u;
+		return memory.formatted && memory.data_bits == 16u && memory.data_dwords == 2u &&
+		       memory.component_count == 4u;
+	}
+
 	bool MatchDescriptorTable(Inst& handle, const DescriptorSource& descriptor,
 	                          IndirectDescriptorPlan& plan,
 	                          DescriptorSource& table_source, Value& key, uint32_t& table_offset,
@@ -2788,10 +2833,10 @@ private:
 			if (handle.NumArgs() == 8u) {
 				if (memory->kind == ResourceKind::ScalarAddress)
 					plan.retain_reads |= !UsesOnlyImageDescriptors(*read);
-			} else if (std::ranges::any_of(read->Uses(), [](const Use& use) {
+			} else if (std::ranges::any_of(read->Uses(), [&](const Use& use) {
 				return use.user->GetOpcode() != ValueOpcode::GetBufferResource ||
-				       std::ranges::any_of(use.user->Uses(), [](const Use& consumer) {
-					       return consumer.user->GetOpcode() != ValueOpcode::StoreBufferU32;
+				       std::ranges::any_of(use.user->Uses(), [&](const Use& consumer) {
+					       return !IndirectBufferAccess(*consumer.user);
 				       });
 			    })) {
 				return RejectIndirect(__LINE__);
@@ -3031,19 +3076,14 @@ private:
 	                           IndirectDescriptorPlan& plan) {
 		if (handle.GetOpcode() != ValueOpcode::GetBufferResource || handle.NumArgs() != 4u ||
 		    handle.Uses().empty()) return false;
-		if (handle.Uses().front().user->GetOpcode() != ValueOpcode::StoreBufferU32) return false;
+		if (!IndirectBufferAccess(*handle.Uses().front().user)) return false;
+		const bool legacy_store = handle.Uses().front().user->GetOpcode() == ValueOpcode::StoreBufferU32;
 		const auto indexed = m_program.memory_info[handle.Uses().front().user->Flags<MemoryFlags>().index].idxen;
 		for (const auto& use: handle.Uses()) {
 			const auto& inst = *use.user;
-			if (inst.GetOpcode() != ValueOpcode::StoreBufferU32) return false;
+			if (!IndirectBufferAccess(inst)) return false;
 			const auto& memory = m_program.memory_info[inst.Flags<MemoryFlags>().index];
-			uint32_t scalar = 1u;
-			if (memory.kind != ResourceKind::Buffer || memory.typed ||
-			    (memory.formatted && (!indexed || memory.data_bits != 32u || memory.data_dwords != 1u)) ||
-			    memory.idxen != indexed || memory.offen == indexed ||
-			    (indexed && (memory.offset != 0u || inst.Arg(2).Resolve() != Value(0u))) ||
-			    !ImmediateU32(inst.Arg(3), scalar) || scalar != 0u)
-				return false;
+			if (memory.idxen != indexed) return false;
 		}
 		DescriptorSource table_source;
 		Value key;
@@ -3051,12 +3091,25 @@ private:
 		uint32_t table_stride = 0;
 		uint32_t table_immediate = 0;
 		if (!MatchDescriptorTable(handle, descriptor, plan, table_source, key, table_offset,
-		                          table_stride, table_immediate) || table_stride != 16u) return false;
+		                          table_stride, table_immediate) ||
+		    table_stride < 16u || (table_stride & 3u) != 0u) return false;
 		DescriptorSource::IndirectDescriptor indirect;
 		indirect.table_stride = table_stride;
 		indirect.table_offset = table_offset;
 		indirect.table_immediate = table_immediate;
-		indirect.indexed_store = indexed;
+		indirect.indexed = indexed;
+		for (uint32_t word = 0; word < 4u; ++word) {
+			const auto* anchor = plan.reads[word];
+			const auto* key_inst = key.Resolve().TryInstruction();
+			if (AvailableBefore(*anchor, handle) &&
+			    (key_inst == nullptr || (key_inst != anchor && AvailableBefore(*key_inst, *anchor))) &&
+			    std::all_of(plan.reads.begin(), plan.reads.begin() + 4u,
+			                [&](const Inst* read) { return AvailableBefore(*read, *anchor); })) {
+				plan.selection_anchor = anchor;
+				break;
+			}
+		}
+		if (!legacy_store && plan.selection_anchor == nullptr) return false;
 		const auto finish = [&] {
 			indirect.table_source = InternSource(table_source);
 			DescriptorSource source;
@@ -3068,19 +3121,20 @@ private:
 			plan.key = key;
 			return true;
 		};
-		if (table_source.dword_count == 2u && MatchPackedScalarKey(key, indirect)) return finish();
+		if (const auto* bound = BoundedLoop(key, handle.Parent()); bound != nullptr) {
+			indirect.key_count = bound->Arg(1);
+			indirect.signed_count = bound->GetOpcode() == ValueOpcode::SLessThan32;
+			return finish();
+		}
+		if (!legacy_store || table_stride != 16u) return false;
 		if (table_source.dword_count == 2u) {
-			const auto* bound = BoundedLoop(key, handle.Parent());
-			if (bound != nullptr) {
-				indirect.key_count = bound->Arg(1);
-				indirect.signed_count = bound->GetOpcode() == ValueOpcode::SLessThan32;
-			} else {
+			if (!MatchPackedScalarKey(key, indirect)) {
 				// EXEC implications must describe the same iteration as the selected value.
 				if (m_native_cfg.irreducible || !m_native_cfg.back_edges.empty()) return false;
 				const auto* lane = key.Resolve().TryInstruction();
 				if (lane == nullptr || lane->GetOpcode() != ValueOpcode::ReadFirstLane ||
 				    !std::ranges::all_of(handle.Uses(), [&](const Use& use) {
-					    return Implies(use.user->Arg(5), lane->Arg(1));
+					    return Implies(use.user->Arg(use.user->NumArgs() - 1u), lane->Arg(1));
 				    })) return false;
 				const auto maximum = SelectorMaximum(lane->Arg(0), {}, 0u, lane->Arg(1));
 				if (maximum >= MaxIndirectDescriptorProbes) return false;
@@ -3365,7 +3419,7 @@ private:
 		for (auto* block: m_program.blocks) {
 			for (auto& inst: *block) {
 				if ((ImageOpcodeInfoOf(inst.GetOpcode()).access == ImageAccess::None &&
-				     inst.GetOpcode() != ValueOpcode::StoreBufferU32) ||
+				     !IndirectBufferAccess(inst)) ||
 				    inst.NumArgs() == 0u) {
 					continue;
 				}
@@ -3405,7 +3459,7 @@ private:
 						m_indirect_descriptors.push_back(std::move(plan));
 					}
 				};
-				plan_handle(inst.Arg(0), inst.GetOpcode() == ValueOpcode::StoreBufferU32 ? 4u : 8u,
+				plan_handle(inst.Arg(0), IndirectBufferAccess(inst) ? 4u : 8u,
 				            memory.resource * 4u, false);
 				if (inst.GetOpcode() == ValueOpcode::ImageSampleRaw)
 					plan_handle(inst.Arg(1), 4u, memory.sampler * 4u, true);

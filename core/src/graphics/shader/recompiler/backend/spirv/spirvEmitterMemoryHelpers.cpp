@@ -112,17 +112,22 @@ Prospero::BufferFormat StorageBufferFormat(const EmitterState& state, const IR::
 	return state.program.info.buffers[mem.resource].descriptor_format;
 }
 
-bool UsesSharedIndirectBufferStore(const EmitterState& state, uint32_t resource) {
+bool UsesSharedIndirectBufferAccess(const EmitterState& state, uint32_t resource) {
 	const auto& buffers = state.program.info.buffers;
 	const auto& root = buffers[resource];
 	if (root.indirect_root != resource || root.descriptor_index == UINT32_MAX ||
-	    root.packed_stride == 0u || root.indirect_resources.empty()) {
+	    root.packed_stride == 0u || root.indirect_resources.size() < 2u) {
 		return false;
 	}
-	uint32_t slot = root.descriptor_index;
-	for (const auto candidate: root.indirect_resources) {
-		if (buffers[candidate].packed_stride != root.packed_stride ||
-		    buffers[candidate].descriptor_index != slot++) return false;
+	uint32_t next_child_slot = UINT32_MAX;
+	for (uint32_t ordinal = 0; ordinal < root.indirect_resources.size(); ++ordinal) {
+		const auto& candidate = buffers[root.indirect_resources[ordinal]];
+		if (candidate.packed_stride != root.packed_stride ||
+		    candidate.descriptor_format != root.descriptor_format ||
+		    candidate.descriptor_swizzle != root.descriptor_swizzle ||
+		    candidate.descriptor_index == UINT32_MAX ||
+		    (ordinal > 1u && candidate.descriptor_index != next_child_slot)) return false;
+		if (ordinal != 0u) next_child_slot = candidate.descriptor_index + 1u;
 	}
 	return true;
 }
@@ -130,7 +135,7 @@ bool UsesSharedIndirectBufferStore(const EmitterState& state, uint32_t resource)
 void EmitMemoryOffsets(EmitterState& state) {
 	std::array<bool, IR::ShaderInfo::MaxBuffers> dynamic_offsets {};
 	for (uint32_t resource = 0; resource < state.program.info.buffers.size(); ++resource) {
-		if (!UsesSharedIndirectBufferStore(state, resource)) continue;
+		if (!UsesSharedIndirectBufferAccess(state, resource)) continue;
 		for (const auto candidate: state.program.info.buffers[resource].indirect_resources) {
 			dynamic_offsets[state.program.info.buffers[candidate].descriptor_index] = true;
 		}
@@ -250,7 +255,8 @@ MemoryResourceAccess PrepareStorageBufferResourceAccess(EmitterState& state,
 	return access;
 }
 
-MemoryResourceAccess PrepareMemoryResourceAccess(EmitterState& state, const IR::MemoryInfo& mem) {
+MemoryResourceAccess PrepareMemoryResourceAccess(EmitterState& state, const IR::MemoryInfo& mem,
+                                                 uint32_t array_index) {
 	MemoryResourceAccess access {.kind = mem.kind};
 	switch (mem.kind) {
 		case IR::ResourceKind::Lds:
@@ -290,7 +296,7 @@ MemoryResourceAccess PrepareMemoryResourceAccess(EmitterState& state, const IR::
 			} else if (bits == 16u) {
 				buffer = &state.storage_buffers[1];
 			}
-			access = PrepareStorageBufferResourceAccess(state, mem, *buffer);
+			access = PrepareStorageBufferResourceAccess(state, mem, *buffer, array_index);
 			access.element_bits = bits;
 			return access;
 		}

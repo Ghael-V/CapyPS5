@@ -111,6 +111,11 @@ void ValidateNativeProgram(const IR::Program& program, bool lds_storage) {
 						Fail(program, "typed buffer handle has an invalid dense resource");
 					}
 					break;
+				case IR::ValueOpcode::GetBufferResourceIndex:
+					if (dense >= program.info.buffers.size()) {
+						Fail(program, "typed buffer selector has an invalid dense resource");
+					}
+					break;
 				case IR::ValueOpcode::GetAddressResource:
 					if (planning_only_handle(inst)) {
 						break;
