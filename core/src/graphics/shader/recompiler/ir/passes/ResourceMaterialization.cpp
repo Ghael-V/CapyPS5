@@ -266,12 +266,16 @@ bool NormalizeIndirectBuffer(DescriptorValue& value, bool indexed, const BufferR
 		const auto format = Format::GetFormatInfo(descriptor.Format());
 		if (!indexed || format.type == Format::ComponentType::Unknown)
 			return SpecializationFail("indirect formatted buffers require a supported indexed format");
-		if (!formatted_read &&
-		    ((descriptor.Format() != Prospero::BufferFormat::k32UInt &&
-		      descriptor.Format() != Prospero::BufferFormat::k8SInt) ||
-		     descriptor.DstSelXYZW() != DstSel(4, 0, 0, 0) ||
-		     descriptor.Stride() != format.byte_size))
-			return SpecializationFail("indirect formatted X stores require tight SInt8 or UInt32 identity records");
+		if (!formatted_read) {
+			const bool scalar = resource.max_byte_extent == 4u &&
+			    (descriptor.Format() == Prospero::BufferFormat::k32UInt ||
+			     descriptor.Format() == Prospero::BufferFormat::k8SInt);
+			const bool rgba16 = resource.max_byte_extent == 16u &&
+			    descriptor.Format() == Prospero::BufferFormat::k16_16_16_16Float;
+			if ((!scalar && !rgba16) || descriptor.Stride() != format.byte_size ||
+			    descriptor.DstSelXYZW() != (rgba16 ? DstSel(4, 5, 6, 7) : DstSel(4, 0, 0, 0)))
+				return SpecializationFail("indirect formatted stores require tight identity SInt8, UInt32 or RGBA16Float records");
+		}
 		if (formatted_read &&
 		    (descriptor.Base48() == 0u || descriptor.Stride() == 0u || descriptor.NumRecords() == 0u)) {
 			// Every index is out of bounds. Preserve the format and swizzle constants.
