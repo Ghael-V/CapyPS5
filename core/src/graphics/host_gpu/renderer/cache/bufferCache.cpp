@@ -510,20 +510,23 @@ std::pair<Buffer*, uint64_t> BufferCache::ObtainBuffer(uint64_t vaddr, uint64_t 
 	if (is_written) {
 		Common::DebugFlags::WatchWrite("shader-written buffer", vaddr, size, 0);
 	}
-	if (!is_written && Common::DebugFlags::Enabled(Common::DebugFlags::ForceBufferSync) &&
-	    !m_memory_tracker.IsRegionGpuModified(vaddr, size)) {
+	// CPU write tracking misses some guest writes on Android (cause still under investigation),
+	// so a cached copy goes stale and whole sprite batches render empty. Until that is fixed,
+	// treat GPU-read buffers up to 4 MiB as CPU-modified on every use so they are re-uploaded.
+	// Visually verified in Dead Cells (prisoner body and props present, 60 FPS).
+	// `setprop debug.capy.force_sync_max <bytes>` tunes the limit (0 disables).
+#if defined(__ANDROID__)
+	static Common::DebugFlags::CachedValue force_sync_max("debug.capy.force_sync_max", 4 * 1024 * 1024);
+#else
+	static Common::DebugFlags::CachedValue force_sync_max("debug.capy.force_sync_max", 0);
+#endif
+	const bool force_sync = Common::DebugFlags::Enabled(Common::DebugFlags::ForceBufferSync) ||
+	                        size <= static_cast<uint64_t>(force_sync_max.Get());
+	if (!is_written && force_sync && !m_memory_tracker.IsRegionGpuModified(vaddr, size)) {
 		const uint64_t page_addr = vaddr & ~4095ULL;
 		m_memory_tracker.MarkRegionAsCpuModified(page_addr, (vaddr + size - page_addr + 4095ULL) & ~4095ULL);
 	}
-	// The stream-buffer fast path drops whole sprite batches on Adreno (measured with
-	// tools/flicker_probe.py: 4-8 bad frames in 39 with it, 0 without), so it is off by
-	// default on Android until the cause is found. `setprop debug.capy.stream 1` re-enables it.
-#if defined(__ANDROID__)
-	static Common::DebugFlags::CachedValue stream_enabled("debug.capy.stream", 0);
-#else
-	static Common::DebugFlags::CachedValue stream_enabled("debug.capy.stream", 1);
-#endif
-	if (!is_written && size <= CACHING_PAGESIZE && stream_enabled.Get() != 0 &&
+	if (!is_written && size <= CACHING_PAGESIZE &&
 	    !Common::DebugFlags::Enabled(Common::DebugFlags::NoStreamBuffer) &&
 	    !m_memory_tracker.IsRegionGpuModified(vaddr, size) &&
 	    m_memory_tracker.IsRegionCpuModified(vaddr, size)) {
