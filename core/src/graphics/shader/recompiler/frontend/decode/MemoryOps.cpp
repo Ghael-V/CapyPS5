@@ -318,7 +318,8 @@ void DecodeMubuf(uint32_t pc, std::span<const uint32_t> code, uint32_t word_inde
 	}
 
 	DecodeVectorGpr(vdata, inst.dst);
-	if (inst.opcode == Opcode::BUFFER_LOAD_FORMAT_D16_XYZW) {
+	if (inst.opcode == Opcode::BUFFER_LOAD_FORMAT_D16_XYZW ||
+	    inst.opcode == Opcode::BUFFER_STORE_FORMAT_D16_XYZW) {
 		inst.data_components = 4u;
 	}
 	if (inst.opcode == Opcode::BUFFER_LOAD_FORMAT_D16_X ||

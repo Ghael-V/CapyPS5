@@ -889,18 +889,23 @@ void StoreFormattedPrepared(ValueEmitContext& ctx, const IR::Inst& inst,
                              uint32_t components) {
 	if (resource.object_pointer == 0u) return;
 	// RDNA2 formatted stores transfer the entire format, zero-filling missing VGPRs.
+	const auto count = mem.data_bits == 16u ? mem.component_count : components;
 	const auto plan = PrepareFormattedMemory(ctx, inst, mem, resource, info);
 	EmitIfCondition(ctx.state, plan.in_bounds, [&]() {
 		auto packed = ConstantU32(ctx.state, 0);
 		for (uint32_t component = 0; component < info.component_count; component++) {
 			auto value = ConstantU32(ctx.state, 0);
-			if (component < components) {
+			if (component < count) {
+				const auto word = mem.data_bits == 16u ? component / 2u : component;
 				value = data;
 				if (components != 1u) {
 					value = ctx.state.builder.AllocateId();
 					ctx.state.builder.AddFunction(spv::OpCompositeExtract, TypeU32(ctx.state),
-					                              value, data, component);
+					                              value, data, word);
 				}
+				if (mem.data_bits == 16u && (component & 1u) != 0u)
+					value = Binary(ctx.state, spv::OpShiftRightLogical, TypeU32(ctx.state), value,
+					               ConstantU32(ctx.state, 16u));
 			}
 			value = EncodeFormattedStoreComponent(ctx.state, info, component, value, mem.data_bits);
 			const auto bits = info.component_bits[component];
