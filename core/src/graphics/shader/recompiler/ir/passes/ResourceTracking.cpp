@@ -3449,9 +3449,6 @@ private:
 			return sampler && (m_program.memory_info[use.user->Flags<MemoryFlags>().index]
 			                       .image_sample_flags & Decoder::ImageSampleFlagAdjust) != 0u;
 		})) return RejectIndirect(__LINE__);
-		bool has_phi = false;
-		for (size_t word = 0; word < handle.NumArgs(); ++word) has_phi |= handle.Arg(word).Resolve().IsPhi();
-		if (!has_phi) return RejectIndirect(__LINE__);
 		// Normalize synchronized descriptor words to one GPU ordinal.
 		// Build the complete graph before changing IR so an unsupported leaf is transactional.
 		struct Choice {
@@ -3478,32 +3475,51 @@ private:
 				return index;
 			}
 			const auto* branch = descriptor.dwords[bad].TryInstruction();
-			if (branch == nullptr || branch->Parent() == nullptr ||
-			    branch->GetOpcode() != ValueOpcode::Phi ||
-			    branch->NumPhiBlocks() != branch->NumArgs()) return UINT32_MAX;
-			choices[index].branch = branch;
-			const auto count = branch->NumArgs();
+			if (branch == nullptr || branch->Parent() == nullptr) return UINT32_MAX;
+			const auto op = branch->GetOpcode();
+			const bool phi = op == ValueOpcode::Phi;
+			const bool lane = op == ValueOpcode::ReadFirstLane;
+			if ((!phi && !lane && op != ValueOpcode::SelectU32) ||
+			    (phi && branch->NumPhiBlocks() != branch->NumArgs())) return UINT32_MAX;
+			if (lane && !std::ranges::all_of(handle.Uses(), [&](const Use& use) {
+				    return Implies(use.user->Arg(use.user->NumArgs() - 1u), branch->Arg(1));
+			    })) return UINT32_MAX;
+			const auto count = phi ? branch->NumArgs() : lane ? 1u : 2u;
+			std::array<const Inst*, 8> selected_words {};
+			const auto* anchor = branch;
+			for (uint32_t word = 0; word < descriptor.dword_count; ++word) {
+				const auto* selected = descriptor.dwords[word].TryInstruction();
+				if (selected == nullptr || selected->GetOpcode() != op ||
+				    selected->Parent() != branch->Parent()) {
+					if (!ValidateRuntimeValue(m_program, descriptor.dwords[word])) return UINT32_MAX;
+					continue;
+				}
+				if (phi ? selected->NumArgs() != count || selected->NumPhiBlocks() != count
+				        : !EquivalentValue(m_program, selected->Arg(lane ? 1u : 0u),
+				                            branch->Arg(lane ? 1u : 0u))) return UINT32_MAX;
+				selected_words[word] = selected;
+				if (!phi && AvailableBefore(*anchor, *selected)) anchor = selected;
+			}
+			// Later words may depend on choices computed after the first descriptor word.
+			choices[index].branch = anchor;
 			for (uint32_t arm = 0; arm < count; ++arm) {
 				// A nonzero bit scan cannot choose its zero-input switch sentinel.
 				// Preserve the Phi edge; its ordinal is never observed at runtime.
-				if (ImpossibleSwitchEdge(branch->PhiBlock(arm), branch->Parent())) {
+				if (phi && ImpossibleSwitchEdge(anchor->PhiBlock(arm), anchor->Parent())) {
 					choices[index].children.push_back(UINT32_MAX);
 					continue;
 				}
 				auto child = descriptor;
 				for (uint32_t word = 0; word < child.dword_count; ++word) {
-					const auto* selected = descriptor.dwords[word].TryInstruction();
-					if (selected == nullptr || selected->GetOpcode() != branch->GetOpcode() ||
-					    selected->Parent() != branch->Parent()) {
-						if (!ValidateRuntimeValue(m_program, descriptor.dwords[word])) return UINT32_MAX;
-						continue;
+					const auto* selected = selected_words[word];
+					if (selected == nullptr) continue;
+					uint32_t incoming = lane ? 0u : arm + 1u;
+					if (phi) {
+						incoming = 0u;
+						while (incoming < count && selected->PhiBlock(incoming) != anchor->PhiBlock(arm))
+							++incoming;
+						if (incoming == count) return UINT32_MAX;
 					}
-					if (selected->NumArgs() != count || selected->NumPhiBlocks() != count)
-						return UINT32_MAX;
-					uint32_t incoming = 0;
-					while (incoming < count && selected->PhiBlock(incoming) != branch->PhiBlock(arm))
-						++incoming;
-					if (incoming == count) return UINT32_MAX;
 					child.dwords[word] = selected->Arg(incoming);
 				}
 				const auto next = self(self, child);
@@ -3535,17 +3551,24 @@ private:
 			const auto where = std::ranges::find_if(block->Instructions(), [&](const Inst& inst) {
 				return &inst == choice.branch;
 			});
-			auto& key = *block->PrependNewInst(where, choice.branch->GetOpcode());
-			key.SetFlags(Type::U32);
+			const auto op = choice.branch->GetOpcode();
+			auto& key = *(op == ValueOpcode::Phi ? block->PrependNewInst(where, op)
+			    : op == ValueOpcode::ReadFirstLane
+			        ? block->PrependNewInst(where, op, {Value(0u), choice.branch->Arg(1)})
+			        : block->PrependNewInst(where, op, {choice.branch->Arg(0), Value(0u), Value(0u)}));
+			if (op == ValueOpcode::Phi) key.SetFlags(Type::U32);
 			choice.key = Value(&key);
 		}
 		for (const auto& choice: choices) {
 			if (choice.branch == nullptr) continue;
 			auto* key = choice.key.Instruction();
+			const bool phi = choice.branch->GetOpcode() == ValueOpcode::Phi;
+			const bool lane = choice.branch->GetOpcode() == ValueOpcode::ReadFirstLane;
 			for (uint32_t arm = 0; arm < choice.children.size(); ++arm) {
 				const auto child = choice.children[arm];
 				const auto value = child == UINT32_MAX ? Value(0u) : choices[child].key;
-				key->AddPhiOperand(choice.branch->PhiBlock(arm), value);
+				if (phi) key->AddPhiOperand(choice.branch->PhiBlock(arm), value);
+				else key->SetArg(lane ? 0u : arm + 1u, value);
 			}
 		}
 		plan.handle = &handle;
