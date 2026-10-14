@@ -2957,7 +2957,7 @@ private:
 	                             IndirectDescriptorPlan& plan) {
 		if (handle.GetOpcode() != ValueOpcode::GetImageResource &&
 		    handle.GetOpcode() != ValueOpcode::GetSamplerResource) return false;
-		const Inst* pointer = nullptr;
+		Inst* pointer = nullptr;
 		uint32_t descriptor_offset = 0;
 		for (uint32_t word = 0; word < handle.NumArgs(); ++word) {
 			const auto* read = descriptor.dwords[word].Resolve().TryInstruction();
@@ -2966,7 +2966,7 @@ private:
 			if (memory == nullptr || memory->kind != ResourceKind::ScalarAddress ||
 			    memory->offset > INT32_MAX || !ImmediateU32(read->Arg(1), offset) ||
 			    !AvailableBefore(*read, handle)) return false;
-			const auto* address = read->Arg(0).Resolve().TryInstruction();
+			auto* address = read->Arg(0).Resolve().TryInstruction();
 			const uint64_t current_offset = uint64_t {offset & ~3u} + (memory->offset & ~3u);
 			if (address == nullptr || address->GetOpcode() != ValueOpcode::GetAddressResource ||
 			    address->NumArgs() != 2u || current_offset > UINT32_MAX ||
