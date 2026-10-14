@@ -357,6 +357,13 @@ void CommandProcessor::WaitRegMem(uint32_t func, const T* addr, T ref, T mask, u
 	}
 
 	(void)poll;
+	// The label may have been written by GPU work that still lives only in a cached host
+	// buffer. Upstream gets it through the read fault on the protected page; our fault-free
+	// read must download it explicitly.
+	if (auto& buffers = m_renderer.GetBufferCache();
+	    buffers.HasGpuDirtyBytes(reinterpret_cast<uint64_t>(addr), sizeof(T))) {
+		buffers.ReadMemory(reinterpret_cast<uint64_t>(addr), sizeof(T));
+	}
 	T val = 0;
 	if (!Libs::LibKernel::Memory::ReadGuestMemory(reinterpret_cast<uint64_t>(addr), &val, sizeof(val))) {
 		static std::atomic<uint32_t> unmapped_wait_log {0};
@@ -408,6 +415,11 @@ void CommandProcessor::WaitRegMem(uint32_t func, const T* addr, T ref, T mask, u
 					           reinterpret_cast<uint64_t>(addr), static_cast<uint64_t>(val),
 					           static_cast<uint64_t>(ref), func);
 				}
+				// Watch the label so the log shows who writes it, and show what led to the wait.
+				if (Common::DebugFlags::g_watch_addr.exchange(reinterpret_cast<uint64_t>(addr)) !=
+				    reinterpret_cast<uint64_t>(addr)) {
+					Pm4TraceAnomaly("WAIT_REG_MEM timed out", nullptr);
+				}
 				g_current_execution->m_wait_retries = 0;
 				return;
 			}
@@ -445,6 +457,7 @@ void CommandProcessor::WriteData(uint32_t* dst, const uint32_t* src, uint32_t dw
 	if (dw_num == 0 || dst == nullptr) {
 		return;
 	}
+	Common::DebugFlags::WatchWrite("WRITE_DATA", reinterpret_cast<uint64_t>(dst), dw_num * 4ull, src[0]);
 
 	if (write_one_address) {
 		for (uint32_t i = 0; i < dw_num; i++) {
@@ -481,6 +494,8 @@ void CommandProcessor::DmaData(uint8_t engine, uint8_t dst_sel, uint8_t dst_cach
 	if (engine > 1 || num_bytes == 0) {
 		return;
 	}
+	Common::DebugFlags::WatchWrite("DMA_DATA", dst_address_or_offset, num_bytes,
+	                               src_address_or_offset_or_immediate);
 	if (dst_cache_policy > 3 || src_cache_policy > 3 || wait_for_previous > 1 ||
 	    write_confirm > 1 || block_engine > 1) {
 		LOGF("CommandProcessor::DmaData: unsupported flags dst_policy=%u src_policy=%u wait=%u confirm=%u block=%u\n",
@@ -1293,6 +1308,8 @@ void CommandProcessor::WriteAtEndOfPipe(uint32_t cache_policy, uint32_t event_wr
                                         void* dst_gpu_addr, T value, uint32_t interrupt_selector,
                                         uint32_t interrupt_context_id) {
 	static_assert(sizeof(T) == sizeof(uint32_t) || sizeof(T) == sizeof(uint64_t));
+	Common::DebugFlags::WatchWrite("END_OF_PIPE", reinterpret_cast<uint64_t>(dst_gpu_addr), sizeof(T),
+	                               static_cast<uint64_t>(value));
 
 	auto& command = CurrentBuffer();
 

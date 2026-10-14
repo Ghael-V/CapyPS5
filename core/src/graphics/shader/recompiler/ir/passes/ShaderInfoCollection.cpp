@@ -5,6 +5,9 @@
 #include "graphics/shader/recompiler/ir/ShaderIR.h"
 
 #include <algorithm>
+#if defined(__ANDROID__)
+#include <android/log.h>
+#endif
 #include <atomic>
 #include <fmt/format.h>
 
@@ -334,6 +337,18 @@ void Visit(Program& program, ShaderStageInputInfo input_info, InputUsage& inputs
 				info.function_lds |= kind == ResourceKind::FlatLocal &&
 				                     program.stage != ShaderType::Compute && program.stage != ShaderType::Mesh;
 			} else {
+				if (address_access == AddressAccess::Write) {
+					// Upstream rejects these: GPU stores through raw guest addresses bypass the
+					// buffer cache, so the CPU and later GPU work may never see them. Report it.
+					static std::atomic<uint32_t> s_global_store_log {0};
+					if (s_global_store_log.fetch_add(1, std::memory_order_relaxed) < 16) {
+#if defined(__ANDROID__)
+						__android_log_print(ANDROID_LOG_WARN, "CapyPS5-Shader",
+						                    "shader stage %d writes through a raw FLAT/GLOBAL address (untracked)",
+						                    static_cast<int>(program.stage));
+#endif
+					}
+				}
 				info.coherent_buffers |= memory.coherent;
 			}
 		}

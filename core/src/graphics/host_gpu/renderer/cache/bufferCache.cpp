@@ -503,6 +503,9 @@ std::pair<Buffer*, uint64_t> BufferCache::ObtainBuffer(uint64_t vaddr, uint64_t 
 		return {&m_slot_buffers[NULL_BUFFER_ID], 0};
 	}
 
+	if (is_written) {
+		Common::DebugFlags::WatchWrite("shader-written buffer", vaddr, size, 0);
+	}
 	if (!is_written && Common::DebugFlags::Enabled(Common::DebugFlags::ForceBufferSync) &&
 	    !m_memory_tracker.IsRegionGpuModified(vaddr, size)) {
 		const uint64_t page_addr = vaddr & ~4095ULL;

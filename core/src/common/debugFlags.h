@@ -7,6 +7,7 @@
 #include <cstdlib>
 
 #if defined(__ANDROID__)
+#include <android/log.h>
 #include <sys/system_properties.h>
 #endif
 
@@ -88,6 +89,27 @@ private:
 	std::atomic<int64_t> m_next_refresh_ms {0};
 	int64_t              m_fallback;
 };
+
+// Address being watched for writes (set automatically when a GPU wait on it times out).
+inline std::atomic<uint64_t> g_watch_addr {0};
+
+/** Logs writes that touch the watched address; used to find who should signal a label. */
+inline void WatchWrite(const char* who, uint64_t addr, uint64_t size, uint64_t value) {
+	const auto watch = g_watch_addr.load(std::memory_order_relaxed);
+	if (watch == 0 || addr > watch + 7 || addr + size <= watch) {
+		return;
+	}
+	static std::atomic<uint32_t> logged {0};
+	if (logged.fetch_add(1) >= 64) {
+		return;
+	}
+#if defined(__ANDROID__)
+	__android_log_print(ANDROID_LOG_WARN, "CapyPS5-Watch",
+	                    "%s writes 0x%016llx size=%llu value=0x%llx (watching 0x%016llx)", who,
+	                    static_cast<unsigned long long>(addr), static_cast<unsigned long long>(size),
+	                    static_cast<unsigned long long>(value), static_cast<unsigned long long>(watch));
+#endif
+}
 
 /** True when `adb shell setprop debug.capy.verbose 1` asks for detailed (hot path) logging. */
 inline bool Verbose() {
