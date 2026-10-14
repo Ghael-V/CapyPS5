@@ -293,17 +293,21 @@ void BufferCache::ReadMemory(uint64_t vaddr, uint64_t size, bool is_write) {
 		     vaddr, size);
 	}
 	m_scheduler.Context().GetGpu().SendCommandSync([this, vaddr, size, is_write] {
-		if (!IsRegionRegistered(vaddr, size) || !HasGpuDirtyBytes(vaddr, size) || !m_scheduler.Active()) {
-			uint64_t page_addr = vaddr & ~4095ULL;
-			uint64_t page_size = (vaddr + size - page_addr + 4095ULL) & ~4095ULL;
-			m_memory_tracker.UnmarkRegionAsGpuModified(page_addr, page_size);
-			if (is_write) {
-				m_memory_tracker.MarkRegionAsCpuModified(page_addr, page_size);
-			}
+		if (is_write && !IsRegionRegistered(vaddr, size)) {
 			return;
 		}
+		if (!m_scheduler.Active()) {
+			// Nothing can be downloaded without a recording scheduler (startup/shutdown); drop the
+			// protection so the faulting access can proceed.
+			m_memory_tracker.UnmarkRegionAsGpuModified(vaddr, size);
+			return;
+		}
+		// Always download every GPU-written range on the faulting pages before clearing GPU
+		// ownership. This code used to skip the download when the faulting byte itself was
+		// clean and then clear the whole page, discarding compute results that shared it, so
+		// sprite batches rendered from stale CPU data. Clearing after an empty download (unlike
+		// upstream) avoids an endless fault loop on pages with no dirty bytes left.
 		auto& buffer = m_slot_buffers[FindBuffer(vaddr, size)];
-
 		(void)DownloadBufferMemory<false>(buffer, vaddr, size);
 		m_memory_tracker.UnmarkRegionAsGpuModified(vaddr, size);
 		if (is_write) {
@@ -516,7 +520,7 @@ std::pair<Buffer*, uint64_t> BufferCache::ObtainBuffer(uint64_t vaddr, uint64_t 
 	// Visually verified in Dead Cells (prisoner body and props present, 60 FPS).
 	// `setprop debug.capy.force_sync_max <bytes>` tunes the limit (0 disables).
 #if defined(__ANDROID__)
-	static Common::DebugFlags::CachedValue force_sync_max("debug.capy.force_sync_max", 4 * 1024 * 1024);
+	static Common::DebugFlags::CachedValue force_sync_max("debug.capy.force_sync_max", 0);
 #else
 	static Common::DebugFlags::CachedValue force_sync_max("debug.capy.force_sync_max", 0);
 #endif
