@@ -490,8 +490,11 @@ void ValidateProgram(const Program& program) {
 				    !memory.SupportsIndirectBufferLoad(inst.GetOpcode())) {
 					return Fail("indirect buffer requires a scalar, raw DWORD x1/x2/x3/x4, or formatted X load");
 				}
+				const bool packed_formatted_load =
+				    BufferAccessOf(inst.GetOpcode()) == BufferAccess::Read && memory.formatted &&
+				    memory.data_bits == 16u && memory.component_count == 4u && buffer_components == 2u;
 				if (buffer_components > 1u &&
-				    (!vector_buffer || memory.data_bits != 32u ||
+				    (!vector_buffer || (memory.data_bits != 32u && !packed_formatted_load) ||
 				     memory.data_dwords != buffer_components || memory.component_index != 0u)) {
 					return Fail(fmt::format("{} has inconsistent native-wide metadata",
 					                        ValueOpcodeName(inst.GetOpcode())));

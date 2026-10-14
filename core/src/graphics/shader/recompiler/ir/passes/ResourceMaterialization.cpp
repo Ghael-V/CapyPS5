@@ -1777,14 +1777,23 @@ void ApplyResourceSpecialization(Program& program, const ResourceSpecialization&
 					if (memory.formatted && !memory.typed) {
 						const auto& buffer = buffers[memory.resource];
 						const auto format = Format::GetFormatInfo(buffer.descriptor_format);
-						for (uint32_t component = 0; component < count; component++) {
+						const bool d16 = memory.data_bits == 16u;
+						const auto components = d16 ? memory.component_count : count;
+						std::array<uint32_t, 4> constants {};
+						for (uint32_t component = 0; component < components; component++) {
 							if (format.type == Format::ComponentType::Unknown ||
 							    GetDstSel(buffer.descriptor_swizzle, component) != 1u) continue;
-							const auto one = Format::FormattedConstantBits(
+							auto one = Format::FormattedConstantBits(
 							    format, Format::FormattedSourceKind::One);
+							if (d16 && one == 0x3f800000u) one = 0x3c00u;
+							constants[d16 ? component / 2u : component] |=
+							    one << (d16 ? (component % 2u) * 16u : 0u);
+						}
+						for (uint32_t component = 0; component < count; component++) {
+							if (constants[component] == 0u) continue;
 							values[component] = Value(&*block->PrependNewInst(
 							    it, ValueOpcode::SelectU32,
-							    {inst.Arg(inst.NumArgs() - 1), Value(one), Value(0u)}));
+							    {inst.Arg(inst.NumArgs() - 1), Value(constants[component]), Value(0u)}));
 						}
 					}
 					Value result = values[0];
