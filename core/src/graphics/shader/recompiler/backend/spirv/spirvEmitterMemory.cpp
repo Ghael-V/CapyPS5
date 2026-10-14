@@ -1044,6 +1044,7 @@ uint32_t IndirectBufferInBounds(EmitterState& state, const IndirectBufferAccess&
 
 uint32_t LoadIndirectBuffer(ValueEmitContext& ctx, const IR::Inst& inst, uint32_t components) {
 	auto& state = ctx.state;
+	const auto bits   = ctx.Memory(inst).data_bits;
 	const auto buffer = PrepareIndirectBuffer(ctx, inst);
 	const auto valid_format = Binary(state, spv::OpINotEqual, TypeBool(state), buffer.format,
 	                                  ConstantU32(state, 0));
@@ -1057,8 +1058,19 @@ uint32_t LoadIndirectBuffer(ValueEmitContext& ctx, const IR::Inst& inst, uint32_
 		values[component] = EmitValueOrZeroIfCondition(
 		    state, AndCondition(state, valid_format,
 		                        IndirectBufferInBounds(state, buffer, component * 4u,
-		                                               ConstantU32(state, 4u), false)),
-		    [&]() { return LoadBdaDword(ctx, address); });
+		                                               ConstantU32(state, bits / 8u), false)),
+		    [&]() {
+			    const auto value = LoadBdaDword(ctx, address, ctx.Memory(inst).coherent);
+			    if (bits == 32u) return value;
+			    const auto byte = Binary(
+			        state, spv::OpBitwiseAnd, TypeU32(state),
+			        Unary(state, spv::OpUConvert, TypeU32(state), buffer.address),
+			        ConstantU32(state, bits == 8u ? 3u : 2u));
+			    return EmitBitFieldUExtract(
+			        state, value,
+			        Binary(state, spv::OpShiftLeftLogical, TypeU32(state), byte, ConstantU32(state, 3u)),
+			        ConstantU32(state, bits));
+		    });
 	}
 	return ConstructU32Composite(state, components, values);
 }
@@ -1584,8 +1596,8 @@ void EmitLoadMemory(ValueEmitContext& ctx, const IR::Inst& inst) {
 	if (mem.kind == IR::ResourceKind::FlatLocal)
 		value = LoadLocalFlat(ctx, inst);
 	else if (buffer_components > 1u ||
-	         (op == IR::ValueOpcode::LoadBufferU32 &&
-	          (mem.kind == IR::ResourceKind::IndirectBuffer || mem.formatted)))
+	         (buffer_components == 1u && mem.kind == IR::ResourceKind::IndirectBuffer) ||
+	         (op == IR::ValueOpcode::LoadBufferU32 && mem.formatted))
 		value = LoadBuffer(ctx, inst, buffer_components);
 	else if (shared_components > 1u)
 		value = LoadWideShared(ctx, inst, shared_components);

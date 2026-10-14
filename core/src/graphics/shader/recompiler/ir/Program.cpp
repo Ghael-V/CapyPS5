@@ -488,7 +488,8 @@ void ValidateProgram(const Program& program) {
 				}
 				if (memory.kind == ResourceKind::IndirectBuffer &&
 				    !memory.SupportsIndirectBufferLoad(inst.GetOpcode())) {
-					return Fail("indirect buffer requires a scalar, raw DWORD x1/x2/x3/x4, or formatted X load");
+					return Fail("indirect buffer requires a scalar, raw 8/16-bit, raw DWORD x1/x2/x3/x4, "
+					            "or formatted X load");
 				}
 				const bool packed_formatted_load =
 				    BufferAccessOf(inst.GetOpcode()) == BufferAccess::Read && memory.formatted &&
