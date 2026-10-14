@@ -4,6 +4,7 @@
 #include "common/common.h"
 #include "common/debugFlags.h"
 #include "common/passInspector.h"
+#include "common/telemetry.h"
 #include "common/emulatorConfig.h"
 #include "common/file.h"
 #include "common/logging/log.h"
@@ -378,7 +379,11 @@ static void UpdateGraphicsDynamicState(const CommandBuffer& buffer, DynamicState
 	const auto&      blend = ctx.GetBlendColor();
 	const std::array blend_constants {blend.red, blend.green, blend.blue, blend.alpha};
 	dynamic_state.SetBlendConstants(blend_constants);
-	dynamic_state.SetDepthTestEnabled(depth.depth_test_enable);
+	// Bisection aid: `setprop debug.capy.no_ro_depth 1` disables depth testing for draws that
+	// test without writing (Adreno LRZ investigation).
+	static Common::DebugFlags::CachedValue no_ro_depth("debug.capy.no_ro_depth", 0);
+	dynamic_state.SetDepthTestEnabled(depth.depth_test_enable &&
+	                                   (depth.depth_write_enable || no_ro_depth.Get() == 0));
 	dynamic_state.SetDepthWriteEnabled(depth.depth_write_enable);
 	dynamic_state.SetDepthCompareOp(depth.depth_compare_op);
 #if !defined(__APPLE__)
@@ -1129,8 +1134,22 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 		Common::PassInspector::RecordDraw(pixel_shader, extent.width, extent.height,
 		                                  state.color_count);
 	}
+	// `setprop debug.capy.skip_nth N` (1-based) narrows skip_ps to the Nth draw of that shader per frame.
+	static Common::DebugFlags::CachedValue skip_nth("debug.capy.skip_nth", 0);
+	static uint64_t last_frame = 0;
+	static int64_t  nth_seen   = 0;
+	if (const auto frame = Common::Telemetry::g_game_frames.load(std::memory_order_relaxed);
+	    frame != last_frame) {
+		last_frame = frame;
+		nth_seen   = 0;
+	}
+	bool skip_this = true;
+	if (skip_ps.Get() != 0 && static_cast<uint64_t>(skip_ps.Get()) == pixel_shader &&
+	    skip_nth.Get() != 0) {
+		skip_this = ++nth_seen == skip_nth.Get();
+	}
 	if (const auto skip = skip_ps.Get();
-	    (skip != 0 && static_cast<uint64_t>(skip) == pixel_shader) ||
+	    (skip != 0 && static_cast<uint64_t>(skip) == pixel_shader && skip_this) ||
 	    Common::PassInspector::IsSkipped(pixel_shader)) {
 		return;
 	}
@@ -1202,6 +1221,12 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 	static Common::DebugFlags::CachedValue dump_ps("debug.capy.dump_ps", 0);
 	if (Common::DebugFlags::FrameTracing() && state.ps_active && dump_ps.Get() != 0 &&
 	    static_cast<uint64_t>(dump_ps.Get()) == buffer.GetShaders().GetPs().ps_regs.data_addr) {
+		if (state.depth_info.image_id) {
+			const bool ok = m_context.GetTextureCache().DebugDownloadImage(state.depth_info.image_id);
+			Common::DebugFlags::FrameTrace("  dump depth addr=0x%llx -> %d",
+			                               static_cast<unsigned long long>(state.depth_info.desc.info.data.address),
+			                               ok ? 1 : 0);
+		}
 		for (const auto& image: bindings.pixel->images) {
 			const bool ok = m_context.GetTextureCache().DebugDownloadImage(image.image_id);
 			Common::DebugFlags::FrameTrace("  dump image addr=0x%llx -> %d",
@@ -1239,6 +1264,11 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 		    rt0 ? rt0->desc.info.extent.width : 0, rt0 ? rt0->desc.info.extent.height : 0,
 		    rt0 ? static_cast<uint32_t>(rt0->desc.info.guest_format) : 0,
 		    rt0 ? static_cast<uint32_t>(rt0->desc.info.tile_mode) : 0);
+		Common::DebugFlags::FrameTrace("    rendering ds_layout=%d has_depth=%d has_stencil=%d feedback=%u",
+		    static_cast<int>(rendering.depth_stencil_attachment.image_layout),
+		    rendering.depth_stencil_attachment.has_depth ? 1 : 0,
+		    rendering.depth_stencil_attachment.has_stencil ? 1 : 0,
+		    static_cast<uint32_t>(feedback_aspects));
 		for (int r = 0; r < state.vertex_info[0].resources_num; r++) {
 			const auto& res = state.vertex_info[0].resources[r];
 			Common::DebugFlags::FrameTrace("    vtx[%d] addr=0x%llx stride=%u records=%u fmt=%u sel=0x%03x", r,
@@ -1249,8 +1279,9 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 		const auto& dc = buffer.GetRegisters().GetDepthControl();
 		const auto& di = state.depth_info;
 		Common::DebugFlags::FrameTrace(
-		    "    depth img=%d addr=0x%llx clr=%d/%d %.3f test=%d write=%d op=%d | guest z=%d zw=%d zfunc=%u st=%d sfunc=%u | vk st=%d fail=%d pass=%d zfail=%d cmp=%d mask=0x%x wmask=0x%x ref=0x%x",
-		    di.image_id ? 1 : 0, static_cast<unsigned long long>(di.desc.info.data.address),
+		    "    depth img=%d id=%u vkfmt=%d addr=0x%llx clr=%d/%d %.3f test=%d write=%d op=%d | guest z=%d zw=%d zfunc=%u st=%d sfunc=%u | vk st=%d fail=%d pass=%d zfail=%d cmp=%d mask=0x%x wmask=0x%x ref=0x%x",
+		    di.image_id ? 1 : 0, static_cast<uint32_t>(di.image_id.index),
+		    static_cast<int>(di.desc.info.pixel_format), static_cast<unsigned long long>(di.desc.info.data.address),
 		    di.depth_clear_enable ? 1 : 0, di.depth_load_clear_enable ? 1 : 0,
 		    static_cast<double>(di.depth_clear_value), di.depth_test_enable ? 1 : 0, di.depth_write_enable ? 1 : 0,
 		    static_cast<int>(di.depth_compare_op), dc.z_enable ? 1 : 0, dc.z_write_enable ? 1 : 0,
@@ -1324,6 +1355,22 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 	if (shader_write_stages) {
 		m_context.GetCommandScheduler().EndRendering();
 		ShaderWriteBarrier(vk_buffer, shader_write_stages);
+	}
+	// `setprop debug.capy.dump_after N`: during a frame trace, write the color targets back to
+	// guest memory right after the Nth draw (1-based, as numbered by the trace) of the frame.
+	if (Common::DebugFlags::FrameTracing()) {
+		static Common::DebugFlags::CachedValue dump_after("debug.capy.dump_after", 0);
+		const auto index = Common::DebugFlags::g_trace_draws.fetch_add(1) + 1;
+		Common::DebugFlags::FrameTrace("  draw #%u", index);
+		if (dump_after.Get() != 0 && static_cast<int64_t>(index) == dump_after.Get()) {
+			m_context.GetCommandScheduler().EndRendering();
+			for (uint32_t i = 0; i < state.color_count; i++) {
+				const bool ok = m_context.GetTextureCache().DebugDownloadImage(state.color_info[i].image_id);
+				Common::DebugFlags::FrameTrace("  dump target slot=%u addr=0x%llx -> %d",
+				    state.color_info[i].target_slot,
+				    static_cast<unsigned long long>(state.color_info[i].desc.info.data.address), ok ? 1 : 0);
+			}
+		}
 	}
 	LogDrawPhase(draw.Name(), "DrawComplete");
 	if (!draw.IsIndexed()) {

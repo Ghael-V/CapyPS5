@@ -1,6 +1,7 @@
 #ifndef EMULATOR_SRC_GRAPHICS_HOST_GPU_RENDERER_DEPTHRENDERTARGET_H_
 #define EMULATOR_SRC_GRAPHICS_HOST_GPU_RENDERER_DEPTHRENDERTARGET_H_
 
+#include "common/debugFlags.h"
 #include "common/assert.h"
 #include "graphics/host_gpu/renderer/cache/textureCache.h"
 #include "graphics/host_gpu/renderer/image/imageView.h"
@@ -69,6 +70,18 @@ inline vk::ImageAspectFlags DepthReadableAspects(vk::ImageLayout layout) {
 }
 
 inline vk::ImageLayout depth_attachment_layout(const RenderDepthInfo& depth) {
+	// Adreno investigation: `setprop debug.capy.ds_layout 1` keeps one writable layout for every
+	// depth pass (2 uses GENERAL) so read-only passes do not transition the attachment.
+	static Common::DebugFlags::CachedValue forced_layout("debug.capy.ds_layout", 0);
+	if (const auto forced = forced_layout.Get(); forced != 0) {
+		const auto aspects = ImageViewOps::DepthAspectMask(depth.desc.view_info.format);
+		if (forced == 2) {
+			return vk::ImageLayout::eGeneral;
+		}
+		if ((aspects & vk::ImageAspectFlagBits::eStencil) && (aspects & vk::ImageAspectFlagBits::eDepth)) {
+			return vk::ImageLayout::eDepthStencilAttachmentOptimal;
+		}
+	}
 	const auto available     = ImageViewOps::DepthAspectMask(depth.desc.view_info.format);
 	const auto writes        = depth.AttachmentWriteAspects();
 	const bool has_depth     = static_cast<bool>(available & vk::ImageAspectFlagBits::eDepth);

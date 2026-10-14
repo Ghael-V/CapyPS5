@@ -113,14 +113,14 @@ static void TraceBufferContents(const char* kind, uint64_t address, uint64_t siz
 	if (!Common::DebugFlags::FrameTracing()) {
 		return;
 	}
-	uint32_t words[8] = {};
+	uint32_t words[16] = {};
 	const bool ok = Libs::LibKernel::Memory::ReadGuestMemory(address, words,
 	                                                         std::min<uint64_t>(size, sizeof(words)));
-	Common::DebugFlags::FrameTrace("    %s 0x%llx size=%llu w=%d %s %08x %08x %08x %08x %08x %08x %08x %08x",
+	Common::DebugFlags::FrameTrace("    %s 0x%llx size=%llu w=%d %s %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x",
 	                               kind, static_cast<unsigned long long>(address),
 	                               static_cast<unsigned long long>(size), written ? 1 : 0, ok ? "" : "(unreadable)",
 	                               words[0], words[1], words[2], words[3], words[4], words[5], words[6],
-	                               words[7]);
+	                               words[7], words[8], words[9], words[10], words[11]);
 }
 
 static vk::DescriptorBufferInfo

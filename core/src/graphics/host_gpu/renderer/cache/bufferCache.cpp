@@ -530,10 +530,16 @@ std::pair<Buffer*, uint64_t> BufferCache::ObtainBuffer(uint64_t vaddr, uint64_t 
 		const uint64_t page_addr = vaddr & ~4095ULL;
 		m_memory_tracker.MarkRegionAsCpuModified(page_addr, (vaddr + size - page_addr + 4095ULL) & ~4095ULL);
 	}
-	if (!is_written && size <= CACHING_PAGESIZE &&
+	// `setprop debug.capy.stream_max <bytes>`: copy CPU-owned read-only buffers up to that size
+	// fresh from guest memory on every use, bypassing page write tracking.
+	static Common::DebugFlags::CachedValue stream_max("debug.capy.stream_max", 0);
+	const bool fresh_copy = !is_written && stream_max.Get() > 0 &&
+	                        size <= static_cast<uint64_t>(stream_max.Get()) &&
+	                        !m_memory_tracker.IsRegionGpuModified(vaddr, size);
+	if (fresh_copy || (!is_written && size <= CACHING_PAGESIZE &&
 	    !Common::DebugFlags::Enabled(Common::DebugFlags::NoStreamBuffer) &&
 	    !m_memory_tracker.IsRegionGpuModified(vaddr, size) &&
-	    m_memory_tracker.IsRegionCpuModified(vaddr, size)) {
+	    m_memory_tracker.IsRegionCpuModified(vaddr, size))) {
 		const auto alignment = std::max<uint64_t>(
 		    m_graphics.physical_device_properties.limits.minUniformBufferOffsetAlignment, 1);
 		auto [mapped, offset] = m_stream_buffer.Map(size, alignment, false);

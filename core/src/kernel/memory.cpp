@@ -1,4 +1,5 @@
 #include "kernel/memory.h"
+#include "common/debugFlags.h"
 
 #include "common/assert.h"
 #include "common/logging/log.h"
@@ -992,6 +993,17 @@ bool ReadGuestMemory(uint64_t vaddr, void* data, uint64_t size) {
 	std::memcpy(data, reinterpret_cast<const void*>(vaddr), size);
 	return true;
 #endif
+	// process_vm_readv also fails on pages the GPU memory tracker made no-access. Inside a valid
+	// guest range read through the mapping as upstream does: the fault handler downloads the GPU
+	// data and unprotects the page. Reading zeros instead dropped geometry (Dead Cells passage).
+	if (g_virtual_ranges != nullptr && g_virtual_ranges->ClampRangeSize(vaddr, size) == size) {
+		Common::DebugFlags::NoteOnce("CapyPS5-Mem", vaddr >> 12u,
+		                             "protected guest read 0x%llx size=%llu: reading through the fault handler",
+		                             static_cast<unsigned long long>(vaddr),
+		                             static_cast<unsigned long long>(size));
+		std::memcpy(data, reinterpret_cast<const void*>(vaddr), size);
+		return true;
+	}
 	// Sparse regions without a host mapping read as zero.
 	return g_guest_address_space->TryReadSparseBacking(vaddr, data, size);
 }

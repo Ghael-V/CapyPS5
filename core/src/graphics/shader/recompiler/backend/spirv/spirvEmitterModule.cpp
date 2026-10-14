@@ -1,4 +1,5 @@
 #include "graphics/shader/recompiler/backend/spirv/spirvEmitterInternal.h"
+#include "common/debugFlags.h"
 
 #include <algorithm>
 #include <bit>
@@ -832,7 +833,10 @@ void DefineModule(EmitterState& state) {
 		if (state.depth_variable != 0) {
 			state.builder.AddExecutionMode(state.main_func, spv::ExecutionModeDepthReplacing);
 		}
-		if (state.input_info.pixel->ps_early_z && !state.input_info.pixel->ps_pixel_kill_enable &&
+		// `setprop debug.capy.no_early_z 1` (before shaders compile) never forces early tests.
+		static Common::DebugFlags::CachedValue no_early_z("debug.capy.no_early_z", 0);
+		if (no_early_z.Get() == 0 && state.input_info.pixel->ps_early_z &&
+		    !state.input_info.pixel->ps_pixel_kill_enable &&
 		    !state.input_info.pixel->ps_depth_export_enable &&
 		    !state.input_info.pixel->ps_sample_mask_export_enable) {
 			state.builder.AddExecutionMode(state.main_func, spv::ExecutionModeEarlyFragmentTests);

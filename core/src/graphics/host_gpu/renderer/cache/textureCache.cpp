@@ -590,6 +590,8 @@ bool TextureCache::CopyD16(Image& destination, Image& source) {
 }
 
 void TextureCache::CopyImage(ImageId destination_id, ImageId source_id) {
+	Common::DebugFlags::FrameTrace("  tc %s id=%u addr=0x%llx", "copy-to", static_cast<uint32_t>(destination_id.index),
+	                               static_cast<unsigned long long>(m_slot_images[destination_id].info.data.address));
 	RefreshCopySource(source_id);
 	auto& destination = m_slot_images[destination_id];
 	auto& source      = m_slot_images[source_id];
@@ -910,6 +912,8 @@ bool TextureCache::CanDownload(const Image& image) const {
 }
 
 void TextureCache::UploadImage(Image& image, Buffer& source, uint64_t source_offset) {
+	Common::DebugFlags::FrameTrace("  tc %s id=%u addr=0x%llx", "upload", static_cast<uint32_t>(0),
+	                               static_cast<unsigned long long>(image.info.data.address));
 	auto& destination = image.depth_id ? m_slot_images[image.depth_id] : image;
 	const auto& info        = image.info;
 	const auto  binding     = image.depth_id ? BindingType::DepthTarget : UploadBinding(image);
@@ -974,6 +978,8 @@ void TextureCache::UploadImage(Image& image, Buffer& source, uint64_t source_off
 }
 
 void TextureCache::InitializeImage(ImageId id) {
+	Common::DebugFlags::FrameTrace("  tc %s id=%u addr=0x%llx", "initialize", static_cast<uint32_t>(id.index),
+	                               static_cast<unsigned long long>(m_slot_images[id].info.data.address));
 	auto& image = m_slot_images[id];
 	if (image.info.data.Empty()) {
 		return;
@@ -1075,6 +1081,8 @@ void TextureCache::MaterializeColorClear(ImageId id, const ImageDesc& desc,
 }
 
 void TextureCache::RefreshImage(ImageId id) {
+	Common::DebugFlags::FrameTrace("  tc %s id=%u addr=0x%llx", "refresh", static_cast<uint32_t>(id.index),
+	                               static_cast<unsigned long long>(m_slot_images[id].info.data.address));
 	auto& image = m_slot_images[id];
 	if (image.depth_id &&
 	    (m_slot_images[image.depth_id].info.metadata.stencil_compressed ||
@@ -1506,6 +1514,8 @@ bool TextureCache::ClearImageFromBuffer(CommandBuffer& command, uint64_t address
 
 void TextureCache::ClearImage(CommandBuffer& command, ImageId id, vk::Format format,
                               const vk::ImageSubresourceRange& range, const vk::ClearValue& clear) {
+	Common::DebugFlags::FrameTrace("  tc %s id=%u addr=0x%llx", "clear", static_cast<uint32_t>(id.index),
+	                               static_cast<unsigned long long>(m_slot_images[id].info.data.address));
 	auto& image = m_slot_images[id];
 	const auto aspects = image.info.IsDepth() ? ImageViewOps::DepthAspectMask(image.backing.format)
 	                                          : vk::ImageAspectFlagBits::eColor;

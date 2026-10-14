@@ -142,6 +142,7 @@ inline void NoteOnce(const char* tag, uint64_t key, const char* fmt, ...) {
 // next complete frame (flip to flip) under the CapyPS5-Frame tag. Reset the property to re-arm.
 inline std::atomic<uint32_t> g_trace_state {0}; // 0 idle, 1 tracing, 2 done
 inline std::atomic<uint32_t> g_trace_lines {0};
+inline std::atomic<uint32_t> g_trace_draws {0}; // draws seen in the traced frame
 
 inline bool FrameTracing() {
 	return g_trace_state.load(std::memory_order_relaxed) == 1;
@@ -170,6 +171,7 @@ inline void FrameTraceOnFlip() {
 	}
 	if (state == 0) {
 		g_trace_lines.store(0, std::memory_order_relaxed);
+		g_trace_draws.store(0, std::memory_order_relaxed);
 		g_trace_state.store(1, std::memory_order_relaxed);
 		FrameTrace("---- frame begin ----");
 	} else if (state == 1) {
