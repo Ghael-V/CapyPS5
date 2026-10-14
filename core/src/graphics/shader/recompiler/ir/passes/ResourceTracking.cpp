@@ -1759,43 +1759,52 @@ private:
 		return true;
 	}
 
-	const Inst* BoundedInduction(Value key, const Block* use, const auto& accepts_step,
-	                             const auto& accepts_bound,
-	                             LaneQuantifier lanes = LaneQuantifier::Any) const {
-		const auto* phi = key.Resolve().TryInstruction();
+	struct Induction {
+		const Inst* phi;
+		const Inst* step;
+		uint32_t initial_arm;
+	};
+
+	std::optional<Induction> MatchInduction(Value key, const auto& accepts_step) const {
+		key = key.Resolve();
+		const auto* phi = key.TryInstruction();
 		if (phi == nullptr || phi->GetOpcode() != ValueOpcode::Phi || phi->GetType() != Type::U32 ||
-		    phi->NumArgs() != 2u || phi->NumPhiBlocks() != 2u)
+		    phi->NumArgs() != 2u || phi->NumPhiBlocks() != 2u || phi->Parent() == nullptr)
 			return {};
-		const Block* increment_block = nullptr;
-		uint32_t initial_arm = 0;
 		for (uint32_t initial = 0; initial < 2u; ++initial) {
 			const auto initial_value = phi->Arg(initial).Resolve();
 			const auto* step = phi->Arg(initial ^ 1u).Resolve().TryInstruction();
 			if (!initial_value.IsImmediate() || initial_value.GetType() != Type::U32 ||
 			    step == nullptr || step->GetOpcode() != ValueOpcode::IAdd32 ||
 			    step->Parent() == nullptr) continue;
-			// Structurization can forward the native increment through a synthetic continue block.
-			const auto* incoming = phi->PhiBlock(initial ^ 1u);
-			const auto* next = phi->Parent();
-			for (size_t edges = 0; incoming != step->Parent() && edges < m_program.blocks.size(); ++edges) {
-				if (incoming == nullptr || incoming->terminator.kind != CFG::TerminatorKind::Branch ||
-				    incoming->terminator.true_block != next || incoming->ImmPredecessors().size() != 1u)
-					break;
-				next = incoming;
-				incoming = incoming->ImmPredecessors()[0];
-			}
-			if (incoming != step->Parent()) continue;
 			uint32_t increment = 0;
 			if ((step->Arg(0).Resolve() == key &&
 			     ImmediateU32(step->Arg(1), increment) && accepts_step(initial_value.U32(), increment)) ||
 			    (step->Arg(1).Resolve() == key &&
-			     ImmediateU32(step->Arg(0), increment) && accepts_step(initial_value.U32(), increment))) {
-				increment_block = step->Parent();
-				initial_arm = initial;
-				break;
-			}
+			     ImmediateU32(step->Arg(0), increment) && accepts_step(initial_value.U32(), increment)))
+				return Induction {phi, step, initial};
 		}
-		if (increment_block == nullptr) return {};
+		return {};
+	}
+
+	const Inst* BoundedInduction(Value key, const Block* use, const auto& accepts_step,
+	                             const auto& accepts_bound,
+	                             LaneQuantifier lanes = LaneQuantifier::Any) const {
+		const auto induction = MatchInduction(key, accepts_step);
+		if (!induction) return {};
+		const auto [phi, step, initial_arm] = *induction;
+		const auto* increment_block = step->Parent();
+		// Structurization can forward the native increment through a synthetic continue block.
+		const auto* incoming = phi->PhiBlock(initial_arm ^ 1u);
+		const auto* next = phi->Parent();
+		for (size_t edges = 0; incoming != increment_block && edges < m_program.blocks.size(); ++edges) {
+			if (incoming == nullptr || incoming->terminator.kind != CFG::TerminatorKind::Branch ||
+			    incoming->terminator.true_block != next || incoming->ImmPredecessors().size() != 1u)
+				break;
+			next = incoming;
+			incoming = incoming->ImmPredecessors()[0];
+		}
+		if (incoming != increment_block) return {};
 
 		const auto stops = [&](const Block* block) { return block == phi->Parent(); };
 		for (const auto& use_of_key: phi->Uses()) {
@@ -1814,6 +1823,39 @@ private:
 			})) return compare;
 		}
 		return {};
+	}
+
+	uint32_t PostTestLoopMaximum(Value key) const {
+		const auto induction = MatchInduction(key,
+		    [](uint32_t initial, uint32_t step) { return initial == 0u && step == 1u; });
+		if (!induction) return UINT32_MAX;
+		const auto [phi, step, initial_arm] = *induction;
+		const auto* incoming = phi->PhiBlock(initial_arm ^ 1u);
+		if (incoming == nullptr) return UINT32_MAX;
+		for (const auto& use: step->Uses()) {
+			const auto* compare = use.user;
+			uint32_t bound = 0;
+			if (use.operand != 0u ||
+			    (compare->GetOpcode() != ValueOpcode::SLessThan32 &&
+			     compare->GetOpcode() != ValueOpcode::ULessThan32) ||
+			    !ImmediateU32(compare->Arg(1), bound) || bound == 0u ||
+			    (compare->GetOpcode() == ValueOpcode::SLessThan32 && bound > INT32_MAX) ||
+			    !AvailableBefore(*step, *compare)) continue;
+			const auto accepts = [&](const EdgePredicate& edge) {
+				return edge.positive && edge.lanes == LaneQuantifier::All &&
+				       Implies(edge.condition, Value(const_cast<Inst*>(compare)));
+			};
+			const auto edge = ConditionalEdge(incoming, phi->Parent());
+			if ((edge && accepts(*edge)) || GuardedOnEntry(incoming, [&](const Block* block) {
+				// A guard before the increment may belong to the previous iteration.
+				return block == phi->Parent() || block == step->Parent();
+			}, accepts)) {
+				// Starting at zero, next < bound keeps the carried value in range;
+				// incrementing bound - 1 cannot overflow either accepted comparison domain.
+				return bound - 1u;
+			}
+		}
+		return UINT32_MAX;
 	}
 
 	const Inst* BoundedLoop(Value key, const Block* use, const auto& accepts_bound,
@@ -3233,6 +3275,8 @@ private:
 			case ValueOpcode::Phi: {
 				const auto initial = InitialCandidateMask(value);
 				if (!initial.IsEmpty()) return SelectorMaximum(initial, bounds, depth + 1u, guard);
+				const auto post_test = PostTestLoopMaximum(value);
+				if (post_test != UINT32_MAX) return post_test;
 				if (m_native_cfg.irreducible || !m_native_cfg.back_edges.empty() ||
 				    inst->NumArgs() == 0u || (inst->Parent() != nullptr && InCycle(inst->Parent())))
 					return UINT32_MAX;
