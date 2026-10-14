@@ -31,6 +31,7 @@
 #endif
 
 #include <algorithm>
+#include <array>
 #include <bit>
 #include <cstddef>
 #include <cstring>
@@ -212,9 +213,37 @@ static void AddLayoutBindings(std::vector<vk::DescriptorSetLayoutBinding>& descr
 
 static void CreateDescriptorLayout(GraphicContext& graphics, PipelineCache::Pipeline& pipeline,
                                    std::span<const vk::DescriptorSetLayoutBinding> bindings) {
-	uint32_t descriptor_count = 0;
+	const auto& limits = graphics.GetPhysicalDeviceProperties().limits;
+	uint64_t descriptor_count = 0;
+	uint64_t storage_buffers = 0;
+	std::array<uint64_t, 32> stage_buffers {}, stage_resources {};
 	for (const auto& binding: bindings) {
 		descriptor_count += binding.descriptorCount;
+		const bool storage = binding.descriptorType == vk::DescriptorType::eStorageBuffer;
+		if (storage) storage_buffers += binding.descriptorCount;
+		for (auto stages = static_cast<uint32_t>(binding.stageFlags); stages != 0; stages &= stages - 1u) {
+			const auto stage = std::countr_zero(stages);
+			if (storage) stage_buffers[stage] += binding.descriptorCount;
+			if (binding.descriptorType != vk::DescriptorType::eSampler)
+				stage_resources[stage] += binding.descriptorCount;
+			// Reported, not fatal: drivers that under-report these limits (as some mobile ones do)
+			// still create the layout, and a real failure exits at createDescriptorSetLayout.
+			if (stage_buffers[stage] > limits.maxPerStageDescriptorStorageBuffers ||
+			    stage_resources[stage] > limits.maxPerStageResources) {
+				Common::DebugFlags::NoteOnce(
+				    "CapyPS5-Descriptors",
+				    (uint64_t {static_cast<uint32_t>(stage)} << 40u) ^ (stage_buffers[stage] << 20u) ^
+				        stage_resources[stage],
+				    "native descriptor stage %u exceeds device limits: buffers=%" PRIu64
+				    "/%u resources=%" PRIu64 "/%u", stage, stage_buffers[stage],
+				     limits.maxPerStageDescriptorStorageBuffers, stage_resources[stage], limits.maxPerStageResources);
+			}
+		}
+	}
+	if (storage_buffers > limits.maxDescriptorSetStorageBuffers) {
+		Common::DebugFlags::NoteOnce("CapyPS5-Descriptors", storage_buffers,
+		                             "native storage-buffer descriptors exceed device limit: %" PRIu64 "/%u",
+		                             storage_buffers, limits.maxDescriptorSetStorageBuffers);
 	}
 	pipeline.uses_push_descriptors = descriptor_count <= graphics.max_push_descriptors;
 

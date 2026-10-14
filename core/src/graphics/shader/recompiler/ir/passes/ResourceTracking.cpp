@@ -3734,7 +3734,7 @@ private:
 				return i;
 			}
 		}
-		if (m_info.buffers.size() >= ShaderInfo::MaxBuffers) {
+		if (m_info.buffers.size() >= ShaderInfo::MaxBufferRoots) {
 			return UINT32_MAX;
 		}
 		BufferResource resource;

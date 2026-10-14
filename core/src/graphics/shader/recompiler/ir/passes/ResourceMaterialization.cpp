@@ -1630,7 +1630,7 @@ bool MaterializeResources(const ResourcePlan& program, const SrtRuntime& runtime
 				if (active.empty() || active[base.source]) {
 					if (!MaterializeIndirectDescriptor(
 					        program, *source->indirect_descriptor, i, 4u, observed, clean, snapshot,
-					        snapshot.buffers, specialization.buffers, ShaderInfo::MaxBuffers,
+					        snapshot.buffers, specialization.buffers, UINT32_MAX,
 					        [&](DescriptorValue& value) {
 						        return NormalizeIndirectBuffer(
 						            value, source->indirect_descriptor->indexed, base);
