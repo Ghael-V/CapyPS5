@@ -182,6 +182,17 @@ struct ImageResource {
 	            : format >= F::k32UInt && format <= F::k32Float;
 }
 
+[[nodiscard]] constexpr Prospero::BufferFormat
+RawSignedStorageFormat(const ImageResource& image, Prospero::BufferFormat format) {
+	if (image.resource_class != ImageResourceClass::Storage || !image.written)
+		return Prospero::BufferFormat::kInvalid;
+	if (format == Prospero::BufferFormat::k32SInt && (image.atomic ? !image.atomic64 : !image.read))
+		return Prospero::BufferFormat::k32UInt;
+	if (format == Prospero::BufferFormat::k16SInt && !image.read && !image.atomic)
+		return Prospero::BufferFormat::k16UInt;
+	return Prospero::BufferFormat::kInvalid;
+}
+
 struct SamplerResource {
 	uint32_t source                = 0;
 	uint32_t first_use_pc          = 0;

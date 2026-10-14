@@ -469,6 +469,13 @@ uint32_t EncodeFormattedStoreComponent(EmitterState& state, const Format::Buffer
 			data = EmitBitCastU32F32(state, EmitF16BitsToF32(state, data));
 		}
 	}
+	if (info.type == Format::ComponentType::Sint && bits < 32u) {
+		const auto maximum = (1u << (bits - 1u)) - 1u;
+		data = EmitSMax32(state, data, ConstantU32(state, ~maximum));
+		data = EmitSMin32(state, data, ConstantU32(state, maximum));
+		return Binary(state, spv::OpBitwiseAnd, TypeU32(state), data,
+		              ConstantU32(state, (1u << bits) - 1u));
+	}
 	const bool normalized = info.type == Format::ComponentType::Unorm ||
 	                        info.type == Format::ComponentType::Snorm;
 	const bool scaled = info.type == Format::ComponentType::Uscaled ||

@@ -436,9 +436,10 @@ Format::BufferFormatInfo ImageConversionFormat(const EmitterState&   state,
 	const auto format = image.conversion_format;
 	if (format == Prospero::BufferFormat::kInvalid) return {};
 	const auto info = Format::GetFormatInfo(format);
-	EXIT_IF(Prospero::RemapTextureFormat(format) == format || info.component_count == 0u ||
+	const bool raw_signed = IR::RawSignedStorageFormat(image, format) != Prospero::BufferFormat::kInvalid;
+	EXIT_IF((Prospero::RemapTextureFormat(format) == format && !raw_signed) || info.component_count == 0u ||
 	        info.component_count > 4u);
-	EXIT_IF(info.type != Format::ComponentType::Uscaled &&
+	EXIT_IF(!raw_signed && info.type != Format::ComponentType::Uscaled &&
 	        ((info.type != Format::ComponentType::Uint &&
 	          info.type != Format::ComponentType::Unorm) || !info.packed_bitfield ||
 	         info.byte_size != sizeof(uint32_t)));
@@ -661,15 +662,16 @@ uint32_t EmitOneDimensionalGatherLz(ValueEmitContext& ctx, const IR::MemoryInfo&
 uint32_t StoreTexel(ValueEmitContext& ctx, const IR::MemoryInfo& mem, uint32_t data, bool integer) {
 	const auto swizzle = ctx.state.program.info.images[mem.resource].shader_swizzle;
 	const auto info = ImageConversionFormat(ctx.state, mem);
-	const bool packed = info.format != Prospero::BufferFormat::kInvalid;
-	EXIT_IF(packed && (!info.packed_bitfield ||
-	                  (info.type != Format::ComponentType::Uint &&
-	                   info.type != Format::ComponentType::Unorm)));
+	const bool converted = info.format != Prospero::BufferFormat::kInvalid;
+	const bool packed = info.packed_bitfield;
+	EXIT_IF(converted && info.type != Format::ComponentType::Sint &&
+	        (!packed || (info.type != Format::ComponentType::Uint &&
+	                     info.type != Format::ComponentType::Unorm)));
 	const auto zero = ConstantU32(ctx.state, 0);
 	uint32_t values[4] {zero, zero, zero, zero};
 	auto packed_value = zero;
 	const auto dmask = mem.dmask != 0u ? mem.dmask : 1u;
-	for (uint32_t component = 0; component < (packed ? info.component_count : 4u); component++) {
+	for (uint32_t component = 0; component < (converted ? info.component_count : 4u); component++) {
 		const auto source = InverseSwizzle(swizzle, component);
 		const bool selected = source < 4u && ((dmask >> source) & 1u) != 0u;
 		uint32_t raw = zero;
@@ -689,9 +691,13 @@ uint32_t StoreTexel(ValueEmitContext& ctx, const IR::MemoryInfo& mem, uint32_t d
 				}
 			}
 		}
-		if (packed) {
+		if (converted) {
 			if (!selected) continue;
 			auto value = EncodeFormattedStoreComponent(ctx.state, info, component, raw, mem.data_bits);
+			if (!packed) {
+				values[component] = value;
+				continue;
+			}
 			if (info.type == Format::ComponentType::Uint) {
 				value = EmitUMin32(ctx.state, value,
 				                  ConstantU32(ctx.state, (1u << info.component_bits[component]) - 1u));

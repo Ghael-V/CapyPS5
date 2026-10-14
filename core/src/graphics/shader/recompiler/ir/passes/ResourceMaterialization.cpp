@@ -781,8 +781,9 @@ static bool BuildResourceSpecialization(const ResourcePlan& program, ResourceSna
 		if (storage || image.conversion_format != Prospero::BufferFormat::kInvalid) {
 			image.shader_swizzle = DescriptorImageSwizzle(descriptor);
 		}
-		const bool raw_sint_storage = storage && format == Prospero::BufferFormat::k32SInt &&
-		                              base.written && (base.atomic ? !base.atomic64 : !base.read);
+		const auto raw_sint_format = RawSignedStorageFormat(base, format);
+		const bool raw_sint_storage = raw_sint_format != Prospero::BufferFormat::kInvalid;
+		if (raw_sint_format == Prospero::BufferFormat::k16UInt) image.conversion_format = format;
 		image.numeric_class = Prospero::SampledTextureNumericClass(
 		    Prospero::RemapTextureFormat(format));
 		// A stale record of a PS4 table enumerated by key range: drop it as a null image.
