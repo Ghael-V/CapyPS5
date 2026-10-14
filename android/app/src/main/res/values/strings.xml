@@ -1,0 +1,12 @@
+<resources>
+    <string name="app_name">CapyPS5</string>
+    <string name="library_title">CapyPS5 Library</string>
+    <string name="select_game_folder">Seleccionar Directorio de Juegos</string>
+    <string name="load_elf_file">Cargar ELF / EBOOT.BIN</string>
+    <string name="no_games_found">No se encontraron juegos de PS5. Selecciona un directorio con archivos ELF, EBOOT.BIN o paquetes desempaquetados.</string>
+    <string name="settings">Configuración</string>
+    <string name="renderer_vulkan">Vulkan 1.3</string>
+    <string name="pause">Pausa</string>
+    <string name="resume">Reanudar</string>
+    <string name="stop">Detener</string>
+</resources>

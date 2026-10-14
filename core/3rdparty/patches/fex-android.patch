@@ -1,0 +1,430 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 71d8a73..16c370b 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -4,12 +4,13 @@ project(FEX C CXX ASM)
+ include(CheckIncludeFiles)
+ check_include_files("gdb/jit-reader.h" HAVE_GDB_JIT_READER_H)
+ 
++option(BUILD_FEX_STANDALONE "Build standalone FEX executables" FALSE)
+ option(BUILD_FEX_LINUX_TESTS "Build FEXLinuxTests (requires x86 compiler)" FALSE)
+ option(BUILD_THUNKS "Build thunks" FALSE)
+-option(BUILD_FEXCONFIG "Build FEXConfig" TRUE)
+-option(ENABLE_CLANG_THUNKS "Build thunks with clang" TRUE)
++option(BUILD_FEXCONFIG "Build FEXConfig" FALSE)
++option(ENABLE_CLANG_THUNKS "Build thunks with clang" FALSE)
+ option(ENABLE_IWYU "Enable the Include What You Use sanitizer" FALSE)
+-option(ENABLE_LTO "Enable LTO with compilation" TRUE)
++option(ENABLE_LTO "Enable LTO with compilation" FALSE)
+ option(ENABLE_XRAY "Enable building with LLVM X-Ray" FALSE)
+ set(USE_LINKER "" CACHE STRING "Path to a custom linker program")
+ option(ENABLE_UBSAN "Enable the Clang Undefined Behavior Sanitizer" FALSE)
+@@ -21,7 +22,7 @@ option(ENABLE_GDB_SYMBOLS "Enable GDBSymbols integration support" ${HAVE_GDB_JIT
+ option(ENABLE_STRICT_WERROR "Enable stricter -Werror" FALSE)
+ option(ENABLE_WERROR "Enable -Werror" FALSE)
+ option(ENABLE_FEX_ALLOCATOR "Enable allocator for FEX" TRUE)
+-option(ENABLE_JEMALLOC_GLIBC_ALLOC "Enable jemalloc glibc allocator" TRUE)
++option(ENABLE_JEMALLOC_GLIBC_ALLOC "Enable jemalloc glibc allocator" FALSE)
+ option(ENABLE_OFFLINE_TELEMETRY "Enable FEX offline telemetry" TRUE)
+ option(ENABLE_COMPILE_TIME_TRACE "Enable time trace compile option" FALSE)
+ option(ENABLE_LIBCXX "Use LLVM's libc++ instead of the GNU libstdc++" FALSE)
+@@ -53,7 +54,7 @@ if (NOT HOSTLIBS_DATA_DIRECTORY)
+ endif()
+ 
+ ## Platform Checks ##
+-# Only 64-bit Linux and Windows are supported
++# Only 64-bit Linux, Android, and Windows are supported
+ 
+ # NB: SIZEOF_VOID_P is in bytes, not bits
+ # On 32-bit systems this is set to 4
+@@ -61,7 +62,7 @@ if (NOT CMAKE_SIZEOF_VOID_P EQUAL 8)
+   message(FATAL_ERROR "Unsupported pointer size ${CMAKE_SIZEOF_VOID_P}."
+     " FEX only supports 64-bit (8-byte pointer) systems."
+     " If you believe this is in error, file an issue.")
+-elseif (NOT (WIN32 OR CMAKE_SYSTEM_NAME STREQUAL "Linux"))
++elseif (NOT (WIN32 OR CMAKE_SYSTEM_NAME STREQUAL "Linux" OR CMAKE_SYSTEM_NAME STREQUAL "Android" OR ANDROID))
+   message(FATAL_ERROR "Unsupported system type ${CMAKE_SYSTEM_NAME}."
+     " FEX only supports Linux and Windows."
+     " If you believe this is in error, file an issue.")
+@@ -77,6 +78,11 @@ elseif (MINGW)
+   message(STATUS "Building for MinGW")
+   set(ENABLE_FEX_ALLOCATOR TRUE)
+   set(ENABLE_JEMALLOC_GLIBC_ALLOC FALSE)
++elseif (ANDROID)
++  message(STATUS "Building for Android")
++  set(ENABLE_FEX_ALLOCATOR TRUE)
++  set(ENABLE_JEMALLOC_GLIBC_ALLOC FALSE)
++  add_compile_definitions(_LIBCPP_ENABLE_EXPERIMENTAL)
+ else ()
+   message(STATUS "Clang version ${CMAKE_CXX_COMPILER_VERSION}")
+   set(CLANG_MINIMUM_VERSION 13.0)
+@@ -361,7 +367,7 @@ set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} -fomit-frame-pointer")
+ set(CMAKE_LINKER_FLAGS_RELEASE "${CMAKE_LINKER_FLAGS_RELEASE} -fomit-frame-pointer")
+ 
+ ## Modules ##
+-list(APPEND CMAKE_MODULE_PATH ${CMAKE_SOURCE_DIR}/Data/CMake/)
++list(APPEND CMAKE_MODULE_PATH ${CMAKE_CURRENT_SOURCE_DIR}/Data/CMake/)
+ 
+ include(LinkerGC)
+ 
+@@ -433,7 +439,9 @@ else ()
+   file(GENERATE OUTPUT CTestTestfile.cmake CONTENT "# No tests since BUILD_TESTING is disabled")
+ endif()
+ 
+-if (MINGW OR BUILD_STEAM_SUPPORT)
++if (TARGET fmt::fmt)
++  # fmt target already available from host project
++elseif (MINGW OR BUILD_STEAM_SUPPORT)
+   set(FMT_INSTALL OFF)
+   add_subdirectory(External/fmt/)
+ else()
+@@ -445,16 +453,18 @@ else()
+   endif()
+ endif()
+ 
+-if (NOT BUILD_STEAM_SUPPORT)
+-  find_package(range-v3 QUIET)
+-endif()
++if (BUILD_FEX_STANDALONE)
++  if (NOT BUILD_STEAM_SUPPORT)
++    find_package(range-v3 QUIET)
++  endif()
+ 
+-if (NOT range-v3_FOUND)
+-  add_subdirectory(External/range-v3/)
+-  target_compile_definitions(range-v3 INTERFACE RANGES_DISABLE_DEPRECATED_WARNINGS)
+-endif()
++  if (NOT range-v3_FOUND)
++    add_subdirectory(External/range-v3/)
++    target_compile_definitions(range-v3 INTERFACE RANGES_DISABLE_DEPRECATED_WARNINGS)
++  endif()
+ 
+-add_subdirectory(External/tiny-json/)
++  add_subdirectory(External/tiny-json/)
++endif()
+ 
+ include_directories(Source/)
+ include_directories("${CMAKE_BINARY_DIR}/Source/")
+@@ -509,6 +519,10 @@ elseif(ARCHITECTURE_arm64)
+   list(APPEND FEX_TUNE_COMPILE_FLAGS "-march=armv8-a+crc")
+ endif()
+ 
++if (ANDROID)
++  set(TUNE_CPU "none")
++endif()
++
+ if (TUNE_CPU STREQUAL "native")
+   if(ARCHITECTURE_arm64)
+     if (CMAKE_CXX_COMPILER_VERSION VERSION_GREATER_EQUAL 999999.0)
+@@ -559,7 +573,7 @@ if (OVERRIDE_VERSION STREQUAL "detect")
+   if (GIT_FOUND)
+     execute_process(
+       COMMAND ${GIT_EXECUTABLE} describe --abbrev=7
+-      WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
++      WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+       OUTPUT_VARIABLE GIT_DESCRIBE_STRING
+       ERROR_QUIET
+       OUTPUT_STRIP_TRAILING_WHITESPACE)
+@@ -576,7 +590,7 @@ if (OVERRIDE_HASH STREQUAL "detect")
+   if (GIT_FOUND)
+     execute_process(
+       COMMAND ${GIT_EXECUTABLE} rev-parse HEAD
+-      WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
++      WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+       OUTPUT_VARIABLE GIT_HASH
+       ERROR_QUIET
+       OUTPUT_STRIP_TRAILING_WHITESPACE)
+@@ -631,26 +645,28 @@ add_subdirectory(FEXHeaderUtils/)
+ add_subdirectory(CodeEmitter/)
+ add_subdirectory(FEXCore/)
+ 
+-if (ARCHITECTURE_arm64 AND NOT MINGW AND NOT BUILD_STEAM_SUPPORT)
+-  # Binfmt_misc files must be installed prior to Source/ installs
+-  add_subdirectory(Data/binfmts/)
+-endif()
++if (BUILD_FEX_STANDALONE)
++  if (ARCHITECTURE_arm64 AND NOT MINGW AND NOT BUILD_STEAM_SUPPORT)
++    # Binfmt_misc files must be installed prior to Source/ installs
++    add_subdirectory(Data/binfmts/)
++  endif()
+ 
+-add_subdirectory(Source/)
++  add_subdirectory(Source/)
+ 
+-if (NOT BUILD_STEAM_SUPPORT)
+-  add_subdirectory(Data/AppConfig/)
+-endif()
++  if (NOT BUILD_STEAM_SUPPORT)
++    add_subdirectory(Data/AppConfig/)
++  endif()
+ 
+-# Install the ThunksDB file
+-file(GLOB CONFIG_SOURCES CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/Data/*.json)
++  # Install the ThunksDB file
++  file(GLOB CONFIG_SOURCES CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/Data/*.json)
+ 
+-# Any application configuration json file gets installed
+-foreach(CONFIG_SRC ${CONFIG_SOURCES})
+-  install(FILES ${CONFIG_SRC}
+-    DESTINATION ${DATA_DIRECTORY}/
+-    COMPONENT Runtime)
+-endforeach()
++  # Any application configuration json file gets installed
++  foreach(CONFIG_SRC ${CONFIG_SOURCES})
++    install(FILES ${CONFIG_SRC}
++      DESTINATION ${DATA_DIRECTORY}/
++      COMPONENT Runtime)
++  endforeach()
++endif()
+ 
+ if (BUILD_TESTING)
+   add_subdirectory(unittests/)
+diff --git a/FEXCore/CMakeLists.txt b/FEXCore/CMakeLists.txt
+index e61f1b9..1a32a05 100644
+--- a/FEXCore/CMakeLists.txt
++++ b/FEXCore/CMakeLists.txt
+@@ -39,7 +39,7 @@ add_compile_options($<$<COMPILE_LANGUAGE:CXX>:-fno-strict-aliasing> $<$<COMPILE_
+ 
+ add_subdirectory(Source/)
+ 
+-if (NOT BUILD_STEAM_SUPPORT)
++if (NOT BUILD_STEAM_SUPPORT AND NOT ANDROID)
+   install (DIRECTORY include/FEXCore ${CMAKE_BINARY_DIR}/include/FEXCore
+     DESTINATION include
+     COMPONENT Development)
+diff --git a/FEXCore/Source/CMakeLists.txt b/FEXCore/Source/CMakeLists.txt
+index dd8e4aa..73f60e0 100644
+--- a/FEXCore/Source/CMakeLists.txt
++++ b/FEXCore/Source/CMakeLists.txt
+@@ -149,7 +149,7 @@ add_custom_command(
+   OUTPUT "${OUTPUT_NAME}" "${OUTPUT_DISPATCHER_NAME}"
+   DEPENDS "${INPUT_NAME}"
+   DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/../Scripts/json_ir_generator.py"
+-  COMMAND "python3" "${CMAKE_CURRENT_SOURCE_DIR}/../Scripts/json_ir_generator.py"
++  COMMAND "${Python_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/../Scripts/json_ir_generator.py"
+     "${INPUT_NAME}" "${OUTPUT_NAME}" "${OUTPUT_DISPATCHER_NAME}")
+ 
+ set_source_files_properties(${OUTPUT_NAME} PROPERTIES GENERATED TRUE)
+@@ -161,7 +161,7 @@ add_custom_command(
+   OUTPUT "${OUTPUT_IR_DOC}"
+   DEPENDS "${INPUT_NAME}"
+   DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/../Scripts/json_ir_doc_generator.py"
+-  COMMAND "python3" "${CMAKE_CURRENT_SOURCE_DIR}/../Scripts/json_ir_doc_generator.py"
++  COMMAND "${Python_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/../Scripts/json_ir_doc_generator.py"
+     "${INPUT_NAME}" "${OUTPUT_IR_DOC}")
+ 
+ set_source_files_properties(${OUTPUT_IR_NAME} PROPERTIES GENERATED TRUE)
+@@ -187,34 +187,40 @@ add_custom_command(
+   OUTPUT "${OUTPUT_MAN_NAME}"
+   DEPENDS "${INPUT_CONFIG_NAME}"
+   DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/../Scripts/config_generator.py"
+-  COMMAND "python3" "${CMAKE_CURRENT_SOURCE_DIR}/../Scripts/config_generator.py" "${INPUT_CONFIG_NAME}" "${OUTPUT_CONFIG_NAME}" "${OUTPUT_MAN_NAME}"
++  COMMAND "${Python_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/../Scripts/config_generator.py" "${INPUT_CONFIG_NAME}" "${OUTPUT_CONFIG_NAME}" "${OUTPUT_MAN_NAME}"
+   "${OUTPUT_CONFIG_OPTION_NAME}")
+ 
+-add_custom_command(
+-  OUTPUT "${OUTPUT_MAN_NAME_COMPRESS}"
+-  DEPENDS "${OUTPUT_MAN_NAME}"
+-  COMMAND "gzip" "-kf9n" "${OUTPUT_MAN_NAME}")
+-
+ set_source_files_properties(${OUTPUT_CONFIG_NAME} PROPERTIES
+   GENERATED TRUE)
+ set_source_files_properties(${OUTPUT_CONFIG_OPTION_NAME} PROPERTIES
+   GENERATED TRUE)
+-
+ set_source_files_properties(${OUTPUT_MAN_NAME} PROPERTIES
+   GENERATED TRUE)
+-set_source_files_properties(${OUTPUT_MAN_NAME_COMPRESS} PROPERTIES
+-  GENERATED TRUE)
+ 
+-# Create the target
+-add_custom_target(CONFIG_INC
+-  DEPENDS "${OUTPUT_CONFIG_NAME}"
+-  DEPENDS "${OUTPUT_CONFIG_OPTION_NAME}"
+-  DEPENDS "${OUTPUT_MAN_NAME}"
+-  DEPENDS "${OUTPUT_MAN_NAME_COMPRESS}")
+-
+-if (NOT BUILD_STEAM_SUPPORT)
+-  # Install the compressed man page
+-  install(FILES ${OUTPUT_MAN_NAME_COMPRESS} COMPONENT Runtime DESTINATION ${MAN_DIR}/man1)
++if (NOT ANDROID)
++  add_custom_command(
++    OUTPUT "${OUTPUT_MAN_NAME_COMPRESS}"
++    DEPENDS "${OUTPUT_MAN_NAME}"
++    COMMAND "gzip" "-kf9n" "${OUTPUT_MAN_NAME}")
++  set_source_files_properties(${OUTPUT_MAN_NAME_COMPRESS} PROPERTIES
++    GENERATED TRUE)
++
++  # Create the target
++  add_custom_target(CONFIG_INC
++    DEPENDS "${OUTPUT_CONFIG_NAME}"
++    DEPENDS "${OUTPUT_CONFIG_OPTION_NAME}"
++    DEPENDS "${OUTPUT_MAN_NAME}"
++    DEPENDS "${OUTPUT_MAN_NAME_COMPRESS}")
++
++  if (NOT BUILD_STEAM_SUPPORT)
++    # Install the compressed man page
++    install(FILES ${OUTPUT_MAN_NAME_COMPRESS} COMPONENT Runtime DESTINATION ${MAN_DIR}/man1)
++  endif()
++else()
++  add_custom_target(CONFIG_INC
++    DEPENDS "${OUTPUT_CONFIG_NAME}"
++    DEPENDS "${OUTPUT_CONFIG_OPTION_NAME}"
++    DEPENDS "${OUTPUT_MAN_NAME}")
+ endif()
+ 
+ # Add in diagnostic colours if the option is available.
+@@ -245,7 +251,9 @@ function(AddDefaultOptionsToTarget Name)
+ 
+     -Wno-trigraphs
+     -ffunction-sections
+-    -fwrapv)
++    -fwrapv
++    -frtti
++    -include "${CMAKE_CURRENT_SOURCE_DIR}/Utils/atomic_ref_polyfill.h")
+ 
+   if (GCC_COLOR)
+     target_compile_options(${Name} PRIVATE "-fdiagnostics-color=always")
+@@ -284,11 +292,8 @@ function(AddLibrary Name Type)
+   add_library(${Name} ${Type} $<TARGET_OBJECTS:${PROJECT_NAME}_object>)
+   set_target_properties(${Name} PROPERTIES OUTPUT_NAME FEXCore)
+ 
+-  # During generation of the import library (dll.a), MinGW needs some extra symbols from libraries
+-  # such as fmt, which are propagated by FEXCore_Base. Wonderful.
+-  if (MINGW)
+-    target_link_libraries(${Name} PRIVATE FEXCore_Base)
+-  endif()
++  # Propagate FEXCore_Base and its dependencies
++  target_link_libraries(${Name} PUBLIC FEXCore_Base)
+   AddDefaultOptionsToTarget(${Name})
+ endfunction()
+ 
+@@ -296,7 +301,7 @@ AddObject(${PROJECT_NAME}_object)
+ AddLibrary(${PROJECT_NAME} STATIC)
+ AddLibrary(${PROJECT_NAME}_shared SHARED)
+ 
+-if (NOT MINGW AND NOT BUILD_STEAM_SUPPORT)
++if (NOT MINGW AND NOT BUILD_STEAM_SUPPORT AND NOT ANDROID)
+   install(TARGETS ${PROJECT_NAME}_shared LIBRARY
+     DESTINATION ${CMAKE_INSTALL_LIBDIR}
+     COMPONENT Libraries)
+@@ -322,5 +327,6 @@ if (NOT MINGW)
+   target_include_directories(JemallocDummy PRIVATE "${PROJECT_SOURCE_DIR}/include/")
+ endif()
+ 
+-# The shared library should always link enabled jemalloc libraries
++# The shared and static libraries should always link enabled jemalloc libraries
++target_link_libraries(${PROJECT_NAME} PUBLIC JemallocLibs)
+ target_link_libraries(${PROJECT_NAME}_shared PRIVATE JemallocLibs)
+diff --git a/FEXCore/Source/Utils/FileUtils.cpp b/FEXCore/Source/Utils/FileUtils.cpp
+index d3e62ca..b1c3575 100644
+--- a/FEXCore/Source/Utils/FileUtils.cpp
++++ b/FEXCore/Source/Utils/FileUtils.cpp
+@@ -9,6 +9,12 @@
+ #include <dirent.h>
+ #include <fcntl.h>
+ #include <unistd.h>
++#if defined(__ANDROID__) || defined(ANDROID)
++#include <sys/syscall.h>
++static inline ssize_t getdents64(int fd, void* dirp, size_t count) {
++  return syscall(SYS_getdents64, fd, dirp, count);
++}
++#endif
+ #else
+ #include <windows.h>
+ #include <winnt.h>
+diff --git a/FEXCore/Source/Utils/atomic_ref_polyfill.h b/FEXCore/Source/Utils/atomic_ref_polyfill.h
+new file mode 100644
+index 0000000..2f2ed0e
+--- /dev/null
++++ b/FEXCore/Source/Utils/atomic_ref_polyfill.h
+@@ -0,0 +1,89 @@
++// SPDX-License-Identifier: MIT
++#pragma once
++
++#include <atomic>
++#include <type_traits>
++
++#if !defined(__cpp_lib_atomic_ref) && !defined(FEX_ATOMIC_REF_POLYFILL_DEFINED)
++#define FEX_ATOMIC_REF_POLYFILL_DEFINED 1
++namespace std {
++
++template<typename T>
++struct atomic_ref {
++	static_assert(std::is_trivially_copyable_v<T>, "T must be trivially copyable");
++	T* ptr;
++
++	explicit atomic_ref(T& obj) noexcept : ptr(&obj) {}
++	atomic_ref(const atomic_ref&) noexcept = default;
++	atomic_ref& operator=(const atomic_ref&) = delete;
++
++	void store(T desired, memory_order order = memory_order_seq_cst) const noexcept {
++		__atomic_store_n(ptr, desired, static_cast<int>(order));
++	}
++
++	T load(memory_order order = memory_order_seq_cst) const noexcept {
++		return __atomic_load_n(ptr, static_cast<int>(order));
++	}
++
++	operator T() const noexcept { return load(); }
++
++	T exchange(T desired, memory_order order = memory_order_seq_cst) const noexcept {
++		return __atomic_exchange_n(ptr, desired, static_cast<int>(order));
++	}
++
++	bool compare_exchange_weak(T& expected, T desired,
++	                           memory_order success, memory_order failure) const noexcept {
++		return __atomic_compare_exchange_n(ptr, &expected, desired, true,
++		                                   static_cast<int>(success), static_cast<int>(failure));
++	}
++
++	bool compare_exchange_strong(T& expected, T desired,
++	                             memory_order success, memory_order failure) const noexcept {
++		return __atomic_compare_exchange_n(ptr, &expected, desired, false,
++		                                   static_cast<int>(success), static_cast<int>(failure));
++	}
++
++	bool compare_exchange_strong(T& expected, T desired,
++	                             memory_order order = memory_order_seq_cst) const noexcept {
++		int s = static_cast<int>(order);
++		int f = (order == memory_order_acq_rel) ? static_cast<int>(memory_order_acquire) :
++		        (order == memory_order_release) ? static_cast<int>(memory_order_relaxed) : s;
++		return __atomic_compare_exchange_n(ptr, &expected, desired, false, s, f);
++	}
++
++	bool compare_exchange_weak(T& expected, T desired,
++	                           memory_order order = memory_order_seq_cst) const noexcept {
++		int s = static_cast<int>(order);
++		int f = (order == memory_order_acq_rel) ? static_cast<int>(memory_order_acquire) :
++		        (order == memory_order_release) ? static_cast<int>(memory_order_relaxed) : s;
++		return __atomic_compare_exchange_n(ptr, &expected, desired, true, s, f);
++	}
++
++	T fetch_add(T arg, memory_order order = memory_order_seq_cst) const noexcept {
++		return __atomic_fetch_add(ptr, arg, static_cast<int>(order));
++	}
++
++	T fetch_sub(T arg, memory_order order = memory_order_seq_cst) const noexcept {
++		return __atomic_fetch_sub(ptr, arg, static_cast<int>(order));
++	}
++
++	T fetch_and(T arg, memory_order order = memory_order_seq_cst) const noexcept {
++		return __atomic_fetch_and(ptr, arg, static_cast<int>(order));
++	}
++
++	T fetch_or(T arg, memory_order order = memory_order_seq_cst) const noexcept {
++		return __atomic_fetch_or(ptr, arg, static_cast<int>(order));
++	}
++
++	T fetch_xor(T arg, memory_order order = memory_order_seq_cst) const noexcept {
++		return __atomic_fetch_xor(ptr, arg, static_cast<int>(order));
++	}
++
++	T operator++() const noexcept { return fetch_add(1) + 1; }
++	T operator++(int) const noexcept { return fetch_add(1); }
++	T operator--() const noexcept { return fetch_sub(1) - 1; }
++	T operator--(int) const noexcept { return fetch_sub(1); }
++};
++
++} // namespace std
++#endif

@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="Theme.CapyPS5" parent="android:Theme.Material.NoActionBar">
+        <item name="android:windowBackground">@color/capy_background</item>
+        <item name="android:statusBarColor">@color/capy_background</item>
+        <item name="android:navigationBarColor">@color/capy_background</item>
+        <item name="android:windowLayoutInDisplayCutoutMode">shortEdges</item>
+    </style>
+</resources>

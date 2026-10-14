@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="capy_primary">#0072CE</color>
+    <color name="capy_primary_dark">#004B8D</color>
+    <color name="capy_accent">#00E5FF</color>
+    <color name="capy_background">#0C0D12</color>
+    <color name="capy_surface">#181A22</color>
+    <color name="capy_surface_variant">#222634</color>
+    <color name="capy_text">#F2F4F8</color>
+    <color name="capy_text_secondary">#8E96A8</color>
+</resources>

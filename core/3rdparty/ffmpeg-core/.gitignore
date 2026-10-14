@@ -1,0 +1,5 @@
+/_vcpkg/
+/_package/
+/_tests/
+/artifacts/
+/*.webm

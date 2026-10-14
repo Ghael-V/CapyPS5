@@ -1,0 +1,20 @@
+#ifndef KYTY_GRAPHICS_PRESENTATION_WINDOW_HOST_INPUT_H_
+#define KYTY_GRAPHICS_PRESENTATION_WINDOW_HOST_INPUT_H_
+
+#include <cstdint>
+
+struct SDL_Window;
+union SDL_Event;
+
+namespace Libs::Graphics {
+
+void               HostInputInit(SDL_Window* window);
+void               HostInputShutdown();
+void               HostInputKey(int key_code, bool down);
+void               HostInputMouseButton(uint8_t mouse_button, bool down);
+void               HostInputToggleMouseToJoystick();
+[[nodiscard]] bool HostInputWaitEvent(SDL_Event* event, int max_wait_ms);
+
+} // namespace Libs::Graphics
+
+#endif /* KYTY_GRAPHICS_PRESENTATION_WINDOW_HOST_INPUT_H_ */

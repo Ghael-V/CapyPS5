@@ -1,0 +1,134 @@
+name: Build FFmpeg
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  VCPKG_ROOT: ${{ github.workspace }}/_vcpkg
+  VCPKG_BINARY_SOURCES: clear
+  VCPKG_DISABLE_METRICS: '1'
+  VCPKG_KEEP_ENV_VARS: KYTY_MSYS_ROOT
+
+jobs:
+  build:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {name: linux-x64, os: ubuntu-24.04, triplet: x64-linux-release}
+          - {name: linux-arm64, os: ubuntu-24.04-arm, triplet: arm64-linux-release}
+          - {name: windows-x64, os: windows-2022, triplet: x64-win-llvm-static-release}
+          - {name: windows-arm64, os: windows-2022, triplet: arm64-win-llvm-static-release}
+          - {name: mingw-x64, os: windows-2022, triplet: x64-mingw-static}
+          - {name: macos-x64, os: macos-15, triplet: x64-osx-release}
+          - {name: macos-arm64, os: macos-15, triplet: arm64-osx-release}
+          - {name: macos-universal, os: macos-15, triplet: universal-osx-release}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: microsoft/vcpkg
+          ref: df8bfe519564ae001903e5cdd32af0999531ef71
+          path: _vcpkg
+
+      - name: Install Linux tools
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y nasm pkg-config
+
+      - name: Install macOS tools
+        if: runner.os == 'macOS'
+        run: brew install nasm
+
+      - uses: msys2/setup-msys2@v2
+        id: msys2
+        if: runner.os == 'Windows'
+        with:
+          msystem: CLANG64
+          update: true
+          install: automake make diffutils pkgconf
+          pacboy: ${{ matrix.name == 'mingw-x64' && 'toolchain:p cmake:p ninja:p pkgconf:p' || 'pkgconf:p' }}
+
+      - name: Patch vcpkg
+        run: git -C _vcpkg apply --check --ignore-space-change --ignore-whitespace ../ffmpeg.patch
+      - run: git -C _vcpkg apply --ignore-space-change --ignore-whitespace ../ffmpeg.patch
+
+      - name: Build on Unix
+        if: runner.os != 'Windows'
+        run: |
+          ./_vcpkg/bootstrap-vcpkg.sh -disableMetrics
+          ./_vcpkg/vcpkg install --overlay-triplets=./triplets \
+            'ffmpeg[core,avcodec,avfilter,avdevice,avformat,swresample,swscale]:${{ matrix.triplet }}'
+
+      - name: Build on Windows
+        if: runner.os == 'Windows' && matrix.name != 'mingw-x64'
+        shell: pwsh
+        env:
+          KYTY_MSYS_ROOT: ${{ steps.msys2.outputs.msys2-location }}
+        run: |
+          ./_vcpkg/bootstrap-vcpkg.bat -disableMetrics
+          ./_vcpkg/vcpkg.exe install --overlay-triplets=./triplets `
+            'ffmpeg[core,avcodec,avfilter,avdevice,avformat,swresample,swscale]:${{ matrix.triplet }}'
+
+      - name: Bootstrap MinGW
+        if: matrix.name == 'mingw-x64'
+        shell: pwsh
+        run: ./_vcpkg/bootstrap-vcpkg.bat -disableMetrics
+
+      - name: Build MinGW
+        if: matrix.name == 'mingw-x64'
+        shell: msys2 {0}
+        env:
+          KYTY_MSYS_ROOT: ${{ steps.msys2.outputs.msys2-location }}
+        run: |
+          ./_vcpkg/vcpkg.exe install \
+            'ffmpeg[core,avcodec,avfilter,avdevice,avformat,swresample,swscale]:${{ matrix.triplet }}'
+
+      - name: Package libraries and source
+        run: python scripts/package.py --triplet ${{ matrix.triplet }} --name ${{ matrix.name }}
+
+      - name: Test Linux libraries
+        if: matrix.name == 'linux-x64' || matrix.name == 'linux-arm64'
+        run: |
+          cmake -S tests -B _tests -DFFMPEG_PREBUILT_DIR="$PWD/_package"
+          cmake --build _tests --parallel
+          ctest --test-dir _tests --output-on-failure
+          if readelf -d _tests/codec_test | grep -E 'NEEDED.*lib(avcodec|avformat|avutil|swscale|swresample|avfilter)'; then
+            exit 1
+          fi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ffmpeg-${{ matrix.name }}
+          path: artifacts/*
+          if-no-files-found: error
+
+  release:
+    needs: build
+    if: github.ref == 'refs/heads/master' && github.event_name != 'pull_request'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+      - name: Publish libraries
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="$(git rev-parse --short=12 HEAD)"
+          (cd artifacts && sha256sum * > SHA256SUMS)
+          gh release create "$tag" artifacts/* --repo "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" --title "FFmpeg $tag" --notes ''

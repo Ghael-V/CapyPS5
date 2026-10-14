@@ -1,0 +1,41 @@
+# Build directories
+build/
+build-*/
+cmake-build-*/
+.cxx/
+*.apk
+*.aab
+
+# Gradle / Android Studio
+.gradle/
+local.properties
+.idea/
+*.iml
+captures/
+.externalNativeBuild/
+
+# Local working files (screenshots, logcats, dumps) and backups
+scratch/
+.vendor-git-backup/
+__pycache__/
+
+# Upstream Kyty checkout kept only as a local reference
+kyty-upstream/
+
+# Game dumps and console firmware modules: never commit these
+homebrew/*
+!homebrew/capy_test_homebrew/
+homebrew/capy_test_homebrew/eboot.bin
+*.prx
+*.sprx
+eboot.bin
+*.pkg
+
+# OS / Tool artifacts
+.DS_Store
+Thumbs.db
+*.log
+*.tmp
+
+# Native libs are copied in from build-android-arm64
+android/app/src/main/jniLibs/
