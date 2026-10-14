@@ -439,7 +439,7 @@ uint32_t StorageBufferPackedStride(const EmitterState& state, const IR::MemoryIn
 
 Prospero::BufferFormat StorageBufferFormat(const EmitterState& state, const IR::MemoryInfo& mem);
 
-bool UsesSharedIndirectBufferAccess(const EmitterState& state, uint32_t resource);
+uint32_t SharedIndirectBufferResource(const EmitterState& state, uint32_t resource);
 
 void EmitMemoryOffsets(EmitterState& state);
 

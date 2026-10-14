@@ -388,20 +388,24 @@ auto EmitBufferAccess(ValueEmitContext& ctx, const IR::Inst& inst, IR::MemoryInf
 	    state.program.info.buffers[mem.resource].indirect_root != mem.resource) {
 		return access(mem.resource);
 	}
-	const auto& buffer = state.program.info.buffers[mem.resource];
+	const auto root_resource = mem.resource;
+	const auto& buffer = state.program.info.buffers[root_resource];
 	const auto& handle = *inst.Arg(0).ResolveInstruction();
 	const auto selected = ctx.Arg(handle, 0);
-	const auto shared = UsesSharedIndirectBufferAccess(state, mem.resource);
+	const auto representative = SharedIndirectBufferResource(state, root_resource);
+	const auto shared = representative != UINT32_MAX;
+	const auto empty_root = shared && buffer.packed_stride == 0u;
 	const auto selected_access = [&]() {
 		if (shared) {
 			const auto root_slot = buffer.descriptor_index;
 			const auto child_slot = state.program.info.buffers[buffer.indirect_resources[1]].descriptor_index;
 			auto slot = EmitAddU32(state, selected, ConstantU32(state, child_slot - 1u));
-			if (child_slot != root_slot + 1u) {
+			if (!empty_root && child_slot != root_slot + 1u) {
 				slot = Select(state, TypeU32(state),
 				    Binary(state, spv::OpIEqual, TypeBool(state), selected, ConstantU32(state, 0u)),
 				    ConstantU32(state, root_slot), slot);
 			}
+			mem.resource = representative;
 			return emit(mem, PrepareMemoryResourceAccess(state, mem, slot));
 		}
 		return EmitIndexSwitch(state, selected, buffer.indirect_resources.size(),
@@ -411,12 +415,19 @@ auto EmitBufferAccess(ValueEmitContext& ctx, const IR::Inst& inst, IR::MemoryInf
 	if constexpr (!has_result) {
 		if (!shared) return selected_access();
 	}
-	const auto valid = Binary(state, spv::OpULessThan, TypeBool(state), selected,
+	auto valid = Binary(state, spv::OpULessThan, TypeBool(state), selected,
 	                          ConstantU32(state, buffer.indirect_resources.size()));
 	if constexpr (has_result) {
 		return EmitValueOrDefaultIfCondition(state, valid, TypeU32Composite(state, components),
-		                                    ConstantU32CompositeZero(state, components), selected_access);
+		    ConstantU32CompositeZero(state, components), [&]() {
+			    if (!empty_root) return selected_access();
+			    return EmitValueOrDefaultIfCondition(state,
+			        Binary(state, spv::OpINotEqual, TypeBool(state), selected, ConstantU32(state, 0u)),
+			        TypeU32Composite(state, components), access(root_resource), selected_access);
+		    });
 	} else {
+		if (empty_root) valid = AndCondition(state, valid,
+		    Binary(state, spv::OpINotEqual, TypeBool(state), selected, ConstantU32(state, 0u)));
 		EmitIfCondition(state, valid, selected_access);
 	}
 }

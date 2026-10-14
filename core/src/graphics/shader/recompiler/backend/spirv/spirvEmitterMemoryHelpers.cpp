@@ -112,24 +112,28 @@ Prospero::BufferFormat StorageBufferFormat(const EmitterState& state, const IR::
 	return state.program.info.buffers[mem.resource].descriptor_format;
 }
 
-bool UsesSharedIndirectBufferAccess(const EmitterState& state, uint32_t resource) {
+uint32_t SharedIndirectBufferResource(const EmitterState& state, uint32_t resource) {
 	const auto& buffers = state.program.info.buffers;
 	const auto& root = buffers[resource];
 	if (root.indirect_root != resource || root.descriptor_index == UINT32_MAX ||
-	    root.packed_stride == 0u || root.indirect_resources.size() < 2u) {
-		return false;
+	    root.indirect_resources.size() < 2u) {
+		return UINT32_MAX;
 	}
+	const auto first = root.packed_stride == 0u ? 1u : 0u;
+	const auto representative = root.indirect_resources[first];
+	const auto& shared = buffers[representative];
+	if (shared.packed_stride == 0u) return UINT32_MAX;
 	uint32_t next_child_slot = UINT32_MAX;
-	for (uint32_t ordinal = 0; ordinal < root.indirect_resources.size(); ++ordinal) {
+	for (uint32_t ordinal = first; ordinal < root.indirect_resources.size(); ++ordinal) {
 		const auto& candidate = buffers[root.indirect_resources[ordinal]];
-		if (candidate.packed_stride != root.packed_stride ||
-		    candidate.descriptor_format != root.descriptor_format ||
-		    candidate.descriptor_swizzle != root.descriptor_swizzle ||
+		if (candidate.packed_stride != shared.packed_stride ||
+		    candidate.descriptor_format != shared.descriptor_format ||
+		    candidate.descriptor_swizzle != shared.descriptor_swizzle ||
 		    candidate.descriptor_index == UINT32_MAX ||
-		    (ordinal > 1u && candidate.descriptor_index != next_child_slot)) return false;
+		    (ordinal > 1u && candidate.descriptor_index != next_child_slot)) return UINT32_MAX;
 		if (ordinal != 0u) next_child_slot = candidate.descriptor_index + 1u;
 	}
-	return true;
+	return representative;
 }
 
 void EmitMemoryOffsets(EmitterState& state) {
@@ -137,7 +141,7 @@ void EmitMemoryOffsets(EmitterState& state) {
 	state.memory_byte_offsets.resize(count);
 	std::vector<bool> dynamic_offsets(count);
 	for (uint32_t resource = 0; resource < state.program.info.buffers.size(); ++resource) {
-		if (!UsesSharedIndirectBufferAccess(state, resource)) continue;
+		if (SharedIndirectBufferResource(state, resource) == UINT32_MAX) continue;
 		for (const auto candidate: state.program.info.buffers[resource].indirect_resources) {
 			dynamic_offsets[state.program.info.buffers[candidate].descriptor_index] = true;
 		}
