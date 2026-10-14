@@ -900,6 +900,10 @@ uint64_t ClampRangeSize(uint64_t vaddr, uint64_t size) {
 
 	const auto clamped_size = g_virtual_ranges->ClampRangeSize(vaddr, size);
 	if (clamped_size == 0) {
+		Common::DebugFlags::NoteOnce("CapyPS5-Vtx", vaddr >> 12u ^ 0x2000000000ull,
+		                             "range 0x%llx size=0x%llx is not guest memory",
+		                             static_cast<unsigned long long>(vaddr),
+		                             static_cast<unsigned long long>(size));
 		static uint64_t s_last_bad_addr = 0;
 		if (s_last_bad_addr != vaddr) {
 			s_last_bad_addr = vaddr;
@@ -909,6 +913,11 @@ uint64_t ClampRangeSize(uint64_t vaddr, uint64_t size) {
 		return 0;
 	}
 	if (clamped_size != size) {
+		Common::DebugFlags::NoteOnce("CapyPS5-Vtx", vaddr >> 12u ^ 0x4000000000ull,
+		                             "range 0x%llx size=0x%llx clamped to 0x%llx",
+		                             static_cast<unsigned long long>(vaddr),
+		                             static_cast<unsigned long long>(size),
+		                             static_cast<unsigned long long>(clamped_size));
 		LOGF("Memory: clamped buffer range addr=0x%016" PRIx64 " size=0x%016" PRIx64
 		     " to 0x%016" PRIx64 "\n",
 		     vaddr, size, clamped_size);

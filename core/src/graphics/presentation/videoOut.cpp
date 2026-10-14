@@ -1035,6 +1035,8 @@ void FlipQueue::Cancel(VideoOutConfig& cfg) {
 }
 
 void FlipQueue::Prepare(uint64_t request_id, Graphics::CommandBuffer& buffer) {
+	// Frame traces are cut at the flip packet so they follow command-stream order.
+	Common::DebugFlags::FrameTraceOnFlip();
 	VideoOutConfig* cfg        = nullptr;
 	uint64_t        generation = 0;
 	int             index      = 0;
@@ -1279,7 +1281,6 @@ bool FlipQueue::Flip(uint32_t micros) {
 	}
 	if (due) {
 		Common::Telemetry::RecordGameFrame();
-		Common::DebugFlags::FrameTraceOnFlip();
 		Common::PassInspector::OnFlip();
 		Graphics::RenderDocOnGuestFlip(m_presenter.Renderer());
 		if (Config::GraphicsDebugDumpEnabled() &&

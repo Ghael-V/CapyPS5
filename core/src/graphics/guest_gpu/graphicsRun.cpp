@@ -431,13 +431,20 @@ void CommandProcessor::WaitRegMem(uint32_t func, const T* addr, T ref, T mask, u
 		return;
 	}
 	bool pass = TestWaitRegMemValue(val, ref, mask, func);
-	if (!pass && g_current_execution != nullptr &&
+	// `setprop debug.capy.no_own_write 1` disables the own-write shortcut below.
+	static Common::DebugFlags::CachedValue no_own_write("debug.capy.no_own_write", 0);
+	if (!pass && no_own_write.Get() == 0 && g_current_execution != nullptr &&
 	    g_current_execution->m_last_write_addr == reinterpret_cast<uint64_t>(addr) &&
 	    g_current_execution->m_packet_counter - g_current_execution->m_last_write_packet <= 4u &&
 	    g_current_execution->m_last_write_bytes >= sizeof(T)) {
 		// In-order semantics: this stream wrote the label just before waiting on it.
 		const auto own = static_cast<T>(g_current_execution->m_last_write_value);
 		if (TestWaitRegMemValue(own, ref, mask, func)) {
+			Common::DebugFlags::NoteOnce("CapyPS5-Own", reinterpret_cast<uint64_t>(addr),
+			    "own-write shortcut used on 0x%llx (memory 0x%llx, own 0x%llx, ref 0x%llx func %u)",
+			    static_cast<unsigned long long>(reinterpret_cast<uint64_t>(addr)),
+			    static_cast<unsigned long long>(val), static_cast<unsigned long long>(own),
+			    static_cast<unsigned long long>(ref), static_cast<uint32_t>(func));
 			SyncRecord("WAIT own write", reinterpret_cast<uint64_t>(addr), static_cast<uint64_t>(val),
 			           static_cast<uint64_t>(own));
 			pass = true;

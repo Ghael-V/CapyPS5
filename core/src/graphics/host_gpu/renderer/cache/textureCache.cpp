@@ -129,7 +129,18 @@ TextureCache::TextureCache(GraphicContext& graphics, CommandScheduler& scheduler
 		    std::max<int64_t>(std::min(budget - 6 * threshold / 10, budget - GiB), GiB + GiB / 2));
 		m_critical_gc_memory = static_cast<uint64_t>(
 		    std::max<int64_t>(std::min(budget - 2 * threshold / 10, budget - GiB / 2), 3 * GiB));
-		m_trigger_gc_memory = static_cast<uint64_t>(std::max<int64_t>((budget - threshold) / 2, 0));
+		// Upstream sizes this for discrete GPUs: with a budget of 8 GiB or less it is 0 and the
+		// collector evicts every idle image each frame. Start below the pressure level instead. On unified-memory phones that kept
+		// re-uploading alternating 4096x4096 backgrounds and flickered Dead Cells' darkness layer.
+		m_trigger_gc_memory = static_cast<uint64_t>(std::max<int64_t>((budget - threshold) / 2, budget * 3 / 10));
+	} else {
+		// Without a memory budget report (Adreno) the thresholds stayed 0 and the collector
+		// evicted every idle image each frame, re-uploading Dead Cells' alternating 4096x4096
+		// backgrounds and flickering its darkness layer. Use fixed unified-memory limits.
+		constexpr uint64_t MiB = 1024ull * 1024;
+		m_trigger_gc_memory  = 1536 * MiB;
+		m_pressure_gc_memory = 2560 * MiB;
+		m_critical_gc_memory = 3584 * MiB;
 	}
 }
 
@@ -283,6 +294,9 @@ void TextureCache::DeleteImage(ImageId id) {
 }
 
 void TextureCache::FreeImage(ImageId id) {
+	Common::DebugFlags::FrameTrace("  tc free id=%u addr=0x%llx %ux%u", static_cast<uint32_t>(id.index),
+	                               static_cast<unsigned long long>(m_slot_images[id].info.data.address),
+	                               m_slot_images[id].info.extent.width, m_slot_images[id].info.extent.height);
 	auto& image = m_slot_images[id];
 	if (image.IsGpuModified()) {
 		image.ClearGpuModified();
@@ -1888,11 +1902,17 @@ void TextureCache::UnmapMemory(uint64_t address, uint64_t size) {
 
 void TextureCache::RunGarbageCollector() {
 	std::scoped_lock lock {m_lock};
+	Common::DebugFlags::FrameTrace("  tc gc used=%llu trigger=%llu", static_cast<unsigned long long>(m_total_used_memory), static_cast<unsigned long long>(m_trigger_gc_memory));
 	const uint64_t   tick = m_gc_tick++;
 	if (m_graphics.CanReportMemoryUsage()) {
 		m_total_used_memory = m_graphics.GetDeviceMemoryUsage();
 	}
-	if (m_total_used_memory < m_trigger_gc_memory) {
+	// `setprop debug.capy.gc_trigger_mb N` overrides the collection threshold (testing).
+	static Common::DebugFlags::CachedValue gc_trigger_mb("debug.capy.gc_trigger_mb", 0);
+	const uint64_t trigger = gc_trigger_mb.Get() > 0
+	                             ? static_cast<uint64_t>(gc_trigger_mb.Get()) * 1024u * 1024u
+	                             : m_trigger_gc_memory;
+	if (m_total_used_memory < trigger) {
 		return;
 	}
 	const auto collect = [&](bool allow_aggressive) {

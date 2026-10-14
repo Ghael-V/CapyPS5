@@ -31,6 +31,7 @@
 #include "graphics/shader/shader.h"
 #include "kernel/eventQueue.h"
 #include "kernel/memory.h"
+#include "graphics/shader/recompiler/frontend/decode/ShaderDecoder.h"
 #include "kernel/pthread.h"
 #include "libs/errno.h"
 
@@ -738,6 +739,10 @@ static PreparedVertexBuffers AcquireVertexBuffers(CommandBuffer&               b
 		const auto size =
 		    Libs::LibKernel::Memory::ClampRangeSize(range.base_address, range.RequestedSize());
 		if (size == 0) {
+			Common::DebugFlags::NoteOnce("CapyPS5-Vtx", range.base_address >> 12u,
+			    "vertex range 0x%llx size=%llu is outside guest memory: drawing with a null buffer",
+			    static_cast<unsigned long long>(range.base_address),
+			    static_cast<unsigned long long>(range.RequestedSize()));
 			range.acquired_end = range.base_address;
 			range.binding      = {&cache.GetBuffer(NULL_BUFFER_ID), 0};
 			continue;
@@ -777,6 +782,9 @@ static PreparedVertexBuffers AcquireVertexBuffers(CommandBuffer&               b
 			                                       vertex.addr < value.acquired_end;
 		                                });
 		if (range == merged_ranges.begin() + merged_count || range->binding.first == nullptr) {
+			Common::DebugFlags::NoteOnce("CapyPS5-Vtx", vertex.addr >> 12u ^ 0x8000000000ull,
+			    "vertex buffer 0x%llx has no acquired range: bound to a null buffer",
+			    static_cast<unsigned long long>(vertex.addr));
 			if (null_buffer == nullptr) {
 				null_buffer = cache.GetBuffer(NULL_BUFFER_ID).Handle();
 			}
@@ -988,6 +996,8 @@ static void CommitVertexBuffers(vk::CommandBuffer            vk_buffer,
                                 const PreparedVertexBuffers& prepared) {
 	for (uint32_t i = 0; i < prepared.count; i++) {
 		if (prepared.buffers[i] == nullptr) {
+			Common::DebugFlags::NoteOnce("CapyPS5-Vtx", 0xdead0000ull + i,
+			    "vertex binding %u is null: vertex buffers not bound for this draw", i);
 			return;
 		}
 	}
@@ -1221,6 +1231,20 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 	static Common::DebugFlags::CachedValue dump_ps("debug.capy.dump_ps", 0);
 	if (Common::DebugFlags::FrameTracing() && state.ps_active && dump_ps.Get() != 0 &&
 	    static_cast<uint64_t>(dump_ps.Get()) == buffer.GetShaders().GetPs().ps_regs.data_addr) {
+		{
+			ShaderRecompiler::Decoder::Program program;
+			const auto* code = reinterpret_cast<const uint32_t*>(buffer.GetShaders().GetPs().ps_regs.data_addr);
+			ShaderRecompiler::Decoder::DecodeProgram(std::span<const uint32_t>(code, 4096), program);
+			const auto text = ShaderRecompiler::Decoder::ProgramToString(program);
+			size_t start = 0;
+			while (start < text.size()) {
+				const auto end = text.find(static_cast<char>(10), start);
+				const auto line = text.substr(start, end == std::string::npos ? std::string::npos : end - start);
+				Common::DebugFlags::FrameTrace("  ps| %s", line.c_str());
+				if (end == std::string::npos) break;
+				start = end + 1;
+			}
+		}
 		if (state.depth_info.image_id) {
 			const bool ok = m_context.GetTextureCache().DebugDownloadImage(state.depth_info.image_id);
 			Common::DebugFlags::FrameTrace("  dump depth addr=0x%llx -> %d",
