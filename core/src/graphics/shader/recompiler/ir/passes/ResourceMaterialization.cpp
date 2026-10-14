@@ -866,9 +866,16 @@ static bool BuildResourceSpecialization(const ResourcePlan& program, ResourceSna
 			return SpecializationFail("indirect image specialization has no typed candidate");
 		}
 		const auto& image_class = specialization.images[exemplar];
+		const auto& base = program.info.images[root_index];
+		const bool storage_swizzle = base.unfiltered_access_only &&
+		    base.resource_class == ImageResourceClass::Storage;
 		const auto is_2d = [](Decoder::ImageDimension dimension) {
 			return dimension == Decoder::ImageDimension::Dim2D ||
 			       dimension == Decoder::ImageDimension::Dim2DArray;
+		};
+		const auto is_1d_or_2d = [](Decoder::ImageDimension dimension) {
+			return dimension == Decoder::ImageDimension::Dim1D ||
+			       dimension == Decoder::ImageDimension::Dim2D;
 		};
 		for (uint32_t candidate = 0; candidate < specialization.images.size(); candidate++) {
 			auto& image = specialization.images[candidate];
@@ -885,10 +892,15 @@ static bool BuildResourceSpecialization(const ResourcePlan& program, ResourceSna
 			}
 			const bool same_coordinates = image.dimension == image_class.dimension &&
 			                              image.cube == image_class.cube;
-			if ((!same_coordinates && !(is_2d(image.dimension) && is_2d(image_class.dimension))) ||
+			const bool unfiltered_coordinates = base.unfiltered_access_only &&
+			    base.dimension == Decoder::ImageDimension::Dim2D &&
+			    !image.cube && !image_class.cube && is_1d_or_2d(image.dimension) &&
+			    is_1d_or_2d(image_class.dimension);
+			if ((!same_coordinates && !(is_2d(image.dimension) && is_2d(image_class.dimension)) &&
+			     !unfiltered_coordinates) ||
 			    image.mip_count != image_class.mip_count ||
 			    image.conversion_format != image_class.conversion_format ||
-			    image.shader_swizzle != image_class.shader_swizzle) {
+			    (!storage_swizzle && image.shader_swizzle != image_class.shader_swizzle)) {
 				// A PS4 table enumerated by key range (32 light slots) also holds records the
 				// shader never selects; their stale T#s become null images instead of failing.
 				if (Decoder::GetGuestIsa() == Decoder::GuestIsa::Gfx7) {
@@ -1951,7 +1963,8 @@ void ApplyResourceSpecialization(Program& program, const ResourceSpecialization&
 			EXIT_IF(image.indirect_root == memory.resource &&
 			        inst.GetOpcode() != ValueOpcode::ImageSampleRaw &&
 			        inst.GetOpcode() != ValueOpcode::ImageGatherRaw &&
-			        inst.GetOpcode() != ValueOpcode::ImageRead);
+			        inst.GetOpcode() != ValueOpcode::ImageRead &&
+			        inst.GetOpcode() != ValueOpcode::ImageWrite);
 			memory_live[index] = true;
 		}
 	}

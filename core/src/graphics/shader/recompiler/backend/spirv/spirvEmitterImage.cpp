@@ -763,6 +763,8 @@ auto EmitImageAccess(ValueEmitContext& ctx, const IR::Inst& inst, uint32_t resul
 			const auto next_slot = run.slot_bias + ordinal;
 			if (candidate.dimension == first.dimension && candidate.cube == first.cube &&
 			    IR::DescriptorBindingForImage(first) == kind &&
+			    (inst.GetOpcode() != IR::ValueOpcode::ImageWrite ||
+			     candidate.shader_swizzle == first.shader_swizzle) &&
 			    candidate.mip_count == 1u && first.mip_count == 1u &&
 			    (ordinal == 1u || candidate.descriptor_index == next_slot)) {
 				// Native roots precede appended children; only the root may have a slot gap.

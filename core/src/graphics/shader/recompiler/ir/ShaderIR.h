@@ -164,6 +164,7 @@ struct ImageResource {
 	bool                          atomic            = false;
 	bool                          atomic64          = false;
 	bool                          sample_access_only = true; // Every use is a sample.
+	bool                          unfiltered_access_only = true;
 	bool                          depth_compare     = false;
 	bool                          cube              = false;
 	bool                          r128              = false;
