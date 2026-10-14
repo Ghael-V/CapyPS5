@@ -133,14 +133,15 @@ bool UsesSharedIndirectBufferAccess(const EmitterState& state, uint32_t resource
 }
 
 void EmitMemoryOffsets(EmitterState& state) {
-	std::array<bool, IR::ShaderInfo::MaxBuffers> dynamic_offsets {};
+	const auto count = state.program.bindings.descriptor_counts[static_cast<size_t>(IR::DescriptorBindingKind::Buffers)];
+	state.memory_byte_offsets.resize(count);
+	std::vector<bool> dynamic_offsets(count);
 	for (uint32_t resource = 0; resource < state.program.info.buffers.size(); ++resource) {
 		if (!UsesSharedIndirectBufferAccess(state, resource)) continue;
 		for (const auto candidate: state.program.info.buffers[resource].indirect_resources) {
 			dynamic_offsets[state.program.info.buffers[candidate].descriptor_index] = true;
 		}
 	}
-	const auto count = state.program.bindings.descriptor_counts[static_cast<size_t>(IR::DescriptorBindingKind::Buffers)];
 	for (uint32_t i = 0; i < count; i += 4u) {
 		const auto lanes = std::min(4u, count - i);
 		if (std::all_of(dynamic_offsets.begin() + i, dynamic_offsets.begin() + i + lanes,

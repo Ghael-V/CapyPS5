@@ -236,9 +236,8 @@ void DefineDescriptors(EmitterState& state) {
 	auto& bindings = state.program.bindings;
 	auto& counts = bindings.descriptor_counts;
 	auto& buffer_count = counts[static_cast<size_t>(Kind::Buffers)];
-	for (uint32_t index = 0; index < info.buffers.size(); ++index) {
-		info.buffers[index].descriptor_index = (info.live_buffers & (uint64_t{1} << index)) != 0
-		                                          ? buffer_count++ : UINT32_MAX;
+	for (auto& buffer: info.buffers) {
+		buffer.descriptor_index = buffer.live ? buffer_count++ : UINT32_MAX;
 	}
 	std::array<const IR::ImageResource*, IR::ImageBindingCount> image_types {};
 	for (auto& image: info.images) {

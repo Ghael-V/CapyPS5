@@ -120,7 +120,7 @@ struct EmitterState {
 	// Pixel shaders that kill write gl_FragDepth = gl_FragCoord.z at return (see DefineModule).
 	uint32_t                                         kill_depth_frag_coord   = 0;
 	std::array<BufferDefinition, 4>                  storage_buffers {};
-	std::array<uint32_t, IR::ShaderInfo::MaxBuffers> memory_byte_offsets {};
+	std::vector<uint32_t>                           memory_byte_offsets;
 	uint32_t                                         bda_pagetable_variable  = 0;
 	uint32_t                                         fault_buffer_variable   = 0;
 	uint32_t                                         bda_pointer_function    = 0;
