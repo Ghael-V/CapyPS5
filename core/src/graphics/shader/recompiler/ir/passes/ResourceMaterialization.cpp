@@ -393,13 +393,12 @@ bool MaterializeIndirectDescriptor(const ResourcePlan&                         p
 			      (table.Stride() & 3u) != 0u || table.Stride() < indirect.table_record_bytes)))
 				return false;
 			const bool affine = indirect.table_stride != 0u;
-			const auto* pointer = indirect.pointer_table ? &*indirect.pointer_table : nullptr;
-			const uint64_t step = pointer != nullptr ? indirect.table_stride
+			const uint64_t step = indirect.table_maximum ? indirect.table_stride
 			    : affine ? uint64_t {1} << std::countr_zero(indirect.table_stride) : 4u;
-			const uint64_t first = ((pointer != nullptr ? indirect.table_offset
+			const uint64_t first = ((indirect.table_maximum ? indirect.table_offset
 			    : indirect.table_offset % step) & ~uint64_t {3}) +
 			                       (indirect.table_immediate & ~3u);
-			const uint64_t domain = pointer != nullptr ? uint64_t {pointer->maximum} + 1u
+			const uint64_t domain = indirect.table_maximum ? uint64_t {*indirect.table_maximum} + 1u
 			                                           : (uint64_t {1} << 32u) / step;
 			const auto count = table_size >= first + 4u
 			    ? std::min((table_size - first - 4u) / step + 1u, domain)
@@ -416,11 +415,11 @@ bool MaterializeIndirectDescriptor(const ResourcePlan&                         p
 			snapshot.flattened_srt.resize(mapping_offset + 2u, 0u);
 			for (uint32_t word = 0; word < count; ++word) {
 				DescriptorValue candidate {.dword_count = dword_count};
-				if (pointer != nullptr) {
+				if (indirect.pointer_offset) {
 					std::array<uint32_t, 2> address {};
 					if (!ReadScalarTable(table_base, table_size, first + word * step, runtime, address) ||
 					    !ReadScalarTable((uint64_t {address[1]} << 32u) | address[0], UINT64_MAX,
-					                     pointer->offset, runtime,
+					                     *indirect.pointer_offset, runtime,
 					                     std::span(candidate.dwords).first(dword_count))) return false;
 				} else if (affine) {
 					if (!ReadScalarTable(table_base, table_size, first + word * step, runtime,

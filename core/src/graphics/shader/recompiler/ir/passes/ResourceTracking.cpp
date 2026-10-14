@@ -425,7 +425,7 @@ public:
 		std::vector<std::pair<const IndirectDescriptorPlan*, Value>> buffer_selections;
 		for (const auto& plan: m_indirect_descriptors) {
 			auto key = plan.key;
-			if (m_sources[plan.source].indirect_descriptor->pointer_table) {
+			if (m_sources[plan.source].indirect_descriptor->table_maximum) {
 				auto* block = plan.handle->Parent();
 				const auto where = std::ranges::find_if(block->Instructions(),
 				    [&](const Inst& inst) { return &inst == plan.handle; });
@@ -1059,7 +1059,8 @@ private:
 			if (current.indirect_descriptor.has_value()) {
 				const auto& a = *current.indirect_descriptor;
 				const auto& b = *descriptor.indirect_descriptor;
-				if (a.selector != b.selector || a.pointer_table != b.pointer_table ||
+				if (a.selector != b.selector || a.table_maximum != b.table_maximum ||
+				    a.pointer_offset != b.pointer_offset ||
 				    a.table_source != b.table_source ||
 				    a.table_offset != b.table_offset || a.table_immediate != b.table_immediate ||
 				    a.table_stride != b.table_stride || a.indexed != b.indexed ||
@@ -2968,7 +2969,8 @@ private:
 		indirect.table_source = InternSource(table_source);
 		indirect.table_immediate = low_memory->offset & ~3u;
 		indirect.table_scalar = true;
-		indirect.pointer_table = {{maximum, descriptor_offset}};
+		indirect.table_maximum = maximum;
+		indirect.pointer_offset = descriptor_offset;
 		DescriptorSource source;
 		source.dword_count = handle.NumArgs();
 		source.dwords.fill(Value(0u));

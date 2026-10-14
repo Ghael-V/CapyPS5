@@ -595,12 +595,6 @@ struct ShaderInfo {
 
 struct DescriptorSource {
 	struct IndirectDescriptor {
-		struct PointerTable {
-			uint32_t maximum = 0;
-			uint32_t offset = 0;
-
-			bool operator==(const PointerTable&) const = default;
-		};
 		struct SelectorRead {
 			struct CountedRows {
 				uint32_t source = UINT32_MAX;
@@ -623,7 +617,8 @@ struct DescriptorSource {
 			bool operator==(const SelectorRead& other) const = default;
 		};
 		std::optional<SelectorRead> selector;
-		std::optional<PointerTable> pointer_table;
+		std::optional<uint32_t> table_maximum;
+		std::optional<uint32_t> pointer_offset;
 		uint32_t table_source    = 0;
 		uint32_t table_offset    = 0;
 		uint32_t table_immediate = 0;
