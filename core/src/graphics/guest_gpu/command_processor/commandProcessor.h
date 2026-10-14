@@ -56,6 +56,14 @@ private:
 	// Header of the packet we suspended on; a different value on resume means the guest
 	// reused the command buffer while it was still in flight.
 	uint32_t m_suspend_header = 0;
+	// Last label written by this stream with WRITE_DATA. A following WAIT_REG_MEM on the same
+	// address must see it: on hardware nothing can run between the two, but here a guest CPU
+	// thread polling the label can reset it in the gap and the wait would never be satisfied.
+	uint64_t m_last_write_addr  = 0;
+	uint64_t m_last_write_value = 0;
+	uint32_t m_last_write_bytes = 0;
+	uint64_t m_last_write_packet = 0;
+	uint64_t m_packet_counter    = 0;
 };
 
 class CommandProcessor {

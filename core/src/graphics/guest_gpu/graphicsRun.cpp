@@ -430,7 +430,19 @@ void CommandProcessor::WaitRegMem(uint32_t func, const T* addr, T ref, T mask, u
 		}
 		return;
 	}
-	const bool pass = TestWaitRegMemValue(val, ref, mask, func);
+	bool pass = TestWaitRegMemValue(val, ref, mask, func);
+	if (!pass && g_current_execution != nullptr &&
+	    g_current_execution->m_last_write_addr == reinterpret_cast<uint64_t>(addr) &&
+	    g_current_execution->m_packet_counter - g_current_execution->m_last_write_packet <= 4u &&
+	    g_current_execution->m_last_write_bytes >= sizeof(T)) {
+		// In-order semantics: this stream wrote the label just before waiting on it.
+		const auto own = static_cast<T>(g_current_execution->m_last_write_value);
+		if (TestWaitRegMemValue(own, ref, mask, func)) {
+			SyncRecord("WAIT own write", reinterpret_cast<uint64_t>(addr), static_cast<uint64_t>(val),
+			           static_cast<uint64_t>(own));
+			pass = true;
+		}
+	}
 	static std::atomic<uint32_t> wait_log_count {0};
 	if (wait_log_count.fetch_add(1) < 64) {
 		LOGF_COLOR(Log::Color::Cyan,
@@ -535,6 +547,17 @@ void CommandProcessor::WriteData(uint32_t* dst, const uint32_t* src, uint32_t dw
 	Common::DebugFlags::WatchWrite("WRITE_DATA", reinterpret_cast<uint64_t>(dst), dw_num * 4ull, src[0]);
 	SyncRecord("WRITE_DATA", reinterpret_cast<uint64_t>(dst), src[0], dw_num);
 	PrepareGuestWrite(dst, (write_one_address ? 1ull : dw_num) * sizeof(uint32_t));
+	if (g_current_execution != nullptr) {
+		const uint32_t count = write_one_address ? 1u : std::min<uint32_t>(dw_num, 2u);
+		uint64_t       value = src[write_one_address ? dw_num - 1u : 0u];
+		if (count == 2u) {
+			value |= static_cast<uint64_t>(src[1]) << 32u;
+		}
+		g_current_execution->m_last_write_addr  = reinterpret_cast<uint64_t>(dst);
+		g_current_execution->m_last_write_value = value;
+		g_current_execution->m_last_write_bytes  = count * 4u;
+		g_current_execution->m_last_write_packet = g_current_execution->m_packet_counter;
+	}
 
 	if (write_one_address) {
 		for (uint32_t i = 0; i < dw_num; i++) {
@@ -1070,6 +1093,7 @@ void CommandProcessor::ProcessPm4(Pm4Execution& execution) {
 		}
 		if (!execution.m_suspended) {
 			Pm4TraceRecord(packet, total_dw - remaining_dw, packet_header, packet_dw);
+			execution.m_packet_counter++;
 		}
 		if (packet_dw > remaining_dw) {
 			Pm4TraceAnomaly("packet overruns its buffer", packet);
