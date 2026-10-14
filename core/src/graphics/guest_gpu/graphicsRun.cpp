@@ -1,6 +1,7 @@
 #include "graphics/guest_gpu/graphicsRun.h"
 
 #include "common/assert.h"
+#include "common/debugFlags.h"
 #include "common/emulatorConfig.h"
 #include "common/logging/log.h"
 #include "common/profiler.h"
@@ -193,7 +194,16 @@ void GuestGpu::SubmitFlipPreparation(uint64_t request_id) {
 void GuestGpu::SuspendPoint() {
 	EXIT_IF(IsGpuThread() || CommandScheduler::InDeferredOperation());
 #if defined(__ANDROID__) || defined(ANDROID)
-	m_suspend_point_ready->Acquire(std::chrono::milliseconds(50));
+	// Upstream waits forever. A short timeout lets the guest CPU run ahead and recycle command
+	// buffers the GPU thread has not parsed yet, which corrupts the PM4 stream (flicker,
+	// crashes on garbage addresses). Keep only a long safety net and report when it fires.
+	static Common::DebugFlags::CachedValue suspend_ms("debug.capy.suspend_ms", 2000);
+	if (!m_suspend_point_ready->Acquire(std::chrono::milliseconds(suspend_ms.Get()))) {
+		static std::atomic<uint32_t> timeouts {0};
+		__android_log_print(ANDROID_LOG_WARN, "CapyPS5-Gpu",
+		                    "SuspendPoint: GPU did not reach the suspend point in %lld ms [#%u]",
+		                    static_cast<long long>(suspend_ms.Get()), timeouts.fetch_add(1) + 1);
+	}
 #else
 	m_suspend_point_ready->Acquire();
 #endif
@@ -268,6 +278,10 @@ void CommandProcessor::BufferInit() {
 }
 
 void CommandProcessor::BufferFlush() {
+	if (Common::DebugFlags::Enabled(Common::DebugFlags::IdleAfterFlush)) {
+		GetScheduler().Finish();
+		return;
+	}
 	GetScheduler().Flush();
 }
 
@@ -370,10 +384,12 @@ void CommandProcessor::WaitRegMem(uint32_t func, const T* addr, T ref, T mask, u
 		           pass ? "PASS" : "SUSPEND");
 	}
 	if (!pass) {
-		// A retry-count limit expires within microseconds because blocked submissions are
-		// re-run immediately, which silently disabled CPU/GPU synchronization. Wait for real
-		// time instead and only bypass waits that are genuinely stuck.
-		constexpr auto kWaitTimeout = std::chrono::milliseconds(100);
+		// How long an unsatisfied wait may block before it is bypassed. Long waits let the
+		// guest recycle the command buffer we are stalled in (it then parses as garbage), so
+		// keep this short until the missing label writes are found. Tunable on device with
+		// `adb shell setprop debug.capy.wait_us <microseconds>`.
+		static Common::DebugFlags::CachedValue wait_us("debug.capy.wait_us", 2000);
+		const auto kWaitTimeout = std::chrono::microseconds(wait_us.Get());
 		if (g_current_execution != nullptr) {
 			const auto now = std::chrono::steady_clock::now();
 			if (g_current_execution->m_wait_retries++ == 0) {
@@ -383,7 +399,7 @@ void CommandProcessor::WaitRegMem(uint32_t func, const T* addr, T ref, T mask, u
 				if (timeouts <= 32 || (timeouts & (timeouts - 1)) == 0) {
 #if defined(__ANDROID__)
 					__android_log_print(ANDROID_LOG_WARN, "CapyPS5-Gpu",
-					                    "WaitRegMem: timed out after 100 ms at addr=0x%016" PRIx64
+					                    "WaitRegMem: timed out at addr=0x%016" PRIx64
 					                    " (val=0x%" PRIx64 " ref=0x%" PRIx64 " mask=0x%" PRIx64
 					                    " func=%" PRIu32 "), bypassing wait [#%" PRIu64 "]",
 					                    reinterpret_cast<uint64_t>(addr), static_cast<uint64_t>(val),
@@ -391,7 +407,7 @@ void CommandProcessor::WaitRegMem(uint32_t func, const T* addr, T ref, T mask, u
 					                    timeouts);
 #endif
 					LOGF_COLOR(Log::Color::Yellow,
-					           "WaitRegMem: timed out after 100 ms at addr=0x%016" PRIx64 " (val=0x%" PRIx64
+					           "WaitRegMem: timed out at addr=0x%016" PRIx64 " (val=0x%" PRIx64
 					           " ref=0x%" PRIx64 " func=%" PRIu32 "), bypassing wait\n",
 					           reinterpret_cast<uint64_t>(addr), static_cast<uint64_t>(val),
 					           static_cast<uint64_t>(ref), func);
@@ -752,6 +768,7 @@ Pm4ProcessResult CommandProcessor::Process(Pm4Execution&             execution,
 	if (execution.m_buffer_stack.empty() && !commands.empty()) {
 		execution.m_buffer_stack.push_back({commands});
 		execution.m_wait_retries = 0;
+		execution.m_suspend_header = 0;
 	}
 	execution.m_suspended     = false;
 	execution.m_made_progress = false;
@@ -788,6 +805,62 @@ void CommandProcessor::SuspendPm4() {
 	g_current_execution->m_suspended = true;
 }
 
+// ---- PM4 stream tracer --------------------------------------------------------------------
+// Remembers the last packets parsed on the GPU thread so that, when the stream looks
+// misaligned, the log shows which earlier packet consumed the wrong number of dwords.
+namespace {
+
+struct Pm4TraceEntry {
+	const uint32_t* packet;
+	uint32_t        offset;
+	uint32_t        header;
+	uint32_t        consumed;
+};
+
+constexpr uint32_t                        kPm4TraceSize = 32;
+thread_local std::array<Pm4TraceEntry, kPm4TraceSize> g_pm4_trace {};
+thread_local uint32_t                     g_pm4_trace_pos = 0;
+std::atomic<uint32_t>                     g_pm4_anomaly_dumps {0};
+
+void Pm4TraceRecord(const uint32_t* packet, uint32_t offset, uint32_t header, uint32_t consumed) {
+	g_pm4_trace[g_pm4_trace_pos++ % kPm4TraceSize] = {packet, offset, header, consumed};
+}
+
+} // namespace
+
+void Pm4TraceAnomaly(const char* reason, const uint32_t* packet) {
+	if (g_pm4_anomaly_dumps.fetch_add(1) >= 6) {
+		return;
+	}
+	auto log = [](const std::string& line) {
+#if defined(__ANDROID__)
+		__android_log_print(ANDROID_LOG_WARN, "CapyPS5-Pm4", "%s", line.c_str());
+#endif
+		LOGF("%s\n", line.c_str());
+	};
+	log(fmt::format("PM4 anomaly: {} at packet=0x{:x}", reason, reinterpret_cast<uint64_t>(packet)));
+	for (uint32_t i = 0; i < kPm4TraceSize; i++) {
+		const auto& e = g_pm4_trace[(g_pm4_trace_pos + i) % kPm4TraceSize];
+		if (e.packet == nullptr) {
+			continue;
+		}
+		log(fmt::format("  prev off=0x{:05x} hdr=0x{:08x} op=0x{:02x} len(hdr)={} consumed={}{}", e.offset,
+		                e.header, (e.header >> 8u) & 0xffu, KYTY_PM4_LEN(e.header), e.consumed,
+		                e.consumed != KYTY_PM4_LEN(e.header) ? "  <-- MISMATCH" : ""));
+	}
+	if (packet != nullptr) {
+		std::string raw;
+		for (int i = -8; i < 16; i++) {
+			uint32_t value = 0;
+			if (Libs::LibKernel::Memory::TryReadSparseBacking(reinterpret_cast<uint64_t>(packet + i), &value,
+			                                                  sizeof(value))) {
+				raw += fmt::format("{}{:08x} ", i == 0 ? "[" : "", value);
+			}
+		}
+		log("  raw: " + raw);
+	}
+}
+
 void CommandProcessor::ProcessPm4(Pm4Execution& execution) {
 	while (!execution.m_buffer_stack.empty()) {
 		if (g_gpu_state != nullptr) {
@@ -804,6 +877,12 @@ void CommandProcessor::ProcessPm4(Pm4Execution& execution) {
 		const auto        remaining_dw  = total_dw - cursor.offset_dw;
 		const auto        packet_header = packet[0];
 		const auto        opcode        = (packet_header >> 8u) & 0xffu;
+		if (execution.m_suspend_header != 0) {
+			if (packet_header != execution.m_suspend_header) {
+				Pm4TraceAnomaly("command buffer rewritten by the guest while suspended", packet);
+			}
+			execution.m_suspend_header = 0;
+		}
 
 		if (packet_header == 0x80000000u || Pm4::PacketSizeDw(packet_header) == 1u) {
 			cursor.offset_dw++;
@@ -853,6 +932,7 @@ void CommandProcessor::ProcessPm4(Pm4Execution& execution) {
 		auto handler = g_cp_op_func[opcode];
 
 		if (handler == nullptr) {
+			Pm4TraceAnomaly("unknown opcode", packet);
 			const auto packet_dw = std::min<uint32_t>(KYTY_PM4_LEN(packet_header), remaining_dw);
 			static std::unordered_set<uint32_t> s_warned_opcodes;
 			if (s_warned_opcodes.insert(opcode).second) {
@@ -869,14 +949,36 @@ void CommandProcessor::ProcessPm4(Pm4Execution& execution) {
 			continue;
 		}
 
-		const auto packet_dw =
+		auto packet_dw =
 		    handler(*this, packet_header & ~1u, packet + 1, remaining_dw, total_dw) + 1;
+		// The type-3 header length is authoritative. A handler that consumes less (usually a
+		// fallback for an unexpected packet variant) would make us parse payload dwords as
+		// headers, dropping draws and eventually faulting on garbage addresses.
+		if (!execution.m_suspended && packet_dw < KYTY_PM4_LEN(packet_header)) {
+			static std::atomic<uint32_t> short_log {0};
+			if (short_log.fetch_add(1) < 32) {
+#if defined(__ANDROID__)
+				__android_log_print(ANDROID_LOG_WARN, "CapyPS5-Pm4",
+				                    "handler for op=0x%02" PRIx32 " hdr=0x%08" PRIx32
+				                    " consumed %" PRIu32 " of %" PRIu32 " dwords; resyncing to header length",
+				                    opcode, packet_header, packet_dw, KYTY_PM4_LEN(packet_header));
+#endif
+				LOGF("PM4: op=0x%02" PRIx32 " hdr=0x%08" PRIx32 " consumed %" PRIu32 " of %" PRIu32 " dwords\n",
+				     opcode, packet_header, packet_dw, KYTY_PM4_LEN(packet_header));
+			}
+			packet_dw = KYTY_PM4_LEN(packet_header);
+		}
+		if (!execution.m_suspended) {
+			Pm4TraceRecord(packet, total_dw - remaining_dw, packet_header, packet_dw);
+		}
 		if (packet_dw > remaining_dw) {
+			Pm4TraceAnomaly("packet overruns its buffer", packet);
 			cursor.offset_dw = total_dw;
 			execution.m_made_progress = true;
 			continue;
 		}
 		if (execution.m_suspended) {
+			execution.m_suspend_header = packet_header;
 			return;
 		}
 		cursor.offset_dw += packet_dw;

@@ -112,19 +112,16 @@ void CollectPixelInputs(const ShaderPixelInputInfo* pixel, ShaderInfo& info,
 			}
 		}
 	}
-	uint32_t max_input = pixel->input_num;
-	for (uint32_t i = 0; i < used_components.size(); i++) {
-		if (used_components[i] != 0 && i >= max_input) {
-			max_input = i + 1;
-		}
-	}
-	for (uint32_t input = 0; input < max_input; input++) {
+	// Only the NUM_INTERP inputs exist. Reads beyond them get no declaration, so the SPIR-V
+	// emitter folds them to 0 instead of declaring varyings the vertex stage never writes
+	// (which Adreno refuses to link, leaving a null pipeline).
+	for (uint32_t input = 0; input < pixel->input_num; input++) {
 		AddInput(info, StageInputKind::Parameter, input, 4, fmt::format("in_param_{}", input),
-		         input < per_vertex.size() ? per_vertex[input] : false);
+		         per_vertex[input]);
 	}
-	for (uint32_t input = 0; input < max_input && input < used_components.size() && input < per_vertex.size(); input++) {
+	for (uint32_t input = 0; input < pixel->input_num; input++) {
 		if (used_components[input] != 0 && per_vertex[input] &&
-		    (input >= pixel->input_num || !ShaderPixelParameterIsFlat(*pixel, input))) {
+		    !ShaderPixelParameterIsFlat(*pixel, input)) {
 			const auto kind = pixel->ps_no_perspective ? StageInputKind::BaryCoordNoPerspective
 			                                           : StageInputKind::BaryCoordSmooth;
 			AddInput(info, kind, 0, 3,
@@ -401,7 +398,7 @@ void Visit(Program& program, ShaderStageInputInfo input_info, InputUsage& inputs
 			     inst.Arg(0).U32() >= input_info.pixel->input_num)) {
 				static std::atomic<uint32_t> s_pix_in_log{0};
 				if (s_pix_in_log.fetch_add(1, std::memory_order_relaxed) < 16) {
-					LOGF("ShaderInfoCollection: pixel input out of range: arg0=%u (max %u), arg1=%u (expanding dynamically)\n",
+					LOGF("ShaderInfoCollection: pixel input out of range: arg0=%u (max %u), arg1=%u (reads as 0)\n",
 					     inst.Arg(0).U32(), input_info.pixel->input_num, inst.Arg(1).U32());
 				}
 			}

@@ -1394,8 +1394,10 @@ KYTY_CP_OP_PARSER(CpOpContextControl) {
 KYTY_CP_OP_PARSER(CpOpRewind) {
 	KYTY_PROFILER_FUNCTION();
 
-	EXIT_NOT_IMPLEMENTED(cmd_id != 0xc0005900);
-	EXIT_NOT_IMPLEMENTED((buffer[0] & ~0x81000000u) != 0);
+	if (cmd_id != 0xc0005900 || (buffer[0] & ~0x81000000u) != 0) {
+		// Upstream treats this as fatal; it means the PM4 stream is already misaligned.
+		Pm4TraceAnomaly("malformed REWIND", buffer - 1);
+	}
 
 	cp.WaitForRewind((buffer[0] & 0x80000000u) != 0);
 

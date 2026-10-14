@@ -3,6 +3,7 @@
 #include "common/alignment.h"
 #include "common/assert.h"
 #include "common/logging/log.h"
+#include "common/debugFlags.h"
 #include "common/profiler.h"
 #include "common/telemetry.h"
 #include "graphics/guest_gpu/graphicsRun.h"
@@ -502,7 +503,13 @@ std::pair<Buffer*, uint64_t> BufferCache::ObtainBuffer(uint64_t vaddr, uint64_t 
 		return {&m_slot_buffers[NULL_BUFFER_ID], 0};
 	}
 
+	if (!is_written && Common::DebugFlags::Enabled(Common::DebugFlags::ForceBufferSync) &&
+	    !m_memory_tracker.IsRegionGpuModified(vaddr, size)) {
+		const uint64_t page_addr = vaddr & ~4095ULL;
+		m_memory_tracker.MarkRegionAsCpuModified(page_addr, (vaddr + size - page_addr + 4095ULL) & ~4095ULL);
+	}
 	if (!is_written && size <= CACHING_PAGESIZE &&
+	    !Common::DebugFlags::Enabled(Common::DebugFlags::NoStreamBuffer) &&
 	    !m_memory_tracker.IsRegionGpuModified(vaddr, size) &&
 	    m_memory_tracker.IsRegionCpuModified(vaddr, size)) {
 		const auto alignment = std::max<uint64_t>(

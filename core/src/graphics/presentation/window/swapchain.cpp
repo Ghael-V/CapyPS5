@@ -2,6 +2,7 @@
 #include "common/common.h"
 #include "common/emulatorConfig.h"
 #include "common/logging/log.h"
+#include "common/debugFlags.h"
 #include "common/profiler.h"
 #include "common/telemetry.h"
 #include "common/threads.h"
@@ -1009,6 +1010,10 @@ void Presenter::Impl::Present() {
 	KYTY_PROFILER_FUNCTION();
 
 	const auto overlay_visual = GetSystemOverlayVisualState();
+	if (Common::DebugFlags::Enabled(Common::DebugFlags::IdleBeforePresent)) {
+		Common::LockGuard queue_lock(window.graphic_ctx.queue_mutex);
+		(void)window.graphic_ctx.device.waitIdle();
+	}
 	// Some window systems keep presenting an old swapchain after a resize.
 	if (swapchain.Handle() != nullptr && swapchain.NeedsResize()) {
 		RecoverSwapchain(Swapchain::Status::Recreate);

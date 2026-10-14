@@ -15,6 +15,9 @@ namespace Libs::Graphics {
 
 bool TestWaitRegMemValue(uint64_t value, uint64_t ref, uint64_t mask, uint32_t func);
 
+// Logs the recently parsed PM4 packets when the stream looks misaligned (first few calls only).
+void Pm4TraceAnomaly(const char* reason, const uint32_t* packet);
+
 enum class Pm4ProcessResult { Complete, Blocked };
 
 enum class ContextStateOperation : uint32_t {
@@ -50,6 +53,9 @@ private:
 	uint32_t                  m_wait_retries  = 0;
 	// When the current unsatisfied WAIT_REG_MEM started; drives the time-based timeout.
 	std::chrono::steady_clock::time_point m_wait_start {};
+	// Header of the packet we suspended on; a different value on resume means the guest
+	// reused the command buffer while it was still in flight.
+	uint32_t m_suspend_header = 0;
 };
 
 class CommandProcessor {
