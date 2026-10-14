@@ -44,6 +44,58 @@
 
 namespace Libs::Graphics {
 
+// ---- Synchronization event ring --------------------------------------------------------------
+// The last sync-relevant events (waits, label writes, submissions) with timestamps and the
+// stream that produced them. Dumped when a WAIT_REG_MEM times out to show who blocked whom.
+namespace {
+struct SyncEvent {
+	uint64_t    t_us;
+	const char* what;
+	const char* stream;
+	uint64_t    a, b, c;
+};
+constexpr uint32_t                     kSyncRingSize = 256;
+std::array<SyncEvent, kSyncRingSize>   g_sync_ring {};
+std::atomic<uint32_t>                  g_sync_pos {0};
+std::atomic<uint32_t>                  g_sync_dumps {0};
+thread_local const char*               g_sync_stream = "cpu";
+
+uint64_t SyncNowUs() {
+	return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(
+	                                 std::chrono::steady_clock::now().time_since_epoch())
+	                                 .count());
+}
+
+void SyncRecord(const char* what, uint64_t a = 0, uint64_t b = 0, uint64_t c = 0) {
+	g_sync_ring[g_sync_pos.fetch_add(1, std::memory_order_relaxed) % kSyncRingSize] = {
+	    SyncNowUs(), what, g_sync_stream, a, b, c};
+}
+
+void SyncDump(const char* reason) {
+	if (g_sync_dumps.fetch_add(1) >= 3) {
+		return;
+	}
+	const auto pos = g_sync_pos.load();
+	const auto now = SyncNowUs();
+#if defined(__ANDROID__)
+	__android_log_print(ANDROID_LOG_WARN, "CapyPS5-Sync", "=== %s: last %u sync events ===", reason, kSyncRingSize);
+	for (uint32_t i = 0; i < kSyncRingSize; i++) {
+		const auto& e = g_sync_ring[(pos + i) % kSyncRingSize];
+		if (e.what == nullptr) {
+			continue;
+		}
+		__android_log_print(ANDROID_LOG_WARN, "CapyPS5-Sync", "%8.3f ms %-10s %-22s a=0x%llx b=0x%llx c=0x%llx",
+		                    static_cast<double>(static_cast<int64_t>(e.t_us - now)) / 1000.0, e.stream, e.what,
+		                    static_cast<unsigned long long>(e.a), static_cast<unsigned long long>(e.b),
+		                    static_cast<unsigned long long>(e.c));
+	}
+#else
+	(void)pos;
+	(void)now;
+#endif
+}
+} // namespace
+
 static thread_local CommandProcessor* g_current_processor = nullptr;
 static thread_local Pm4Execution*     g_current_execution = nullptr;
 static thread_local bool              g_gpu_thread        = false;
@@ -194,6 +246,7 @@ void GuestGpu::SubmitFlipPreparation(uint64_t request_id) {
 
 void GuestGpu::SuspendPoint() {
 	EXIT_IF(IsGpuThread() || CommandScheduler::InDeferredOperation());
+	SyncRecord("SuspendPoint wait");
 	// Never continue before the GPU reached the point: a timeout here (the old Android code used
 	// 50 ms) lets the guest CPU recycle command buffers the GPU thread has not parsed yet, which
 	// corrupts the PM4 stream (flicker, crashes on garbage addresses). Only report long stalls.
@@ -397,6 +450,8 @@ void CommandProcessor::WaitRegMem(uint32_t func, const T* addr, T ref, T mask, u
 			const auto now = std::chrono::steady_clock::now();
 			if (g_current_execution->m_wait_retries++ == 0) {
 				g_current_execution->m_wait_start = now;
+				SyncRecord("WAIT begin", reinterpret_cast<uint64_t>(addr), static_cast<uint64_t>(val),
+				           static_cast<uint64_t>(ref));
 			} else if (now - g_current_execution->m_wait_start > kWaitTimeout) {
 				const auto timeouts = Common::Telemetry::g_wait_reg_mem_timeouts.fetch_add(1) + 1;
 				if (timeouts <= 32 || (timeouts & (timeouts - 1)) == 0) {
@@ -416,6 +471,9 @@ void CommandProcessor::WaitRegMem(uint32_t func, const T* addr, T ref, T mask, u
 					           static_cast<uint64_t>(ref), func);
 				}
 				// Watch the label so the log shows who writes it, and show what led to the wait.
+				SyncRecord("WAIT TIMEOUT", reinterpret_cast<uint64_t>(addr), static_cast<uint64_t>(val),
+				           static_cast<uint64_t>(ref));
+				SyncDump("WAIT_REG_MEM timed out");
 				if (Common::DebugFlags::g_watch_addr.exchange(reinterpret_cast<uint64_t>(addr)) !=
 				    reinterpret_cast<uint64_t>(addr)) {
 					Pm4TraceAnomaly("WAIT_REG_MEM timed out", nullptr);
@@ -428,6 +486,13 @@ void CommandProcessor::WaitRegMem(uint32_t func, const T* addr, T ref, T mask, u
 		std::this_thread::yield();
 		SuspendPm4();
 	} else if (g_current_execution != nullptr) {
+		if (g_current_execution->m_wait_retries != 0) {
+			SyncRecord("WAIT pass(waited us)", reinterpret_cast<uint64_t>(addr), static_cast<uint64_t>(val),
+			           static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(
+			                                     std::chrono::steady_clock::now() -
+			                                     g_current_execution->m_wait_start)
+			                                     .count()));
+		}
 		g_current_execution->m_wait_retries = 0;
 	}
 }
@@ -458,6 +523,7 @@ void CommandProcessor::WriteData(uint32_t* dst, const uint32_t* src, uint32_t dw
 		return;
 	}
 	Common::DebugFlags::WatchWrite("WRITE_DATA", reinterpret_cast<uint64_t>(dst), dw_num * 4ull, src[0]);
+	SyncRecord("WRITE_DATA", reinterpret_cast<uint64_t>(dst), src[0], dw_num);
 
 	if (write_one_address) {
 		for (uint32_t i = 0; i < dw_num; i++) {
@@ -686,6 +752,9 @@ bool GuestGpu::Process(Submission& submission) {
 
 	if (first_slice) {
 		submission.started = true;
+		g_sync_stream      = submission.type == SubmissionType::Compute ? "compute" : "gfx";
+		SyncRecord("submission start", static_cast<uint64_t>(submission.type), submission.queue_id,
+		           m_submit_id + 1);
 		cp.SetSubmitId(++m_submit_id);
 		cp.ResetDeCe();
 		cp.SetFlip({});
@@ -701,6 +770,7 @@ bool GuestGpu::Process(Submission& submission) {
 			for (;;) {
 				bool round_progress = false;
 				if (!submission.constant_complete) {
+					g_sync_stream = "gfx-CE";
 					submission.constant_complete =
 					    cp.Process(submission.constant_execution, submission.constant_commands) ==
 					    Pm4ProcessResult::Complete;
@@ -708,6 +778,7 @@ bool GuestGpu::Process(Submission& submission) {
 				}
 				cp.SetCeComplete(submission.constant_complete);
 				if (!submission.command_complete) {
+					g_sync_stream = "gfx-DE";
 					submission.command_complete =
 					    cp.Process(submission.command_execution, submission.commands) ==
 					    Pm4ProcessResult::Complete;
@@ -743,6 +814,7 @@ bool GuestGpu::Process(Submission& submission) {
 			if (first_slice) {
 				GraphicsDbgDumpDcb("cc", num_dw, buffer);
 			}
+			g_sync_stream = "compute";
 			complete = cp.Process(submission.command_execution, submission.commands) ==
 			           Pm4ProcessResult::Complete;
 			if (submission.command_execution.MadeProgress() || !complete) {
@@ -762,12 +834,18 @@ bool GuestGpu::Process(Submission& submission) {
 		case SubmissionType::SuspendPoint:
 			cp.EmitGlobalBarrier();
 			m_renderer.GetCommandScheduler().DeferPriorityOperation(
-			    [ready = m_suspend_point_ready] { ready->Release(); });
+			    [ready = m_suspend_point_ready] {
+			    SyncRecord("SuspendPoint reached");
+			    ready->Release();
+		    });
 			cp.BufferFlush();
 			cp.Reset();
 			break;
 	}
 
+	if (complete) {
+		SyncRecord("submission done", static_cast<uint64_t>(submission.type), submission.queue_id);
+	}
 	return complete;
 }
 
@@ -1310,6 +1388,8 @@ void CommandProcessor::WriteAtEndOfPipe(uint32_t cache_policy, uint32_t event_wr
 	static_assert(sizeof(T) == sizeof(uint32_t) || sizeof(T) == sizeof(uint64_t));
 	Common::DebugFlags::WatchWrite("END_OF_PIPE", reinterpret_cast<uint64_t>(dst_gpu_addr), sizeof(T),
 	                               static_cast<uint64_t>(value));
+	SyncRecord("END_OF_PIPE", reinterpret_cast<uint64_t>(dst_gpu_addr), static_cast<uint64_t>(value),
+	           interrupt_selector);
 
 	auto& command = CurrentBuffer();
 
