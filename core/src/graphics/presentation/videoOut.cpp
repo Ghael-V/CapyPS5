@@ -2,6 +2,8 @@
 
 #include "common/abi.h"
 #include "common/assert.h"
+#include "common/debugFlags.h"
+#include "common/passInspector.h"
 #include "common/common.h"
 #include "common/emulatorConfig.h"
 #include "common/logging/log.h"
@@ -1277,6 +1279,8 @@ bool FlipQueue::Flip(uint32_t micros) {
 	}
 	if (due) {
 		Common::Telemetry::RecordGameFrame();
+		Common::DebugFlags::FrameTraceOnFlip();
+		Common::PassInspector::OnFlip();
 		Graphics::RenderDocOnGuestFlip(m_presenter.Renderer());
 		if (Config::GraphicsDebugDumpEnabled() &&
 		    Config::GetPrintfDirection() != Config::LogDirection::Silent) {

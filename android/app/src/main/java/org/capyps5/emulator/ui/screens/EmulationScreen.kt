@@ -50,6 +50,7 @@ import org.capyps5.emulator.telemetry.PerfMonitor
 import org.capyps5.emulator.telemetry.PerfSnapshot
 import org.capyps5.emulator.ui.NavKey
 import org.capyps5.emulator.ui.OnNavKey
+import org.capyps5.emulator.ui.components.LayersPanel
 import org.capyps5.emulator.ui.components.PerfOverlay
 import org.capyps5.emulator.ui.components.SettingsPanel
 import org.capyps5.emulator.ui.components.VirtualGamepad
@@ -70,13 +71,14 @@ fun EmulationScreen(
     val context = LocalContext.current
     var showPauseMenu by remember { mutableStateOf(false) }
     var showSettings by remember { mutableStateOf(false) }
+    var showLayers by remember { mutableStateOf(false) }
     var loadError by remember { mutableStateOf<String?>(null) }
     var gamepadConnected by remember { mutableStateOf(hasPhysicalGamepad()) }
     var snapshot by remember { mutableStateOf(PerfSnapshot()) }
     val fpsHistory = remember { mutableStateListOf<Float>() }
 
     // While any menu is open, controller input drives the UI instead of the game.
-    val uiHasInput = showPauseMenu || showSettings || loadError != null
+    val uiHasInput = showPauseMenu || showSettings || showLayers || loadError != null
     LaunchedEffect(uiHasInput) { InputRouter.setRouteToUi(uiHasInput) }
     DisposableEffect(Unit) {
         InputRouter.onPauseRequested = { showPauseMenu = true }
@@ -159,11 +161,15 @@ fun EmulationScreen(
             modifier = Modifier.align(Alignment.TopStart).padding(10.dp),
         )
 
-        AnimatedVisibility(visible = showPauseMenu && !showSettings, enter = fadeIn(), exit = fadeOut()) {
+        AnimatedVisibility(visible = showPauseMenu && !showSettings && !showLayers, enter = fadeIn(), exit = fadeOut()) {
             PauseMenu(
                 game = game,
                 onResume = { showPauseMenu = false },
                 onSettings = { showSettings = true },
+                onLayers = {
+                    showPauseMenu = false
+                    showLayers = true
+                },
                 onExit = onExit,
             )
         }
@@ -177,6 +183,10 @@ fun EmulationScreen(
             )
         }
 
+        if (showLayers) {
+            LayersPanel(onClose = { showLayers = false }, modifier = Modifier.align(Alignment.CenterEnd))
+        }
+
         loadError?.let { message ->
             ErrorCard(message, onExit)
         }
@@ -184,8 +194,19 @@ fun EmulationScreen(
 }
 
 @Composable
-private fun PauseMenu(game: GameItem, onResume: () -> Unit, onSettings: () -> Unit, onExit: () -> Unit) {
-    val entries = listOf("Reanudar" to onResume, "Ajustes" to onSettings, "Salir del juego" to onExit)
+private fun PauseMenu(
+    game: GameItem,
+    onResume: () -> Unit,
+    onSettings: () -> Unit,
+    onLayers: () -> Unit,
+    onExit: () -> Unit,
+) {
+    val entries = listOf(
+        "Reanudar" to onResume,
+        "Ajustes" to onSettings,
+        "Capas (depuración)" to onLayers,
+        "Salir del juego" to onExit,
+    )
     var focused by remember { mutableIntStateOf(0) }
     OnNavKey { key ->
         when (key) {

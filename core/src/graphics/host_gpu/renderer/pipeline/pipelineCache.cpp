@@ -1,6 +1,7 @@
 #include "graphics/host_gpu/renderer/pipeline/pipelineCache.h"
 
 #include "common/assert.h"
+#include "common/debugFlags.h"
 #include "common/emulatorConfig.h"
 #include "common/file.h"
 #include "common/logging/log.h"
@@ -15,9 +16,13 @@
 #include "graphics/host_gpu/renderer/render.h"
 #include "graphics/host_gpu/renderer/renderContext.h"
 #include "graphics/shader/recompiler/ShaderRecompiler.h"
+#include "graphics/shader/recompiler/frontend/decode/ShaderDecoder.h"
 #include "graphics/shader/shaderCompiler.h"
 #include "kernel/memory.h"
 #include "kytyGitVersion.h"
+#if defined(__ANDROID__)
+#include "android/capyps5_jni.h"
+#endif
 #include "loader/systemContent.h"
 
 #include <algorithm>
@@ -110,6 +115,22 @@ bool ReadShaderGuestMemory(void*, uint64_t address, std::span<uint32_t> values) 
 	       Libs::LibKernel::Memory::TryReadBufferBacking(address, values.data(), values.size_bytes());
 }
 
+// Ordinary (non-specializing) SRT reads. Upstream Kyty reads these straight from guest memory;
+// the backing store only covers shared mappings, so fall back to the live pages for the rest.
+bool ReadShaderLiveMemory(void* userdata, uint64_t address, std::span<uint32_t> values) {
+	if (ReadShaderGuestMemory(userdata, address, values)) {
+		return true;
+	}
+	if (values.empty() ||
+	    !Libs::LibKernel::Memory::ReadGuestMemory(address, values.data(), values.size_bytes())) {
+		return false;
+	}
+	Common::DebugFlags::NoteOnce("CapyPS5-Srt", address & ~uint64_t {0xfff},
+	                             "SRT read 0x%llx (%zu bytes) is outside the backing store",
+	                             static_cast<unsigned long long>(address), values.size_bytes());
+	return true;
+}
+
 void DumpShaderSpirv(const char* stage_name, uint64_t shader_hash,
                      const std::vector<uint32_t>& spirv) {
 	if (!Config::GraphicsDebugDumpEnabled()) {
@@ -130,6 +151,24 @@ void DumpShaderSpirv(const char* stage_name, uint64_t shader_hash,
 
 void DumpShaderOriginal(const char* stage_name, uint64_t shader_hash,
                         std::span<const uint32_t> code) {
+#if defined(__ANDROID__)
+	// `setprop debug.capy.dump_shaders 1` before a shader is first compiled writes its
+	// disassembly to <files>/shaders/<stage>_<guest address>.txt.
+	static Common::DebugFlags::CachedValue dump_text("debug.capy.dump_shaders", 0);
+	if (dump_text.Get() != 0 && !code.empty()) {
+		ShaderRecompiler::Decoder::Program program;
+		ShaderRecompiler::Decoder::DecodeProgram(code, program);
+		const auto text = ShaderRecompiler::Decoder::ProgramToString(program);
+		const auto dir  = AndroidGetFilesDir() + "/shaders";
+		Common::File::CreateDirectories(dir);
+		const auto path = fmt::format("{}/{}_{:x}_{:016x}.txt", dir, stage_name,
+		                              reinterpret_cast<uintptr_t>(code.data()), shader_hash);
+		if (auto* out = std::fopen(path.c_str(), "wb"); out != nullptr) {
+			std::fwrite(text.data(), 1, text.size(), out);
+			std::fclose(out);
+		}
+	}
+#endif
 	if (!Config::GraphicsDebugDumpEnabled()) {
 		return;
 	}
@@ -340,7 +379,7 @@ struct PipelineCache::ProgramCache {
 		ShaderRecompiler::IR::SrtRuntime             runtime {
 		    .user_data                  = user_data,
 		    .shader_base                = params.Base(),
-		    .read_memory                = ReadShaderGuestMemory,
+		    .read_memory                = ReadShaderLiveMemory,
 		    .read_specialization_memory = ReadShaderGuestMemory,
 		};
 		if constexpr (std::is_same_v<InputInfo, ShaderComputeInputInfo>) {
@@ -825,6 +864,12 @@ PipelineCache::Pipeline& PipelineCache::GetGraphicsPipeline(
 				    bc.alpha_srcblend, bc.alpha_destblend, bc.separate_alpha_blend ? 1 : 0));
 			}
 		}
+		Common::DebugFlags::FrameTrace(
+		    "    rt[%u] slot=%u mask=0x%x blend=%d->%d src=%u dst=%u fn=%u sep=%d asrc=%u adst=%u map=0x%02x alpha_src=%u",
+		    i, slot, static_params.color_mask[slot], bc.enable && !rt.info.blend_bypass ? 1 : 0,
+		    static_params.blend_enable[slot] ? 1 : 0, bc.color_srcblend, bc.color_destblend,
+		    bc.color_comb_fcn, bc.separate_alpha_blend ? 1 : 0, bc.alpha_srcblend, bc.alpha_destblend,
+		    colors[i].export_mapping.packed, static_cast<uint32_t>(alpha_source));
 		if (static_params.blend_enable[slot]) {
 			auto blend = bc;
 			switch (alpha_source) {

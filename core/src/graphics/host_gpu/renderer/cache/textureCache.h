@@ -71,6 +71,11 @@ public:
 	void UnmapMemory(uint64_t address, uint64_t size);
 	void ProcessDownloadImages();
 	void RunGarbageCollector();
+	// Debug aid (frame trace image dump): writes a GPU-modified image back to guest memory.
+	bool DebugDownloadImage(ImageId id) {
+		std::scoped_lock lock {m_lock};
+		return DownloadImageMemory(id);
+	}
 
 private:
 	struct MetaDataInfo {

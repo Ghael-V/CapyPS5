@@ -36,6 +36,7 @@ enum class TileBlockFamily : uint32_t {
 	Prt64KB3D,
 	RenderTarget64KB,
 	Depth64KB,
+	Displayable4KB,
 	Count,
 };
 

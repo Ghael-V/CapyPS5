@@ -88,7 +88,7 @@ static constexpr BlockFamilyInfo BLOCK_FAMILIES[] = {
     {4096, LOG2_BLOCK_THICK_4KB, 16},   {65536, LOG2_BLOCK_THIN_64KB, 16},
     {65536, LOG2_BLOCK_THICK_64KB, 16}, {65536, LOG2_BLOCK_THIN_64KB, 16},
     {65536, LOG2_BLOCK_THICK_64KB, 16}, {65536, LOG2_BLOCK_THIN_64KB, 16},
-    {65536, LOG2_BLOCK_THIN_64KB, 8},
+    {65536, LOG2_BLOCK_THIN_64KB, 8},   {4096, LOG2_BLOCK_THIN_4KB, 16},
 };
 static_assert(std::size(BLOCK_FAMILIES) == static_cast<size_t>(TileBlockFamily::Count));
 
@@ -227,6 +227,7 @@ static bool GetMipTailLayout(const TileBlockLayout& block, MipTailLayout& out) {
 	const auto index = std::countr_zero(block.bytes_per_element);
 	switch (block.family) {
 		case TileBlockFamily::Standard4KB:
+		case TileBlockFamily::Displayable4KB:
 			out = MakeMipTailLayout(GEN5_MIP_TAIL_LOCATIONS_THIN_4KB[index],
 			                        block.block_width >> 1u, block.block_height);
 			return true;
@@ -288,7 +289,9 @@ bool TileGetTextureBlockLayout(Prospero::BufferFormat format, Prospero::TileMode
 			family = volume ? TileBlockFamily::Prt64KB3D : TileBlockFamily::Prt64KB;
 			break;
 		case Prospero::TileMode::kDepth: family = TileBlockFamily::Depth64KB; break;
-		case Prospero::TileMode::kDisplayable64KB:
+		case Prospero::TileMode::kDisplayable4KB:
+			if (!volume) family = TileBlockFamily::Displayable4KB;
+			break;
 		case Prospero::TileMode::kRenderTarget: family = TileBlockFamily::RenderTarget64KB; break;
 		default: return false;
 	}
@@ -569,6 +572,33 @@ static uint32_t Gen5Standard64KBVolumeOffsetInBlock(uint32_t x, uint32_t y, uint
 	const auto* bits = SOURCES[std::countr_zero(bytes_per_element)];
 	return Gen5Standard4KBVolumeOffsetInBlock(x, y, z, bytes_per_element) ^ Bit(x, bits[0], 12) ^
 	       Bit(z, bits[1], 13) ^ Bit(y, bits[2], 14) ^ Bit(x, bits[3], 15);
+}
+
+// GFX10 SW_4KB_D_X with the PS5 pipe configuration (16 pipes, as in addrlib
+// GFX10_SW_4K_D_X_PATINFO). Bit i of the offset is the parity of (x & X[i]) ^ (y & Y[i]);
+// bits above the block select pipes from block coordinates, so pass full coordinates.
+static constexpr uint16_t DISPLAYABLE_4KB_X_MASKS[5][12] = {
+    {0x001, 0x002, 0x004, 0x000, 0x000, 0x000, 0x008, 0x000, 0x080, 0x010, 0x040, 0x020},
+    {0x000, 0x001, 0x002, 0x004, 0x000, 0x000, 0x000, 0x008, 0x080, 0x010, 0x040, 0x020},
+    {0x000, 0x000, 0x001, 0x002, 0x000, 0x000, 0x000, 0x004, 0x040, 0x008, 0x020, 0x010},
+    {0x000, 0x000, 0x000, 0x001, 0x000, 0x002, 0x004, 0x000, 0x040, 0x008, 0x020, 0x010},
+    {0x000, 0x000, 0x000, 0x000, 0x001, 0x000, 0x002, 0x000, 0x020, 0x004, 0x010, 0x008}};
+static constexpr uint16_t DISPLAYABLE_4KB_Y_MASKS[5][12] = {
+    {0x000, 0x000, 0x000, 0x002, 0x001, 0x004, 0x000, 0x008, 0x010, 0x080, 0x020, 0x040},
+    {0x000, 0x000, 0x000, 0x000, 0x001, 0x002, 0x004, 0x000, 0x008, 0x040, 0x010, 0x020},
+    {0x000, 0x000, 0x000, 0x000, 0x001, 0x002, 0x004, 0x000, 0x008, 0x040, 0x010, 0x020},
+    {0x000, 0x000, 0x000, 0x000, 0x001, 0x000, 0x000, 0x002, 0x004, 0x020, 0x008, 0x010},
+    {0x000, 0x000, 0x000, 0x000, 0x000, 0x001, 0x000, 0x002, 0x004, 0x020, 0x008, 0x010}};
+
+static uint32_t Gen5Displayable4KBOffset(uint32_t x, uint32_t y, uint32_t bytes_per_element) {
+	const auto index  = std::countr_zero(bytes_per_element);
+	uint32_t   offset = 0;
+	for (uint32_t bit = 0; bit < 12; bit++) {
+		const auto selected = (x & DISPLAYABLE_4KB_X_MASKS[index][bit]) ^
+		                      ((y & DISPLAYABLE_4KB_Y_MASKS[index][bit]) << 16u);
+		offset |= (static_cast<uint32_t>(std::popcount(selected)) & 1u) << bit;
+	}
+	return offset;
 }
 
 struct Uint128 {
@@ -955,6 +985,9 @@ bool TileGetBlockOffset(const TileBlockLayout& layout, uint32_t x, uint32_t y, u
 				default: return false;
 			}
 			break;
+		case TileBlockFamily::Displayable4KB:
+			offset = Gen5Displayable4KBOffset(x, y, layout.bytes_per_element);
+			break;
 		case TileBlockFamily::Depth64KB:
 			switch (layout.bytes_per_element) {
 				case 1: offset = Depth64KB8XOffsetBytes(x) ^ Depth64KB8YOffsetBytes(y); break;
@@ -1010,11 +1043,19 @@ bool TileGetBlockXor(const TileBlockLayout& layout, uint32_t block_x, uint32_t b
 			case 16: byte_offset = Gen5RenderTargetOffsetInBlock<Uint128>(x, y); break;
 			default: return false;
 		}
+	} else if (layout.family == TileBlockFamily::Displayable4KB) {
+		if (block_x > UINT32_MAX / layout.block_width ||
+		    block_y > UINT32_MAX / layout.block_height) {
+			return false;
+		}
+		byte_offset = Gen5Displayable4KBOffset(block_x * layout.block_width,
+		                                       block_y * layout.block_height, layout.bytes_per_element);
 	} else {
 		byte_offset = 0;
 	}
 	if (layout.family == TileBlockFamily::RenderTarget64KB ||
-	    layout.family == TileBlockFamily::Depth64KB) {
+	    layout.family == TileBlockFamily::Depth64KB ||
+	    layout.family == TileBlockFamily::Displayable4KB) {
 		byte_offset ^= ((block_z & 8u) << 5u) ^ ((block_z & 4u) << 7u) ^ ((block_z & 2u) << 9u) ^
 		               ((block_z & 1u) << 11u);
 	}
@@ -1237,8 +1278,7 @@ bool TileGetDccSize(uint32_t width, uint32_t height, uint32_t slices,
 	total_size = {};
 	if (levels != 1 || num_fragments_log2 != 0 ||
 	    !std::has_single_bit(bytes_per_element) || bytes_per_element > 16 ||
-	    (tile != Prospero::TileMode::kRenderTarget && tile != Prospero::TileMode::kDisplayable64KB &&
-	     tile != Prospero::TileMode::kDepth)) {
+	    (tile != Prospero::TileMode::kRenderTarget && tile != Prospero::TileMode::kDepth)) {
 		return false;
 	}
 	// Gen5 DCC uses 4 KiB blocks, with one byte per 256 bytes of color data.
@@ -1352,7 +1392,7 @@ uint32_t TileGetTexturePitch(Prospero::BufferFormat format, uint32_t width,
 		case Prospero::TileMode::kStandard64KB:
 		case Prospero::TileMode::kPrt:
 		case Prospero::TileMode::kDepth:
-		case Prospero::TileMode::kDisplayable64KB:
+		case Prospero::TileMode::kDisplayable4KB:
 		case Prospero::TileMode::kRenderTarget: {
 			TileTextureBlockLayout layout {};
 			if (TileGetTextureBlockLayout(format, tile, false, layout)) {

@@ -2,6 +2,7 @@
 
 #include "common/alignment.h"
 #include "common/assert.h"
+#include "common/debugFlags.h"
 #include "common/emulatorConfig.h"
 #include "common/logging/log.h"
 #include "common/profiler.h"
@@ -1427,11 +1428,19 @@ bool TextureCache::ClearImageFromBuffer(CommandBuffer& command, uint64_t address
 	ImageId               stencil_id {};
 	vk::ImageAspectFlags  aspect {};
 	ImageSubresourceRange subresources;
+	Common::DebugFlags::FrameTrace("  image clear 0x%llx size=%llu value=0x%08x",
+	                               static_cast<unsigned long long>(address),
+	                               static_cast<unsigned long long>(size), packed_clear);
 	for (const auto id: FindImagesInRegion(address, size, false)) {
 		auto owner = m_slot_images.try_get(id);
 		if (owner == nullptr) {
 			continue;
 		}
+		Common::DebugFlags::FrameTrace("    candidate addr=0x%llx size=%llu %ux%u vkfmt=%d depth=%d",
+		                               static_cast<unsigned long long>(owner->info.data.address),
+		                               static_cast<unsigned long long>(owner->info.data.size),
+		                               owner->info.extent.width, owner->info.extent.height,
+		                               static_cast<int>(owner->info.pixel_format), owner->depth_id ? 1 : 0);
 		vk::ImageAspectFlags candidate {};
 		ImageId              candidate_id = id;
 		ImageSubresourceRange candidate_subresources {
@@ -1462,14 +1471,19 @@ bool TextureCache::ClearImageFromBuffer(CommandBuffer& command, uint64_t address
 		subresources = candidate_subresources;
 	}
 	if (!selected) {
+		Common::DebugFlags::FrameTrace("    -> no exact image, dispatch runs");
 		return false;
 	}
 	auto&          image = m_slot_images[selected];
 	vk::ClearValue clear {};
 	if (aspect == vk::ImageAspectFlagBits::eColor) {
 		if (!DecodeColorDwordFill(image.info.pixel_format, packed_clear, clear.color)) {
+			Common::DebugFlags::FrameTrace("    -> undecodable fill, dispatch runs");
 			return false;
 		}
+		Common::DebugFlags::FrameTrace("    -> cleared color %f %f %f %f", clear.color.float32[0],
+		                               clear.color.float32[1], clear.color.float32[2],
+		                               clear.color.float32[3]);
 	} else {
 		uint8_t stencil_clear = 0;
 		if ((aspect == vk::ImageAspectFlagBits::eDepth &&

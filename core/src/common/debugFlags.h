@@ -1,10 +1,14 @@
 #ifndef COMMON_DEBUG_FLAGS_H
 #define COMMON_DEBUG_FLAGS_H
 
+#include <algorithm>
 #include <atomic>
+#include <cstdarg>
 #include <chrono>
 #include <cstdint>
 #include <cstdlib>
+#include <mutex>
+#include <vector>
 
 #if defined(__ANDROID__)
 #include <android/log.h>
@@ -21,12 +25,13 @@ enum Flag : uint32_t {
 	NoStreamBuffer,      // never use the stream-buffer fast path for small buffers
 	IdleBeforePresent,   // vkDeviceWaitIdle before presenting a frame
 	IdleAfterFlush,      // vkDeviceWaitIdle after every guest command-buffer flush
+	ForceLinearFilter,   // create every sampler with bilinear min/mag filtering
 	FlagCount
 };
 
 inline constexpr const char* kFlagNames[FlagCount] = {
     "debug.capy.force_sync", "debug.capy.no_stream", "debug.capy.idle_present",
-    "debug.capy.idle_flush",
+    "debug.capy.idle_flush", "debug.capy.force_linear",
 };
 
 inline std::atomic<uint32_t> g_mask {0};
@@ -72,7 +77,7 @@ public:
 			char text[PROP_VALUE_MAX] = {};
 			if (__system_property_get(m_name, text) > 0) {
 				char* end    = nullptr;
-				const auto v = std::strtoll(text, &end, 10);
+				const auto v = std::strtoll(text, &end, 0);
 				if (end != text) {
 					value = v;
 				}
@@ -109,6 +114,68 @@ inline void WatchWrite(const char* who, uint64_t addr, uint64_t size, uint64_t v
 	                    static_cast<unsigned long long>(addr), static_cast<unsigned long long>(size),
 	                    static_cast<unsigned long long>(value), static_cast<unsigned long long>(watch));
 #endif
+}
+
+/** Logs a warning the first time `key` is seen (at most 256 distinct keys). */
+inline void NoteOnce(const char* tag, uint64_t key, const char* fmt, ...) {
+	static std::mutex            mutex;
+	static std::vector<uint64_t> seen;
+	{
+		std::lock_guard lock(mutex);
+		if (seen.size() >= 256 || std::find(seen.begin(), seen.end(), key) != seen.end()) {
+			return;
+		}
+		seen.push_back(key);
+	}
+#if defined(__ANDROID__)
+	va_list args;
+	va_start(args, fmt);
+	__android_log_vprint(ANDROID_LOG_WARN, tag, fmt, args);
+	va_end(args);
+#else
+	(void)tag;
+	(void)fmt;
+#endif
+}
+
+// One-frame trace: `setprop debug.capy.frame_trace 1` logs every draw/dispatch/texture of the
+// next complete frame (flip to flip) under the CapyPS5-Frame tag. Reset the property to re-arm.
+inline std::atomic<uint32_t> g_trace_state {0}; // 0 idle, 1 tracing, 2 done
+inline std::atomic<uint32_t> g_trace_lines {0};
+
+inline bool FrameTracing() {
+	return g_trace_state.load(std::memory_order_relaxed) == 1;
+}
+
+inline void FrameTrace(const char* fmt, ...) {
+	if (!FrameTracing() || g_trace_lines.fetch_add(1, std::memory_order_relaxed) >= 6000) {
+		return;
+	}
+#if defined(__ANDROID__)
+	va_list args;
+	va_start(args, fmt);
+	__android_log_vprint(ANDROID_LOG_WARN, "CapyPS5-Frame", fmt, args);
+	va_end(args);
+#else
+	(void)fmt;
+#endif
+}
+
+inline void FrameTraceOnFlip() {
+	static CachedValue property("debug.capy.frame_trace", 0);
+	const auto         state = g_trace_state.load(std::memory_order_relaxed);
+	if (property.Get() == 0) {
+		g_trace_state.store(0, std::memory_order_relaxed);
+		return;
+	}
+	if (state == 0) {
+		g_trace_lines.store(0, std::memory_order_relaxed);
+		g_trace_state.store(1, std::memory_order_relaxed);
+		FrameTrace("---- frame begin ----");
+	} else if (state == 1) {
+		FrameTrace("---- frame end ----");
+		g_trace_state.store(2, std::memory_order_relaxed);
+	}
 }
 
 /** True when `adb shell setprop debug.capy.verbose 1` asks for detailed (hot path) logging. */

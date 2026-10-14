@@ -32,6 +32,11 @@ object NativeBridge {
     )
     external fun nativeGetVersion(): String
 
+    /** Render passes of the last frame, 5 longs each; see LayersPanel. */
+    external fun nativeGetPasses(): LongArray
+    external fun nativeSetPassSkipped(pixelShader: Long, skipped: Boolean)
+    external fun nativeClearSkippedPasses()
+
     /** Cumulative counters; layout matches nativeGetStats() in capyps5_jni.cpp. */
     external fun nativeGetStats(): LongArray
 

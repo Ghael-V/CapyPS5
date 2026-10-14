@@ -281,6 +281,7 @@ set(gpu_tiler_shader_names
 	prt_3d
 	render_target
 	depth
+	displayable4
 	promote_d16
 	demote_d16
 	color_transform

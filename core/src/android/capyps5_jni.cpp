@@ -3,6 +3,7 @@
 #include "common/common.h"
 #include "common/file.h"
 #include "common/logging/log.h"
+#include "common/passInspector.h"
 #include "common/stringUtils.h"
 #include "common/telemetry.h"
 #include "common/threads.h"
@@ -202,6 +203,36 @@ JNIEXPORT jlongArray JNICALL Java_org_capyps5_emulator_NativeBridge_nativeGetSta
 		env->SetLongArrayRegion(array, 0, count, values);
 	}
 	return array;
+}
+
+// Five longs per pass: pixel shader address, width << 32 | height, draws, targets, skipped.
+JNIEXPORT jlongArray JNICALL Java_org_capyps5_emulator_NativeBridge_nativeGetPasses(
+    JNIEnv* env, jclass /*clazz*/) {
+	const auto         passes = Common::PassInspector::Snapshot();
+	std::vector<jlong> values;
+	values.reserve(passes.size() * 5);
+	for (const auto& [pass, skipped]: passes) {
+		values.push_back(static_cast<jlong>(pass.pixel_shader));
+		values.push_back(static_cast<jlong>((uint64_t {pass.width} << 32u) | pass.height));
+		values.push_back(pass.draws);
+		values.push_back(pass.targets);
+		values.push_back(skipped ? 1 : 0);
+	}
+	jlongArray array = env->NewLongArray(static_cast<jsize>(values.size()));
+	if (array != nullptr && !values.empty()) {
+		env->SetLongArrayRegion(array, 0, static_cast<jsize>(values.size()), values.data());
+	}
+	return array;
+}
+
+JNIEXPORT void JNICALL Java_org_capyps5_emulator_NativeBridge_nativeSetPassSkipped(
+    JNIEnv* /*env*/, jclass /*clazz*/, jlong pixel_shader, jboolean skipped) {
+	Common::PassInspector::SetSkipped(static_cast<uint64_t>(pixel_shader), skipped == JNI_TRUE);
+}
+
+JNIEXPORT void JNICALL Java_org_capyps5_emulator_NativeBridge_nativeClearSkippedPasses(
+    JNIEnv* /*env*/, jclass /*clazz*/) {
+	Common::PassInspector::ClearSkipped();
 }
 
 JNIEXPORT jstring JNICALL Java_org_capyps5_emulator_NativeBridge_nativeGetVersion(

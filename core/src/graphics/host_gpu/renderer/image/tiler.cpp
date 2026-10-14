@@ -4,6 +4,7 @@
 #include "common/assert.h"
 #include "gpu_tiler_shaders/gpu_tiler_demote_d16_spv.h"
 #include "gpu_tiler_shaders/gpu_tiler_depth_spv.h"
+#include "gpu_tiler_shaders/gpu_tiler_displayable4_spv.h"
 #include "gpu_tiler_shaders/gpu_tiler_promote_d16_spv.h"
 #include "gpu_tiler_shaders/gpu_tiler_prt_3d_spv.h"
 #include "gpu_tiler_shaders/gpu_tiler_prt_spv.h"
@@ -30,7 +31,7 @@ namespace Libs::Graphics {
 TileManager::TileManager(GraphicContext& graphics, CommandScheduler& scheduler,
                          StreamBuffer& stream_buffer)
     : m_graphics(graphics), m_scheduler(scheduler), m_stream_buffer(stream_buffer) {
-	static_assert(FamilyCount == 9);
+	static_assert(FamilyCount == 10);
 	static_assert(sizeof(Mip) == 48);
 	static_assert(offsetof(TilingParams, mips) == 16);
 	static_assert(sizeof(TilingParams) == 784);
@@ -234,6 +235,7 @@ vk::Pipeline TileManager::GetPipeline(uint32_t slot) {
 	    {GPU_TILER_PRT_3D_SPV, std::size(GPU_TILER_PRT_3D_SPV)},
 	    {GPU_TILER_RENDER_TARGET_SPV, std::size(GPU_TILER_RENDER_TARGET_SPV)},
 	    {GPU_TILER_DEPTH_SPV, std::size(GPU_TILER_DEPTH_SPV)},
+	    {GPU_TILER_DISPLAYABLE4_SPV, std::size(GPU_TILER_DISPLAYABLE4_SPV)},
 	}};
 	const uint32_t                                   element_index = slot % BytesPerElementCount;
 	const uint32_t                   direction_index = slot / (FamilyCount * BytesPerElementCount);

@@ -1,4 +1,5 @@
 #include "common/assert.h"
+#include "common/debugFlags.h"
 #include "graphics/shader/recompiler/BufferFormat.h"
 #include "graphics/shader/recompiler/frontend/translate/Translator.h"
 
@@ -57,6 +58,9 @@ void Translator::TranslateEmbeddedFetch(const Decoder::Instruction& inst, uint32
 			const auto sel = GetDstSel(resource.DstSelXYZW(), component);
 			source = Format::ResolveFormattedSource(format, sel);
 			if (source.kind == Format::FormattedSourceKind::Invalid) {
+				Common::DebugFlags::NoteOnce("CapyPS5-Fetch", (uint64_t {inst.pc} << 8u) ^ attribute ^ (uint64_t {resource.fields[3]} << 32u),
+				    "embedded fetch pc=0x%x attrib=%u comp=%u format=%u sel=%u invalid: substituted",
+				    inst.pc, attribute, component, static_cast<uint32_t>(resource.RawFormat()), sel);
 				if (sel == 1u || (format.component_count == 0u && component == 3u)) {
 					source = Format::FormattedSource {Format::FormattedSourceKind::One, 0};
 				} else {

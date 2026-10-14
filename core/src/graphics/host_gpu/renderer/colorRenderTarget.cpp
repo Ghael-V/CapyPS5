@@ -1,6 +1,7 @@
 #include "graphics/host_gpu/renderer/colorRenderTarget.h"
 
 #include "common/assert.h"
+#include "common/debugFlags.h"
 #include "common/logging/log.h"
 #include "common/profiler.h"
 #include "graphics/guest_gpu/gpu_defs.h"
@@ -144,14 +145,15 @@ void RenderExecutor::ResolveRenderColorTarget(CommandBuffer& buffer, RenderColor
 	const bool     standard4    = rt.attrib3.tile_mode == Prospero::TileMode::kStandard4KB;
 	const bool     standard64   = rt.attrib3.tile_mode == Prospero::TileMode::kStandard64KB;
 	const bool     depth_tile   = rt.attrib3.tile_mode == Prospero::TileMode::kDepth;
-	const bool     texture_tile = standard4 || standard64 || depth_tile;
+	const bool     displayable4 = rt.attrib3.tile_mode == Prospero::TileMode::kDisplayable4KB;
+	const bool     texture_tile = standard4 || standard64 || depth_tile || displayable4;
 
 	switch (rt.attrib3.tile_mode) {
 		case Prospero::TileMode::kLinear:
 		case Prospero::TileMode::kStandard4KB:
 		case Prospero::TileMode::kStandard64KB:
 		case Prospero::TileMode::kDepth:
-		case Prospero::TileMode::kDisplayable64KB:
+		case Prospero::TileMode::kDisplayable4KB:
 		case Prospero::TileMode::kRenderTarget:
 			tile = !RenderIsColorTileModeLinear(rt.attrib3.tile_mode);
 			break;
@@ -211,8 +213,13 @@ void RenderExecutor::ResolveRenderColorTarget(CommandBuffer& buffer, RenderColor
 	desc.info.bytes_per_block = bytes_per_element;
 	desc.info.samples         = samples;
 	desc.info.tile_mode       = rt.attrib3.tile_mode;
-	if (!volume && (rt.attrib3.tile_mode == Prospero::TileMode::kRenderTarget ||
-	                rt.attrib3.tile_mode == Prospero::TileMode::kDisplayable64KB) &&
+	if (rt.attrib3.tile_mode == Prospero::TileMode::kDisplayable4KB) {
+		Common::DebugFlags::NoteOnce("CapyPS5-Tile", rt.base.addr | 1u,
+		    "render target tile=0x16 addr=0x%llx fmt=%u %ux%u levels=%u bpe=%u",
+		    static_cast<unsigned long long>(rt.base.addr), static_cast<uint32_t>(desc.info.guest_format),
+		    width, height, levels, bytes_per_element);
+	}
+	if (!volume && rt.attrib3.tile_mode == Prospero::TileMode::kRenderTarget &&
 	    levels > std::bit_width(std::max(width, height))) {
 		EXIT("unsupported render-target mip count\n");
 	}

@@ -1,4 +1,5 @@
 #include "common/assert.h"
+#include "common/debugFlags.h"
 #include "graphics/shader/recompiler/frontend/translate/Translator.h"
 #include "graphics/shader/shader.h"
 
@@ -1417,6 +1418,12 @@ IR::Program TranslateProgram(const Decoder::Program& decoded, const CFG::Graph& 
 				const auto resource =
 				    ResolveEmbeddedFetchResource(*options.input_info.vertex, *embedded);
 				static const ShaderBufferResource dummy_resource {};
+				if (resource < 0 || resource >= options.input_info.vertex->resources_num) {
+					Common::DebugFlags::NoteOnce("CapyPS5-Fetch", instruction.pc ^ (uint64_t {options.shader_hash} << 20u),
+					    "embedded fetch pc=0x%x attrib=%d has no resource (hash %016llx): reads zeros",
+					    instruction.pc, embedded->attrib_id,
+					    static_cast<unsigned long long>(options.shader_hash));
+				}
 				const auto& res = (resource >= 0 && resource < options.input_info.vertex->resources_num)
 				                      ? options.input_info.vertex->resources[resource]
 				                      : dummy_resource;

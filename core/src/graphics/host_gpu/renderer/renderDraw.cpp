@@ -2,6 +2,8 @@
 
 #include "common/assert.h"
 #include "common/common.h"
+#include "common/debugFlags.h"
+#include "common/passInspector.h"
 #include "common/emulatorConfig.h"
 #include "common/file.h"
 #include "common/logging/log.h"
@@ -736,6 +738,15 @@ static PreparedVertexBuffers AcquireVertexBuffers(CommandBuffer&               b
 			continue;
 		}
 		range.acquired_end = range.base_address + size;
+		if (Common::DebugFlags::FrameTracing()) {
+			uint32_t words[8] = {};
+			(void)Libs::LibKernel::Memory::ReadGuestMemory(range.base_address, words,
+			                                               std::min<uint64_t>(size, sizeof(words)));
+			Common::DebugFlags::FrameTrace("    vb 0x%llx size=%llu %08x %08x %08x %08x %08x %08x %08x %08x",
+			                               static_cast<unsigned long long>(range.base_address),
+			                               static_cast<unsigned long long>(size), words[0], words[1],
+			                               words[2], words[3], words[4], words[5], words[6], words[7]);
+		}
 		range.binding      = cache.ObtainBuffer(range.base_address, size, false);
 	}
 
@@ -1110,6 +1121,19 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 	if (CopyDepthToColor(buffer, draw, emit, state)) {
 		return;
 	}
+	// Bisection aid: `setprop debug.capy.skip_ps 0x<address>` drops draws using that pixel shader.
+	static Common::DebugFlags::CachedValue skip_ps("debug.capy.skip_ps", 0);
+	const auto pixel_shader = buffer.GetShaders().GetPs().ps_regs.data_addr;
+	if (pixel_shader != 0) {
+		const auto extent = state.color_count != 0 ? state.color_info[0].Extent() : vk::Extent2D {};
+		Common::PassInspector::RecordDraw(pixel_shader, extent.width, extent.height,
+		                                  state.color_count);
+	}
+	if (const auto skip = skip_ps.Get();
+	    (skip != 0 && static_cast<uint64_t>(skip) == pixel_shader) ||
+	    Common::PassInspector::IsSkipped(pixel_shader)) {
+		return;
+	}
 	const auto vertex_stages =
 	    std::span {state.vertex_info.data(), state.programs.VertexStageCount()};
 	const bool mesh_active = state.vertex_info[0].stage.program->stage == ShaderType::Mesh;
@@ -1164,6 +1188,27 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 	}
 	const auto stages = std::span {descriptor_stages.data(), stage_count};
 	PrepareGraphicsBindings(stages, std::span {state.color_info, state.color_count});
+	// `setprop debug.capy.skip_tex 0x<address>` drops pixel-shader draws that sample that texture.
+	static Common::DebugFlags::CachedValue skip_tex("debug.capy.skip_tex", 0);
+	if (const auto tex = skip_tex.Get(); tex != 0 && state.ps_active) {
+		for (const auto& image: bindings.pixel->images) {
+			if (image.desc.info.data.address == static_cast<uint64_t>(tex)) {
+				return;
+			}
+		}
+	}
+	// `setprop debug.capy.dump_ps 0x<ps>`: during a frame trace, write every image this pixel
+	// shader samples back to guest memory so it can be read from /proc/<pid>/mem.
+	static Common::DebugFlags::CachedValue dump_ps("debug.capy.dump_ps", 0);
+	if (Common::DebugFlags::FrameTracing() && state.ps_active && dump_ps.Get() != 0 &&
+	    static_cast<uint64_t>(dump_ps.Get()) == buffer.GetShaders().GetPs().ps_regs.data_addr) {
+		for (const auto& image: bindings.pixel->images) {
+			const bool ok = m_context.GetTextureCache().DebugDownloadImage(image.image_id);
+			Common::DebugFlags::FrameTrace("  dump image addr=0x%llx -> %d",
+			                               static_cast<unsigned long long>(image.desc.info.data.address),
+			                               ok ? 1 : 0);
+		}
+	}
 	PreparedVertexBuffers vertex_bindings;
 	PreparedIndexBuffer   index_binding;
 	if (!mesh_active) {
@@ -1182,6 +1227,38 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 	const auto rendering =
 	    AcquireRenderTargets(buffer, state.color_info, state.color_count, state.depth_info,
 	                         feedback_aspects, stages);
+	if (Common::DebugFlags::FrameTracing()) {
+		const auto& shaders = buffer.GetShaders();
+		const auto* rt0     = state.color_count != 0 ? &state.color_info[0] : nullptr;
+		Common::DebugFlags::FrameTrace(
+		    "draw %s n=%u inst=%u vs=0x%llx ps=0x%llx targets=%u rt0=0x%llx %ux%u fmt=%u tile=0x%x",
+		    draw.Name(), draw.index_count, draw.instance_count,
+		    static_cast<unsigned long long>(shaders.GetVs().gs_regs.data_addr),
+		    static_cast<unsigned long long>(shaders.GetPs().ps_regs.data_addr), state.color_count,
+		    static_cast<unsigned long long>(rt0 ? rt0->desc.info.data.address : 0),
+		    rt0 ? rt0->desc.info.extent.width : 0, rt0 ? rt0->desc.info.extent.height : 0,
+		    rt0 ? static_cast<uint32_t>(rt0->desc.info.guest_format) : 0,
+		    rt0 ? static_cast<uint32_t>(rt0->desc.info.tile_mode) : 0);
+		for (int r = 0; r < state.vertex_info[0].resources_num; r++) {
+			const auto& res = state.vertex_info[0].resources[r];
+			Common::DebugFlags::FrameTrace("    vtx[%d] addr=0x%llx stride=%u records=%u fmt=%u sel=0x%03x", r,
+			                               static_cast<unsigned long long>(res.Base48()), res.Stride(),
+			                               res.NumRecords(), static_cast<uint32_t>(res.RawFormat()),
+			                               res.DstSelXYZW());
+		}
+		const auto& dc = buffer.GetRegisters().GetDepthControl();
+		const auto& di = state.depth_info;
+		Common::DebugFlags::FrameTrace(
+		    "    depth img=%d addr=0x%llx clr=%d/%d %.3f test=%d write=%d op=%d | guest z=%d zw=%d zfunc=%u st=%d sfunc=%u | vk st=%d fail=%d pass=%d zfail=%d cmp=%d mask=0x%x wmask=0x%x ref=0x%x",
+		    di.image_id ? 1 : 0, static_cast<unsigned long long>(di.desc.info.data.address),
+		    di.depth_clear_enable ? 1 : 0, di.depth_load_clear_enable ? 1 : 0,
+		    static_cast<double>(di.depth_clear_value), di.depth_test_enable ? 1 : 0, di.depth_write_enable ? 1 : 0,
+		    static_cast<int>(di.depth_compare_op), dc.z_enable ? 1 : 0, dc.z_write_enable ? 1 : 0,
+		    dc.zfunc, dc.stencil_enable ? 1 : 0, dc.stencilfunc, di.stencil_test_enable ? 1 : 0,
+		    static_cast<int>(di.stencil_front.failOp), static_cast<int>(di.stencil_front.passOp),
+		    static_cast<int>(di.stencil_front.depthFailOp), static_cast<int>(di.stencil_front.compareOp),
+		    di.stencil_front.compareMask, di.stencil_front.writeMask, di.stencil_front.reference);
+	}
 
 	// Resource preparation above may synchronously finish and restart the scheduler. From this
 	// point onward, every operation targets the current command buffer and cannot touch guest
@@ -1269,17 +1346,24 @@ void RenderExecutor::DrawIndex(uint64_t submit_id, CommandBuffer& buffer,
 	                    reinterpret_cast<uint64_t>(args.index_addr));
 
 	Common::LockGuard lock(m_context.GetMutex());
+	Common::DebugFlags::FrameTrace("submit DrawIndex n=%u inst=%u ps=0x%llx indirect=%d", args.index_count,
+	                               args.instance_count,
+	                               static_cast<unsigned long long>(sh_ctx.GetPs().ps_regs.data_addr),
+	                               args.offset_source == DrawOffsetSource::IndirectArgs ? 1 : 0);
 	if (args.index_count == 0 || args.instance_count == 0) {
+		Common::DebugFlags::FrameTrace("  skipped: empty");
 		return;
 	}
 
 	if (ConsumeMetadataColorOperation(buffer) || DepthStencilCopy(buffer) ||
 	    ResolveColorTargets(buffer, args.render_target_slice_offset)) {
+		Common::DebugFlags::FrameTrace("  skipped: metadata/copy/resolve op");
 		ResetBindings();
 		return;
 	}
 
 	if (!DrawHasValidVertexShader(sh_ctx)) {
+		Common::DebugFlags::FrameTrace("  skipped: no vertex shader");
 		return;
 	}
 
@@ -1306,6 +1390,7 @@ void RenderExecutor::DrawIndex(uint64_t submit_id, CommandBuffer& buffer,
 
 	vk::PrimitiveTopology topology = vk::PrimitiveTopology::ePointList;
 	if (!GetDrawTopology(ucfg, topology)) {
+		Common::DebugFlags::FrameTrace("  skipped: topology");
 		return;
 	}
 
@@ -1344,6 +1429,7 @@ void RenderExecutor::DrawIndex(uint64_t submit_id, CommandBuffer& buffer,
 	                        args.instance_count, args.first_instance};
 	DrawRenderState state {};
 	if (!PrepareDrawRenderState(buffer, draw, args.render_target_slice_offset, state)) {
+		Common::DebugFlags::FrameTrace("  skipped: no render state");
 		ResetBindings();
 		return;
 	}

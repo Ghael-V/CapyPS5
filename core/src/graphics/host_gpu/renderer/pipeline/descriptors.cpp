@@ -3,6 +3,7 @@
 #include "common/alignment.h"
 #include "common/assert.h"
 #include "common/common.h"
+#include "common/debugFlags.h"
 #include "common/emulatorConfig.h"
 #include "common/file.h"
 #include "common/logging/log.h"
@@ -108,6 +109,20 @@ static bool IsMultisampledTexture(Prospero::ImageType type) {
 	       type == Prospero::ImageType::kColor2DMsaaArray;
 }
 
+static void TraceBufferContents(const char* kind, uint64_t address, uint64_t size, bool written) {
+	if (!Common::DebugFlags::FrameTracing()) {
+		return;
+	}
+	uint32_t words[8] = {};
+	const bool ok = Libs::LibKernel::Memory::ReadGuestMemory(address, words,
+	                                                         std::min<uint64_t>(size, sizeof(words)));
+	Common::DebugFlags::FrameTrace("    %s 0x%llx size=%llu w=%d %s %08x %08x %08x %08x %08x %08x %08x %08x",
+	                               kind, static_cast<unsigned long long>(address),
+	                               static_cast<unsigned long long>(size), written ? 1 : 0, ok ? "" : "(unreadable)",
+	                               words[0], words[1], words[2], words[3], words[4], words[5], words[6],
+	                               words[7]);
+}
+
 static vk::DescriptorBufferInfo
 NativeStorageBuffer(RenderContext& context, const PreparedBindings::BufferSource& source,
                     const ShaderRecompiler::IR::BufferResource& resource, uint32_t& buffer_offset) {
@@ -123,6 +138,7 @@ NativeStorageBuffer(RenderContext& context, const PreparedBindings::BufferSource
 	if (size > max_range) {
 		size = max_range;
 	}
+	TraceBufferContents("buf", address, size, resource.written);
 	auto [buffer, offset] = context.GetBufferCache().ObtainBuffer(
 	    address, size, resource.written,
 	    resource.formatted || (resource.read && Config::SyncRawImageBuffersEnabled()), id);
@@ -260,7 +276,7 @@ static bool IsSupportedStorageTextureDescriptor(const ShaderRecompiler::IR::Imag
 			supported_tile =
 			    TileGetTextureBlockLayout(descriptor.Format(), tile, is_3d, tile_layout);
 			break;
-		case Prospero::TileMode::kDisplayable64KB:
+		case Prospero::TileMode::kDisplayable4KB:
 		case Prospero::TileMode::kRenderTarget:
 			supported_tile =
 			    TileGetTextureBlockLayout(descriptor.Format(), tile, false, tile_layout);
@@ -540,8 +556,7 @@ TextureBinding RenderExecutor::ResolveTexture(const ShaderRecompiler::IR::ImageR
 	    multisampled ? 1u : std::max(physical_levels, base_level + view_levels);
 	const auto tile       = descriptor.TileMode();
 	const bool depth_tile = tile == Prospero::TileMode::kDepth;
-	const bool msaa_tile  = depth_tile || tile == Prospero::TileMode::kRenderTarget ||
-	                       tile == Prospero::TileMode::kDisplayable64KB;
+	const bool msaa_tile  = depth_tile || tile == Prospero::TileMode::kRenderTarget;
 	const bool msaa_array = type == Prospero::ImageType::kColor2DMsaaArray;
 	if ((!multisampled && base_level > last_level) ||
 	    (multisampled &&
@@ -606,6 +621,17 @@ TextureBinding RenderExecutor::ResolveTexture(const ShaderRecompiler::IR::ImageR
 	    block_bytes != 0 ? block_bytes : Prospero::NumBytesPerElement(format);
 	desc.info.samples   = samples;
 	desc.info.tile_mode = tile;
+	Common::DebugFlags::FrameTrace(
+	    "  tex addr=0x%llx fmt=%u %ux%ux%u levels=%u/%u layers=%u tile=0x%x read=%d written=%d",
+	    static_cast<unsigned long long>(address), static_cast<uint32_t>(format), width, height, depth,
+	    view_levels, levels, image_layers, static_cast<uint32_t>(tile), resource.read ? 1 : 0,
+	    resource.written ? 1 : 0);
+	if (tile == Prospero::TileMode::kDisplayable4KB) {
+		Common::DebugFlags::NoteOnce("CapyPS5-Tile", address,
+		    "texture tile=0x16 addr=0x%llx fmt=%u %ux%ux%u levels=%u layers=%u read=%d written=%d",
+		    static_cast<unsigned long long>(address), static_cast<uint32_t>(format), width, height,
+		    depth, levels, image_layers, resource.read ? 1 : 0, resource.written ? 1 : 0);
+	}
 	if (levels > physical_levels) {
 		if (!ResolveTextureMipView(desc.info, physical_levels,
 		                           !resource.r128 && descriptor.MetaCompress(), view_levels,
@@ -618,8 +644,8 @@ TextureBinding RenderExecutor::ResolveTexture(const ShaderRecompiler::IR::ImageR
 	} else {
 		desc.info.UpdateSize();
 	}
-	const auto alignment = 256u;
-
+	const auto alignment =
+	    tile == Prospero::TileMode::kLinear ? 256u : desc.info.tiling.block.block_size;
 	EXIT_NOT_IMPLEMENTED(desc.info.data.size == 0 || alignment == 0 ||
 	                     (address & (static_cast<uint64_t>(alignment) - 1u)) != 0);
 	if (storage) {
@@ -673,6 +699,10 @@ static vk::Sampler NativeSampler(RenderContext&                       context,
 	if (sampler.force_point_filtering) {
 		descriptor.SetPointFiltering();
 	}
+	Common::DebugFlags::FrameTrace("    sampler[%u] mag=%u min=%u mip=%u point=%d int_border=%d", index,
+	                               descriptor.XyMagFilter(), descriptor.XyMinFilter(),
+	                               descriptor.MipFilter(), sampler.force_point_filtering ? 1 : 0,
+	                               sampler.integer_border ? 1 : 0);
 	return context.GetSamplerCache().GetSampler(descriptor, sampler.integer_border);
 }
 
@@ -730,6 +760,12 @@ void RenderExecutor::PrepareBindings(const ShaderStageRuntime& runtime,
 	prepared.shader_data.clear();
 	for (uint32_t i = 0; i < program.info.images.size(); i++) {
 		auto binding = ResolveTexture(program.info.images[i], snapshot.images[i]);
+		Common::DebugFlags::FrameTrace("    image[%u] class=%u vkfmt=%d dim=%u mips=%u conv=%u", i,
+		                               static_cast<uint32_t>(program.info.images[i].numeric_class),
+		                               static_cast<int>(binding.desc.view_info.format),
+		                               static_cast<uint32_t>(program.info.images[i].dimension),
+		                               program.info.images[i].mip_count,
+		                               static_cast<uint32_t>(program.info.images[i].conversion_format));
 		BindImage(binding.image_id, binding.desc.type == TextureCache::BindingType::Storage);
 		binding.mip_views.swap(prepared.images[i].mip_views);
 		binding.mip_views.clear();
@@ -771,6 +807,10 @@ void RenderExecutor::FindBuffers(std::span<PreparedBindings* const> stages) {
 			const auto address = descriptor.Base48();
 			auto size = descriptor.GetSize();
 			if (address == 0 || size == 0) {
+				Common::DebugFlags::FrameTrace("    buf[%u] dropped: addr=0x%llx size=%llu records=%u stride=%u",
+				                               resource, static_cast<unsigned long long>(address),
+				                               static_cast<unsigned long long>(size), descriptor.NumRecords(),
+				                               static_cast<uint32_t>(descriptor.Stride()));
 				source = {};
 				continue;
 			}
@@ -794,7 +834,14 @@ void RenderExecutor::FindBuffers(std::span<PreparedBindings* const> stages) {
 					}
 				}
 			}
+			const auto requested = size;
 			size = Libs::LibKernel::Memory::ClampRangeSize(address, size);
+			if (size != requested) {
+				Common::DebugFlags::FrameTrace("    buf[%u] clamped: addr=0x%llx size=%llu -> %llu records=%u",
+				                               resource, static_cast<unsigned long long>(address),
+				                               static_cast<unsigned long long>(requested),
+				                               static_cast<unsigned long long>(size), descriptor.NumRecords());
+			}
 			if (size == 0) {
 				source = {};
 				continue;

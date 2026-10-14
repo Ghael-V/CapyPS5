@@ -1,4 +1,5 @@
 #include "common/assert.h"
+#include "common/debugFlags.h"
 #include "common/common.h"
 #include "common/emulatorConfig.h"
 #include "common/file.h"
@@ -258,6 +259,10 @@ void RenderExecutor::DispatchDirect(uint64_t submit_id, CommandBuffer& buffer,
 	if (sh_ctx.GetCs().cs_regs.data_addr == 0) {
 		return;
 	}
+	Common::DebugFlags::FrameTrace("dispatch %ux%ux%u cs=0x%llx async=%d", thread_group_x,
+	                               thread_group_y, thread_group_z,
+	                               static_cast<unsigned long long>(sh_ctx.GetCs().cs_regs.data_addr),
+	                               async_compute ? 1 : 0);
 
 	constexpr uint32_t DISPATCH_INITIATOR_USE_THREAD_DIMENSIONS = 1u << 5u;
 	constexpr uint32_t DISPATCH_INITIATOR_BASE_BITS             = 0x41u;

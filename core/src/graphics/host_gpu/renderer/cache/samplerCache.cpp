@@ -1,6 +1,7 @@
 #include "graphics/host_gpu/renderer/cache/samplerCache.h"
 
 #include "common/assert.h"
+#include "common/debugFlags.h"
 #include "common/logging/log.h"
 #include "graphics/guest_gpu/gpu_defs.h"
 #include "graphics/host_gpu/renderer/renderContext.h"
@@ -17,7 +18,10 @@ SamplerCache::~SamplerCache() {
 vk::Sampler SamplerCache::GetSampler(const ShaderSamplerResource& r, bool integer_border) {
 	Common::LockGuard lock(m_mutex);
 
-	const SamplerKey key {r.fields[0], r.fields[1], r.fields[2], r.fields[3], integer_border};
+	const bool       force_linear =
+	    Common::DebugFlags::Enabled(Common::DebugFlags::ForceLinearFilter);
+	const SamplerKey key {r.fields[0], r.fields[1], r.fields[2], r.fields[3],
+	                     static_cast<uint32_t>(integer_border) | (force_linear ? 2u : 0u)};
 	if (auto iter = m_samplers.find(key); iter != m_samplers.end()) {
 		return iter->second;
 	}
@@ -114,8 +118,13 @@ vk::Sampler SamplerCache::GetSampler(const ShaderSamplerResource& r, bool intege
 		default: EXIT("unknown border color: %d", static_cast<int>(r.BorderColorType()));
 	}
 
-	sampler_info.magFilter = to_vk_filter(mag_filter);
-	sampler_info.minFilter = to_vk_filter(min_filter);
+	sampler_info.magFilter = force_linear ? vk::Filter::eLinear : to_vk_filter(mag_filter);
+	sampler_info.minFilter = force_linear ? vk::Filter::eLinear : to_vk_filter(min_filter);
+	Common::DebugFlags::NoteOnce("CapyPS5-Sampler",
+	                             (uint64_t {r.fields[0]} << 32u) ^ r.fields[2] ^ (uint64_t {r.fields[1]} << 7u),
+	                             "sampler mag=%u min=%u mip=%u clamp=%u/%u unorm=%d lod=%u..%u bias=%u",
+	                             mag_filter, min_filter, mip_filter, r.ClampX(), r.ClampY(),
+	                             r.ForceUnormCoords() ? 1 : 0, r.MinLod(), r.MaxLod(), r.LodBias());
 	sampler_info.mipmapMode =
 	    (static_cast<Prospero::SamplerMipFilter>(mip_filter) == Prospero::SamplerMipFilter::kLinear
 	         ? vk::SamplerMipmapMode::eLinear
