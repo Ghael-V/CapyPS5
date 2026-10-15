@@ -1450,7 +1450,7 @@ private:
 		return (invariant.IsEmpty() ? guard : invariant).Resolve();
 	}
 
-	bool Implies(Value guard, Value required) const {
+	bool Implies(Value guard, Value required, bool allow_phi = true) const {
 		guard = SimplifyGuard(guard);
 		required = SimplifyGuard(required);
 		if (required == Value(true) || EquivalentValue(m_program, guard, required)) return true;
@@ -1463,9 +1463,20 @@ private:
 		const auto* inst = guard.TryInstruction();
 		if (inst == nullptr) return false;
 		if (inst->GetOpcode() == ValueOpcode::LogicalAnd)
-			return Implies(inst->Arg(0), required) || Implies(inst->Arg(1), required);
-		return inst->GetOpcode() == ValueOpcode::LogicalOr &&
-		       Implies(inst->Arg(0), required) && Implies(inst->Arg(1), required);
+			return Implies(inst->Arg(0), required, allow_phi) || Implies(inst->Arg(1), required, allow_phi);
+		if (inst->GetOpcode() == ValueOpcode::LogicalOr)
+			return Implies(inst->Arg(0), required, allow_phi) && Implies(inst->Arg(1), required, allow_phi);
+		if (!allow_phi || inst->GetOpcode() != ValueOpcode::Phi || inst->GetType() != Type::U1 ||
+		    test == nullptr || test->Parent() == inst->Parent() || !AvailableBefore(*test, *inst)) return false;
+		// The required predicate must be invariant across this loop. Every entry
+		// establishes it; carried masks may only remove lanes from this same Phi.
+		bool entry = false;
+		for (size_t arm = 0; arm < inst->NumArgs(); ++arm) {
+			const bool carried = Dominates(inst->Parent(), inst->PhiBlock(arm));
+			if (!Implies(inst->Arg(arm), carried ? guard : required, false)) return false;
+			entry |= !carried;
+		}
+		return entry;
 	}
 
 	Value EqualLocalValue(Value guard, const auto& matches) const {
@@ -1688,17 +1699,6 @@ private:
 			if (executing.IsEmpty() ? !HasActiveLane(guard, first->Parent())
 			                        : !Implies(executing, guard)) return nullptr;
 			local = first->Arg(0).Resolve();
-			const auto* phi = guard.TryInstruction();
-			if (phi != nullptr && phi->GetOpcode() == ValueOpcode::Phi &&
-			    phi->GetType() == Type::U1 && phi->NumArgs() == 2u) {
-				for (uint32_t initial = 0; initial < 2u; ++initial) {
-					if (Implies(phi->Arg(initial ^ 1u), guard)) {
-						// The backedge only removes lanes from the initial mask.
-						guard = phi->Arg(initial).Resolve();
-						break;
-					}
-				}
-			}
 		} else {
 			guard = PositiveLaneWitness(use.Parent());
 			if (guard.IsEmpty()) return nullptr;
@@ -1949,12 +1949,11 @@ private:
 		return false;
 	}
 
-	bool AvailableBefore(const Inst& initial, const Inst& use, Value witness = {}) const {
-		if (initial.Parent() == use.Parent()) return BeforeInBlock(initial, use);
-		std::vector<const Block*> pending {use.Parent()};
+	bool Dominates(const Block* initial, const Block* use, Value witness = {}) const {
+		std::vector<const Block*> pending {use};
 		for (size_t index = 0; index < pending.size(); ++index) {
 			const auto* current = pending[index];
-			if (current == initial.Parent()) continue;
+			if (current == initial) continue;
 			if (current->ImmPredecessors().empty()) return false;
 			for (const auto* previous: current->ImmPredecessors()) {
 				if (!witness.IsEmpty()) {
@@ -1967,6 +1966,11 @@ private:
 			}
 		}
 		return true;
+	}
+
+	bool AvailableBefore(const Inst& initial, const Inst& use, Value witness = {}) const {
+		return initial.Parent() == use.Parent() ? BeforeInBlock(initial, use)
+		                                      : Dominates(initial.Parent(), use.Parent(), witness);
 	}
 
 	std::optional<std::array<uint64_t, 5>> LocalIndex(Value value, Value active,
