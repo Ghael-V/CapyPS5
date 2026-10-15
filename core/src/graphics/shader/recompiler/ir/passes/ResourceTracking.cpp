@@ -2097,7 +2097,7 @@ private:
 		}
 		if ((positive ? op == ValueOpcode::ULessThan32 : op == ValueOpcode::UGreaterThanEqual32) &&
 		    EquivalentValue(m_program, test->Arg(0), value)) return test->Arg(1);
-		if (!positive && op == ValueOpcode::ULessThanEqual32 &&
+		if ((positive ? op == ValueOpcode::UGreaterThan32 : op == ValueOpcode::ULessThanEqual32) &&
 		    EquivalentValue(m_program, test->Arg(1), value)) return test->Arg(0);
 		const auto* scan = value.Resolve().TryInstruction();
 		if (finite_bitscan && scan != nullptr && scan->GetOpcode() == ValueOpcode::FindILsb32 &&
