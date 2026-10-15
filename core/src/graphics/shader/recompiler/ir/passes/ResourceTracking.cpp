@@ -2142,18 +2142,25 @@ private:
 		});
 	}
 
-	Value UnsignedImageBound(Value key, const Inst& handle) const {
+	Value UnsignedResourceBound(Value key, const Inst& handle) const {
 		Value bound;
 		for (const auto& use: handle.Uses()) {
-			const auto& image = *use.user;
-			const auto op = image.GetOpcode();
+			const auto& access = *use.user;
+			const auto op = access.GetOpcode();
 			if (use.operand != 0u || (op != ValueOpcode::ImageSampleRaw &&
-			    op != ValueOpcode::ImageGatherRaw && op != ValueOpcode::ImageRead)) return {};
-			// The image's own EXEC predicate proves the range for every accessing lane;
+			    op != ValueOpcode::ImageGatherRaw && op != ValueOpcode::ImageRead &&
+			    !IndirectBufferAccess(access))) return {};
+			// The access's own EXEC predicate proves the range for every accessing lane;
 			// an EXEC-nonzero branch alone only proves that some lane is active.
-			const auto active = image.Arg(image.NumArgs() - 1u);
+			const auto active = access.Arg(access.NumArgs() - 1u);
 			auto candidate = UnsignedBound(active, key);
-			if (candidate.IsEmpty()) candidate = UnsignedBoundOnEntry(key, image.Parent(), false, active);
+			if (candidate.IsEmpty()) candidate = UnsignedBoundOnEntry(key, access.Parent(), false, active);
+			if (candidate.IsEmpty()) {
+				// A waterfall key inherits the local value's bound only where this same
+				// EXEC predicate proves both their equality and the local range.
+				const auto local = EqualLocalKey(active, key);
+				if (!local.IsEmpty()) candidate = UnsignedBound(active, local, true, false, active);
+			}
 			if (candidate.IsEmpty() ||
 			    !ValidateRuntimeValue(m_program, candidate, RuntimeValueType::Integer)) return {};
 			if (bound.IsEmpty()) bound = candidate;
@@ -3073,7 +3080,7 @@ private:
 			// 0x108-byte entries); materialization reads key * stride + offset either way.
 			if (table_stride < plan.read_dwords * 4u || (table_stride & 3u) != 0u) return RejectIndirect(__LINE__);
 			auto guarded_count = UnsignedBoundOnEntry(key, handle.Parent());
-			if (guarded_count.IsEmpty()) guarded_count = UnsignedImageBound(key, handle);
+			if (guarded_count.IsEmpty()) guarded_count = UnsignedResourceBound(key, handle);
 			// A runtime count can describe fewer rows than the mask's static bit range.
 			if (guarded_count.IsEmpty()) guarded_count = UnsignedBoundOnEntry(key, handle.Parent(), true);
 			const auto* selector = key.Resolve().TryInstruction();
@@ -3355,6 +3362,13 @@ private:
 			return finish();
 		}
 		if (!legacy_store) {
+			if (!plan.split_offsets) {
+				const auto count = UnsignedResourceBound(key, handle);
+				if (!count.IsEmpty()) {
+					indirect.key_count = count;
+					return finish();
+				}
+			}
 			if (table_source.dword_count == 2u && !plan.split_offsets) {
 				const auto maximum = SelectorMaximum(key);
 				if (maximum >= MaxIndirectDescriptorProbes) return false;
