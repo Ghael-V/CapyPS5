@@ -1104,18 +1104,9 @@ uint32_t LoadIndirectFormattedX(ValueEmitContext& ctx, const IR::Inst& inst) {
 	auto& state = ctx.state;
 	return EmitValueOrZeroIfCondition(state, ctx.Arg(inst, inst.NumArgs() - 1), [&]() {
 		const auto buffer = PrepareIndirectBuffer(state, IndirectBufferArgs(ctx, inst), true);
-		constexpr auto format_count =
-		    static_cast<uint32_t>(Prospero::BufferFormat::k32_32_32_32Float) + 1u;
-		const auto geometry = EmitIndexSwitch(
-		    state, buffer.format, format_count, TypeU32Composite(state, 4), [&](uint32_t format) {
-			    const auto info = Format::GetFormatInfo(static_cast<Prospero::BufferFormat>(format));
-			    return state.builder.Constant(
-			        spv::OpConstantComposite, TypeU32Composite(state, 4),
-			        ConstantU32(state, info.byte_size),
-			        ConstantU32(state, std::max(1u, info.component_count)),
-			        ConstantU32(state, info.packed_bitfield ? 0u : info.component_bits[0] / 8u),
-			        ConstantU32(state, info.byte_size == 0u ? 0u : std::min(4u, info.byte_size) - 1u));
-		    });
+		const auto geometry = state.builder.AllocateId();
+		state.builder.AddFunction(spv::OpFunctionCall, TypeU32Composite(state, 4), geometry,
+		                          state.indirect_format_geometry_function, buffer.format);
 		const auto field = [&](uint32_t index) {
 			const auto value = state.builder.AllocateId();
 			state.builder.AddFunction(spv::OpCompositeExtract, TypeU32(state), value, geometry, index);
@@ -1335,7 +1326,7 @@ void DefineIndirectBufferLoads(ValueEmitContext& ctx) {
 	}
 }
 
-void DefineConvertIndirectBufferFormat(ValueEmitContext& ctx) {
+void DefineIndirectBufferFormats(ValueEmitContext& ctx) {
 	auto& state = ctx.state;
 	const auto needed = std::ranges::any_of(state.program.blocks, [&](const IR::Block* block) {
 		return std::ranges::any_of(*block, [&](const IR::Inst& inst) {
@@ -1347,6 +1338,32 @@ void DefineConvertIndirectBufferFormat(ValueEmitContext& ctx) {
 	if (!needed) return;
 
 	const auto type = TypeU32(state);
+	constexpr auto format_count =
+	    static_cast<uint32_t>(Prospero::BufferFormat::k32_32_32_32Float) + 1u;
+	{
+		const auto result_type = TypeU32Composite(state, 4);
+		const auto function_type = state.builder.Type(spv::OpTypeFunction, result_type, type);
+		state.indirect_format_geometry_function = state.builder.AllocateId();
+		const auto format = state.builder.AllocateId();
+		state.builder.AddName(state.indirect_format_geometry_function,
+		                      "indirect_buffer_format_geometry");
+		state.builder.AddFunction(spv::OpFunction, result_type,
+		                          state.indirect_format_geometry_function,
+		                          spv::FunctionControlMaskNone, function_type);
+		state.builder.AddFunction(spv::OpFunctionParameter, type, format);
+		EmitLabel(state, state.builder.AllocateId());
+		const auto result = EmitIndexSwitch(
+		    state, format, format_count, result_type, [&](uint32_t format) {
+			    const auto info = Format::GetFormatInfo(static_cast<Prospero::BufferFormat>(format));
+			    return state.builder.Constant(
+			        spv::OpConstantComposite, result_type, ConstantU32(state, info.byte_size),
+			        ConstantU32(state, std::max(1u, info.component_count)),
+			        ConstantU32(state, info.packed_bitfield ? 0u : info.component_bits[0] / 8u),
+			        ConstantU32(state, info.byte_size == 0u ? 0u : std::min(4u, info.byte_size) - 1u));
+		    });
+		state.builder.AddFunction(spv::OpReturnValue, result);
+		state.builder.AddFunction(spv::OpFunctionEnd);
+	}
 	const auto function_type = state.builder.Type(spv::OpTypeFunction, type, type, type, type, type);
 	state.indirect_format_function = state.builder.AllocateId();
 	const auto format = state.builder.AllocateId();
@@ -1361,8 +1378,6 @@ void DefineConvertIndirectBufferFormat(ValueEmitContext& ctx) {
 	state.builder.AddFunction(spv::OpFunctionParameter, type, component);
 	state.builder.AddFunction(spv::OpFunctionParameter, type, raw);
 	EmitLabel(state, state.builder.AllocateId());
-	constexpr auto format_count =
-	    static_cast<uint32_t>(Prospero::BufferFormat::k32_32_32_32Float) + 1u;
 	const auto result = EmitIndexSwitch(
 	    state, format, format_count, TypeU32(state), [&](uint32_t format) {
 		    const auto info = Format::GetFormatInfo(static_cast<Prospero::BufferFormat>(format));
