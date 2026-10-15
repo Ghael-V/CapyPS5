@@ -575,26 +575,44 @@ bool MaterializeIndirectDescriptor(const ResourcePlan&                         p
 	};
 	uint64_t table_base = 0;
 	uint64_t table_size = UINT64_MAX; // Scalar addresses have no buffer descriptor bounds.
+	DescriptorValue table_value;
+	ShaderBufferResource table;
+	const auto failed = [&](std::string_view reason, std::string_view details = {}) {
+		const auto* pointer = indirect.pointer_table ? &*indirect.pointer_table : nullptr;
+		return SpecializationFail(fmt::format(
+		    "indirect {} resource={} source={} table_source={} words={:08x},{:08x},{:08x},{:08x} "
+		    "base={:#x} size={} type={} runtime_stride={} records={} swizzle={} addtid={} oob={} "
+		    "maximum={} offset={} immediate={} record_bytes={} child_count={} child_stride={} "
+		    "child_offset={} indexed_pointer={} candidates={} capacity={} {}",
+		    reason, resource_index, source_index, indirect.table_source,
+		    table_value.dwords[0], table_value.dwords[1], table_value.dwords[2], table_value.dwords[3],
+		    table_base, table_size, table.Type(), table.Stride(), table.NumRecords(),
+		    table.SwizzleEnabled(), table.AddTid(), table.OutOfBounds(),
+		    indirect.table_maximum ? fmt::format("{}", *indirect.table_maximum) : "none",
+		    indirect.table_offset, indirect.table_immediate, indirect.table_record_bytes,
+		    pointer != nullptr ? pointer->count : 1u, pointer != nullptr ? pointer->stride : 0u,
+		    pointer != nullptr ? pointer->offset : 0u, pointer != nullptr && pointer->indexed,
+		    descriptors.size(), maximum_resources, details));
+	};
+	const auto read_failed = [&](std::string_view reason, uint32_t row, uint32_t child,
+	                             uint64_t base, uint64_t offset, size_t bytes) {
+		return failed(reason, fmt::format("row={} child={} read_base={:#x} read_offset={:#x} "
+		                                 "read_address={:#x} requested_bytes={}", row, child, base, offset,
+		    (base & AddressMask & ~uint64_t {3}) + (offset & ~uint64_t {3}), bytes));
+	};
 	const auto normalization_failed = [&](uint64_t offset, uint32_t key, uint64_t step,
 	                                      std::string_view key_kind) {
-		return SpecializationFail(fmt::format(
-		    "indirect candidate resource={} table_source={} table_base={:#x} table_size={} "
-		    "candidate_offset={:#x} {}={} stride={} step={} maximum={} offset={} immediate={}",
-		    resource_index, indirect.table_source, table_base & AddressMask & ~uint64_t {3}, table_size,
-		    offset & ~uint64_t {3}, key_kind, key, indirect.table_stride, step,
-		    indirect.table_maximum ? fmt::format("{}", *indirect.table_maximum) : "none",
-		    indirect.table_offset, indirect.table_immediate));
+		return failed("candidate", fmt::format("candidate_offset={:#x} {}={} stride={} step={}",
+		    offset & ~uint64_t {3}, key_kind, key, indirect.table_stride, step));
 	};
 	if (sources.empty()) {
 		if (selector == nullptr) keys.clear();
 		DescriptorValue material_value;
-		DescriptorValue table_value;
 		if ((selector != nullptr && !selector_keys->resolved &&
 		     !clean.EvaluateDescriptor(selector->source, material_value)) ||
 		    !clean.EvaluateDescriptor(indirect.table_source, table_value)) {
 			return false;
 		}
-		ShaderBufferResource table;
 		if (table_value.dword_count == 2u) {
 			table_base = (static_cast<uint64_t>(table_value.dwords[1]) << 32u) | table_value.dwords[0];
 		} else if (DecodeBufferDescriptor(table_value, table)) {
@@ -613,7 +631,7 @@ bool MaterializeIndirectDescriptor(const ResourcePlan&                         p
 			     (table.Type() != 0u || table.SwizzleEnabled() || table.AddTid() ||
 			      table.OutOfBounds() != 0u || (table_base & 3u) != 0u ||
 			      (table.Stride() & 3u) != 0u || table.Stride() < indirect.table_record_bytes)))
-				return false;
+				return failed("table geometry");
 			const auto* pointer = indirect.pointer_table ? &*indirect.pointer_table : nullptr;
 			const bool indexed_pointer = pointer != nullptr && pointer->indexed;
 			const auto child_count = pointer != nullptr ? pointer->count : 1u;
@@ -621,7 +639,7 @@ bool MaterializeIndirectDescriptor(const ResourcePlan&                         p
 			    (!indirect.table_maximum || table.Type() != 0u || table.SwizzleEnabled() || table.AddTid() ||
 			     table.OutOfBounds() != 0u || (table_base & 3u) != 0u || (table.Stride() & 3u) != 0u ||
 			     uint64_t {indirect.table_immediate} + 8u > table.Stride() ||
-			     *indirect.table_maximum >= table.NumRecords())) return false;
+			     *indirect.table_maximum >= table.NumRecords())) return failed("indexed pointer geometry");
 			const bool affine = indirect.table_stride != 0u || indexed_pointer;
 			const bool image_heap = dword_count == 8u && pointer == nullptr;
 			const uint64_t step = indexed_pointer ? table.Stride()
@@ -637,12 +655,13 @@ bool MaterializeIndirectDescriptor(const ResourcePlan&                         p
 			    ? std::min((table_size - first - 4u) / step + 1u, domain)
 			    : 0u;
 			if (child_count == 0u || (!image_heap && count * child_count > MaxIndirectDescriptorProbes))
-				return false;
+				return failed("candidate count", fmt::format("rows={} limit={}", count, MaxIndirectDescriptorProbes));
 			// Affine SMEM offsets wrap in U32 before adding the aligned immediate.
 			// Image heaps retain one bulk snapshot and their absolute byte-offset mapping.
 			if (image_heap) {
 				keys.resize(table_size / 4u);
-				if (!ReadScalarTable(table_base, table_size, 0u, runtime, keys)) return false;
+				if (!ReadScalarTable(table_base, table_size, 0u, runtime, keys))
+					return read_failed("image heap read", 0u, 0u, table_base, 0u, keys.size() * sizeof(uint32_t));
 			}
 			const auto mapping_offset = snapshot.flattened_srt.size();
 			descriptors[resource_index] = {.dword_count = dword_count};
@@ -652,7 +671,8 @@ bool MaterializeIndirectDescriptor(const ResourcePlan&                         p
 				uint64_t pointer_base = 0u;
 				if (pointer != nullptr) {
 					std::array<uint32_t, 2> address {};
-					if (!ReadScalarTable(table_base, table_size, table_offset, runtime, address)) return false;
+					if (!ReadScalarTable(table_base, table_size, table_offset, runtime, address))
+						return read_failed("parent pointer read", word, 0u, table_base, table_offset, sizeof(address));
 					pointer_base = (uint64_t {address[1]} << 32u) | address[0];
 				}
 				for (uint32_t child = 0; child < child_count; ++child) {
@@ -660,7 +680,9 @@ bool MaterializeIndirectDescriptor(const ResourcePlan&                         p
 					if (pointer != nullptr) {
 						if (!ReadScalarTable(pointer_base, UINT64_MAX,
 						        uint64_t {child} * pointer->stride + pointer->offset, runtime,
-						        std::span(candidate.dwords).first(read_dwords))) return false;
+						        std::span(candidate.dwords).first(read_dwords)))
+							return read_failed("child descriptor read", word, child, pointer_base,
+							    uint64_t {child} * pointer->stride + pointer->offset, descriptor_bytes);
 					} else if (!image_heap) {
 						if (!ReadScalarTable(table_base, table_size, table_offset, runtime,
 						                     std::span(candidate.dwords).first(read_dwords))) return false;
@@ -738,7 +760,7 @@ bool MaterializeIndirectDescriptor(const ResourcePlan&                         p
 			               (indirect.table_immediate & ~3u);
 			if (!ReadScalarTable(table_base, table_size, table_offset, runtime,
 			                     std::span(candidate.dwords).first(read_dwords))) {
-				return false;
+				return read_failed("table descriptor read", key, 0u, table_base, table_offset, descriptor_bytes);
 			}
 		} else if (!clean.EvaluateDescriptor(sources[entry], candidate)) {
 			return false;
@@ -1718,11 +1740,17 @@ bool MaterializeResources(const ResourcePlan& program, const SrtRuntime& runtime
 			return false;
 		}
 		if (active.empty() || active[source]) {
-			return (capture_reads && written ? clean : walker).EvaluateDescriptor(source, value);
+			return (capture_reads && written ? clean : walker).EvaluateDescriptor(source, value) ||
+			    SpecializationFail(fmt::format("descriptor evaluation source={}", source));
 		}
 		value = {};
 		value.dword_count = program.descriptor_sources[source].dword_count;
 		return true;
+	};
+	const auto resource_failed = [&](std::string_view kind, uint32_t resource, uint32_t source,
+	                                 size_t candidates, uint32_t capacity) {
+		return SpecializationFail(fmt::format("indirect {} resource={} source={} candidates={} capacity={}",
+		    kind, resource, source, candidates, capacity));
 	};
 	snapshot.buffers.resize(program.info.buffers.size());
 	specialization.buffers.assign(program.info.buffers.size(), {});
@@ -1863,7 +1891,8 @@ bool MaterializeResources(const ResourcePlan& program, const SrtRuntime& runtime
 				if ((active.empty() || active[source]) && !MaterializeIndirectDescriptor(
 				        program, source, i, 4u, 4u, observed, clean, snapshot, snapshot.samplers,
 				        specialization.samplers, ShaderInfo::MaxSamplers,
-				        [](DescriptorValue&) { return true; })) return false;
+				        [](DescriptorValue&) { return true; }))
+					return resource_failed("sampler", i, source, snapshot.samplers.size(), ShaderInfo::MaxSamplers);
 			} else {
 				if (indirect != nullptr) source = indirect->sources[0];
 				if (!evaluate(source, snapshot.samplers[i])) return MaterializeFail("sampler descriptor could not be evaluated");
