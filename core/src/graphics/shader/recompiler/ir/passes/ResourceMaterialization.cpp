@@ -1485,11 +1485,7 @@ ResourcePlan ExtractResourcePlan(const Program& program) {
 		uint32_t group = 0;
 		for (; group < plan.selector_keys.size(); ++group) {
 			const auto& b = *program.descriptor_sources[plan.selector_keys[group].source].indirect_descriptor;
-			if (a.selector == b.selector && a.signed_count == b.signed_count &&
-			    a.workgroup_axis == b.workgroup_axis &&
-			    EquivalentValue(program, a.key_count, b.key_count) &&
-			    EquivalentValue(program, a.selector_first, b.selector_first) &&
-			    EquivalentValue(program, a.selector_mask, b.selector_mask)) break;
+			if (EquivalentSelectorDomain(program, a, b)) break;
 		}
 		if (group == plan.selector_keys.size()) plan.selector_keys.push_back({.source = source});
 		plan.selector_groups[source] = group;

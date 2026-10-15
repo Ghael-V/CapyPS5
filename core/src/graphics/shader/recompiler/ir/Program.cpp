@@ -188,6 +188,16 @@ bool EquivalentValue(const ResourcePlan& program, Value left, Value right) {
 	return EquivalentValue(program, left, right, visited);
 }
 
+bool EquivalentSelectorDomain(const ResourcePlan& program,
+                              const DescriptorSource::IndirectDescriptor& left,
+                              const DescriptorSource::IndirectDescriptor& right) {
+	return left.selector == right.selector && left.signed_count == right.signed_count &&
+	       left.workgroup_axis == right.workgroup_axis &&
+	       EquivalentValue(program, left.key_count, right.key_count) &&
+	       EquivalentValue(program, left.selector_first, right.selector_first) &&
+	       EquivalentValue(program, left.selector_mask, right.selector_mask);
+}
+
 Value ResolveInvariantPhi(const ResourcePlan& program, Value value) {
 	value            = value.Resolve();
 	const auto* root = value.TryInstruction();
