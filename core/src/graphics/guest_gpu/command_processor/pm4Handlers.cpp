@@ -1,4 +1,5 @@
 #include "common/assert.h"
+#include "common/debugFlags.h"
 #include "common/logging/log.h"
 #include "common/profiler.h"
 #include "common/stringUtils.h"
@@ -300,7 +301,12 @@ static void HwCtxIgnoreObjprimIdControl([[maybe_unused]] uint32_t value) {}
 
 static void HwCtxIgnorePrimitiveIdReset([[maybe_unused]] uint32_t value) {}
 
-static void HwCtxIgnoreVtxControl([[maybe_unused]] uint32_t value) {}
+static void HwCtxSetVtxControlRegister(CommandProcessor& cp, uint32_t value) {
+	cp.GetCtx().SetVtxControl(value);
+	Common::DebugFlags::NoteOnce("CapyPS5-VtxCntl", value,
+	                             "PA_SU_VTX_CNTL=0x%x pix_center=%u round=%u quant=%u", value,
+	                             value & 1u, (value >> 1u) & 3u, (value >> 3u) & 7u);
+}
 
 static void HwCtxSetDepthBoundsRegister(CommandProcessor& cp, uint32_t cmd_offset, uint32_t value) {
 	auto& ctx    = cp.GetCtx();
@@ -486,7 +492,7 @@ KYTY_HW_CTX_PARSER(HwCtxSetVtxControl) {
 	auto num_values = KYTY_PM4_LEN(cmd_id) - 2u;
 
 	for (uint32_t i = 0; i < num_values; i++) {
-		HwCtxIgnoreVtxControl(buffer[i]);
+		HwCtxSetVtxControlRegister(cp, buffer[i]);
 	}
 
 	return num_values;
@@ -3481,7 +3487,7 @@ void GraphicsInitJmpTablesCxIndirect() {
 		HwCtxIgnoreAaMaskRegister(cmd_offset, value);
 	};
 	g_hw_ctx_indirect_func[Pm4::PA_SU_VTX_CNTL] = [](KYTY_HW_CTX_INDIRECT_ARGS) {
-		HwCtxIgnoreVtxControl(value);
+		HwCtxSetVtxControlRegister(cp, value);
 	};
 	g_hw_ctx_indirect_func[Pm4::PS_SHADER_SAMPLE_EXCLUSION_MASK] = [](KYTY_HW_CTX_INDIRECT_ARGS) {
 		HwCtxIgnoreAaMaskRegister(cmd_offset, value);

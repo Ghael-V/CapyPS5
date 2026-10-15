@@ -149,7 +149,7 @@ inline bool FrameTracing() {
 }
 
 inline void FrameTrace(const char* fmt, ...) {
-	if (!FrameTracing() || g_trace_lines.fetch_add(1, std::memory_order_relaxed) >= 6000) {
+	if (!FrameTracing() || g_trace_lines.fetch_add(1, std::memory_order_relaxed) >= 20000) {
 		return;
 	}
 #if defined(__ANDROID__)

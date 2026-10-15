@@ -835,8 +835,12 @@ void DefineModule(EmitterState& state) {
 		}
 		// `setprop debug.capy.no_early_z 1` (before shaders compile) never forces early tests.
 		static Common::DebugFlags::CachedValue no_early_z("debug.capy.no_early_z", 0);
-		if (no_early_z.Get() == 0 && state.input_info.pixel->ps_early_z &&
-		    !state.input_info.pixel->ps_pixel_kill_enable &&
+		// `debug.capy.force_early_z 1` (before shaders compile) also forces early tests on shaders
+		// that kill pixels: an experiment to tell lost late depth writes apart from other causes.
+		static Common::DebugFlags::CachedValue force_early_z("debug.capy.force_early_z", 0);
+		const bool kill_ok = !state.input_info.pixel->ps_pixel_kill_enable || force_early_z.Get() != 0;
+		if (no_early_z.Get() == 0 &&
+		    (state.input_info.pixel->ps_early_z || force_early_z.Get() != 0) && kill_ok &&
 		    !state.input_info.pixel->ps_depth_export_enable &&
 		    !state.input_info.pixel->ps_sample_mask_export_enable) {
 			state.builder.AddExecutionMode(state.main_func, spv::ExecutionModeEarlyFragmentTests);

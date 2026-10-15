@@ -1,6 +1,7 @@
 #include "graphics/shader/recompiler/backend/spirv/spirvEmitterInstructions.h"
 
 #include "common/assert.h"
+#include "common/debugFlags.h"
 
 #include <algorithm>
 #include <bit>
@@ -21,7 +22,20 @@ void EmitKillIfBoolFalse(EmitterState& state, uint32_t active) {
 	state.builder.AddFunction(spv::OpSelectionMerge, merge_label, spv::SelectionControlMaskNone);
 	state.builder.AddFunction(spv::OpBranchConditional, inactive, kill_label, merge_label);
 	EmitLabel(state, kill_label);
-	state.builder.AddFunction(spv::OpKill);
+	// `debug.capy.kill_mode` (before shaders compile): 0 OpKill, 1 OpTerminateInvocation,
+	// 2 OpDemoteToHelperInvocation. Adreno investigation of lost late depth writes.
+	static Common::DebugFlags::CachedValue kill_mode("debug.capy.kill_mode", 0);
+	if (kill_mode.Get() == 1) {
+		state.builder.RequireExtension("SPV_KHR_terminate_invocation");
+		state.builder.AddFunction(spv::OpTerminateInvocation);
+	} else if (kill_mode.Get() == 2) {
+		state.builder.RequireExtension("SPV_EXT_demote_to_helper_invocation");
+		state.builder.RequireCapability(spv::CapabilityDemoteToHelperInvocation);
+		state.builder.AddFunction(spv::OpDemoteToHelperInvocation);
+		state.builder.AddFunction(spv::OpBranch, merge_label);
+	} else {
+		state.builder.AddFunction(spv::OpKill);
+	}
 	EmitLabel(state, merge_label);
 }
 

@@ -333,6 +333,13 @@ static void UpdateGraphicsDynamicState(const CommandBuffer& buffer, DynamicState
 	std::array<vk::Viewport, viewport_slots> viewports {};
 	std::array<vk::Rect2D, viewport_slots>   scissors {};
 	const uint32_t viewport_count = indexed_viewports ? viewport_slots : 1;
+	// PA_SU_VTX_CNTL.PIX_CENTER = 0 puts pixel centers at integer coordinates (D3D9 style), while
+	// Vulkan samples at +0.5. Moving the geometry half a pixel right/down makes Vulkan sample the
+	// same spot. `debug.capy.pix_center`: 0 = follow the register, 1 = never shift, 2 = always.
+	static Common::DebugFlags::CachedValue pix_center_mode("debug.capy.pix_center", 0);
+	const int64_t pix_center = pix_center_mode.Get();
+	const float   pixel_shift =
+	    (pix_center == 2 || (pix_center == 0 && (ctx.GetVtxControl() & 1u) == 0)) ? 0.5f : 0.0f;
 	for (uint32_t i = 0; i < viewport_count; i++) {
 		const auto& guest    = vp.viewports[i];
 		auto&       viewport = viewports[i];
@@ -340,9 +347,11 @@ static void UpdateGraphicsDynamicState(const CommandBuffer& buffer, DynamicState
 			const auto& limits = buffer.GetGraphics().GetPhysicalDeviceProperties().limits;
 			viewport.width  = static_cast<float>(std::min(limits.maxViewportDimensions[0], 16384u));
 			viewport.height = static_cast<float>(std::min(limits.maxViewportDimensions[1], 16384u));
+			viewport.x      = pixel_shift;
+			viewport.y      = pixel_shift;
 		} else {
-			viewport.x      = guest.xoffset - guest.xscale;
-			viewport.y      = guest.yoffset - guest.yscale;
+			viewport.x      = guest.xoffset - guest.xscale + pixel_shift;
+			viewport.y      = guest.yoffset - guest.yscale + pixel_shift;
 			viewport.width  = guest.xscale * 2.0f;
 			viewport.height = guest.yscale * 2.0f;
 		}
@@ -361,6 +370,16 @@ static void UpdateGraphicsDynamicState(const CommandBuffer& buffer, DynamicState
 			viewport.width = 1.0f;
 			scissor.extent = {0, 0};
 		}
+	}
+	if (Common::DebugFlags::FrameTracing()) {
+		const auto& g = vp.viewports[0];
+		Common::DebugFlags::FrameTrace(
+		    "    viewport x=%.2f y=%.2f w=%.2f h=%.2f z=[%.4f,%.4f] guest zscale=%.4f zoffset=%.4f "
+		    "dx=%d clipdis=%d vtx_cntl=0x%x",
+		    viewports[0].x, viewports[0].y, viewports[0].width, viewports[0].height,
+		    viewports[0].minDepth, viewports[0].maxDepth, g.zscale, g.zoffset,
+		    ctx.GetClipControl().dx_clip_space ? 1 : 0, ctx.GetClipControl().clip_disable ? 1 : 0,
+		    ctx.GetVtxControl());
 	}
 	dynamic_state.SetViewports(std::span {viewports}.first(viewport_count));
 	dynamic_state.SetScissors(std::span {scissors}.first(viewport_count));
@@ -409,6 +428,17 @@ static void UpdateGraphicsDynamicState(const CommandBuffer& buffer, DynamicState
 		const float slope_factor =
 		    (use_front ? poly_offset.front_scale : poly_offset.back_scale) / 16.0f;
 		dynamic_state.SetDepthBias(constant_factor, poly_offset.clamp, slope_factor);
+	}
+	if (Common::DebugFlags::FrameTracing()) {
+		Common::DebugFlags::FrameTrace(
+		    "    zstate test=%d write=%d op=%d bounds=%d [%.4f,%.4f] bias=%d front=%d back=%d "
+		    "fo=%.4f fs=%.4f bo=%.4f bs=%.4f clamp=%.4f",
+		    depth.depth_test_enable ? 1 : 0, depth.depth_write_enable ? 1 : 0,
+		    static_cast<int>(depth.depth_compare_op), depth.depth_bounds_test_enable ? 1 : 0,
+		    ctx.GetDepthBoundsMin(), ctx.GetDepthBoundsMax(), depth_bias_enable ? 1 : 0,
+		    mode.poly_offset_front_enable ? 1 : 0, mode.poly_offset_back_enable ? 1 : 0,
+		    poly_offset.front_offset, poly_offset.front_scale, poly_offset.back_offset,
+		    poly_offset.back_scale, poly_offset.clamp);
 	}
 
 	dynamic_state.SetStencilTestEnabled(depth.stencil_test_enable);
@@ -756,6 +786,22 @@ static PreparedVertexBuffers AcquireVertexBuffers(CommandBuffer&               b
 			                               static_cast<unsigned long long>(range.base_address),
 			                               static_cast<unsigned long long>(size), words[0], words[1],
 			                               words[2], words[3], words[4], words[5], words[6], words[7]);
+			// `debug.capy.vb_full 1`: dump whole vertex ranges (up to 8 KiB), 16 dwords per line.
+			static Common::DebugFlags::CachedValue vb_full("debug.capy.vb_full", 0);
+			if (vb_full.Get() != 0 && size <= 8192) {
+				std::vector<uint32_t> all((size + 3) / 4);
+				(void)Libs::LibKernel::Memory::ReadGuestMemory(range.base_address, all.data(), size);
+				for (size_t w = 0; w < all.size(); w += 16) {
+					std::string line;
+					for (size_t k = w; k < std::min(all.size(), w + 16); k++) {
+						char hex[12];
+						std::snprintf(hex, sizeof(hex), " %08x", all[k]);
+						line += hex;
+					}
+					Common::DebugFlags::FrameTrace("    vbd 0x%llx%s",
+					    static_cast<unsigned long long>(range.base_address + w * 4), line.c_str());
+				}
+			}
 		}
 		range.binding      = cache.ObtainBuffer(range.base_address, size, false);
 	}
@@ -1393,6 +1439,10 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 				Common::DebugFlags::FrameTrace("  dump target slot=%u addr=0x%llx -> %d",
 				    state.color_info[i].target_slot,
 				    static_cast<unsigned long long>(state.color_info[i].desc.info.data.address), ok ? 1 : 0);
+			}
+			if (state.depth_info.image_id) {
+				const bool ok = m_context.GetTextureCache().DebugDownloadImage(state.depth_info.image_id);
+				Common::DebugFlags::FrameTrace("  dump depth-after -> %d", ok ? 1 : 0);
 			}
 		}
 	}

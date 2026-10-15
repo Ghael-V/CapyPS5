@@ -1,5 +1,6 @@
 #include "common/assert.h"
 #include "common/common.h"
+#include "common/debugFlags.h"
 #include "common/profiler.h"
 #include "common/threads.h"
 #include "graphics/host_gpu/graphicContext.h"
@@ -60,8 +61,74 @@ void CommandBuffer::SetDebugInfo(uint32_t op, uint64_t submit_id, uint32_t arg0,
 	m_debug_arg4      = arg4;
 }
 
+static RenderState WithoutClears(RenderState state) {
+	for (auto& attachment: state.color_attachments) {
+		attachment.is_clear    = false;
+		attachment.clear_value = {};
+	}
+	state.depth_stencil_attachment.depth_clear   = false;
+	state.depth_stencil_attachment.stencil_clear = false;
+	state.depth_stencil_attachment.clear_value   = {};
+	return state;
+}
+
 void CommandBuffer::BeginRendering(const RenderState& state) const {
 	if (m_rendering && m_render_state == state) {
+		return;
+	}
+	// Adreno: after a pass that clears depth with loadOp CLEAR, the next pass that loads that
+	// depth loses its depth writes (Dead Cells wall layers vanished from the depth buffer and lit
+	// sprites showed through in 8x8 blocks). Default (3): open with LOAD and clear inside the
+	// pass. `debug.capy.rp_mode`: 0 loadOp CLEAR, 1 keep the open pass when only the clears
+	// change, 2 clear in a pass of its own.
+	static Common::DebugFlags::CachedValue rp_mode("debug.capy.rp_mode", 3);
+	const auto mode = rp_mode.Get();
+	if (mode == 1 && m_rendering && WithoutClears(m_render_state) == state) {
+		return;
+	}
+	if (mode == 3 && !(WithoutClears(state) == state)) {
+		// Open with LOAD and clear inside the pass instead of using loadOp CLEAR.
+		BeginRendering(WithoutClears(state));
+		std::array<vk::ClearAttachment, RENDER_COLOR_ATTACHMENTS_MAX + 1> clears {};
+		uint32_t count = 0;
+		for (uint32_t i = 0; i < state.num_color_attachments; i++) {
+			const auto& attachment = state.color_attachments[i];
+			if (attachment.is_clear) {
+				auto& clear                  = clears[count++];
+				clear.aspectMask             = vk::ImageAspectFlagBits::eColor;
+				clear.colorAttachment        = i;
+				clear.clearValue.color.uint32 = attachment.clear_value;
+			}
+		}
+		const auto& ds = state.depth_stencil_attachment;
+		vk::ImageAspectFlags ds_aspects {};
+		if (ds.has_depth && ds.depth_clear) {
+			ds_aspects |= vk::ImageAspectFlagBits::eDepth;
+		}
+		if (ds.has_stencil && ds.stencil_clear) {
+			ds_aspects |= vk::ImageAspectFlagBits::eStencil;
+		}
+		if (ds_aspects) {
+			auto& clear                         = clears[count++];
+			clear.aspectMask                    = ds_aspects;
+			clear.clearValue.depthStencil.depth = std::bit_cast<float>(ds.clear_value[0]);
+			clear.clearValue.depthStencil.stencil = ds.clear_value[1];
+		}
+		vk::ClearRect rect {};
+		rect.rect.extent = vk::Extent2D {state.width, state.height};
+		rect.layerCount  = state.num_layers;
+		if (count != 0) {
+			Handle().clearAttachments(count, clears.data(), 1, &rect);
+		}
+		return;
+	}
+	static thread_local bool splitting = false;
+	if (mode == 2 && !splitting && !(WithoutClears(state) == state)) {
+		splitting = true;
+		BeginRendering(state);
+		EndRendering();
+		BeginRendering(WithoutClears(state));
+		splitting = false;
 		return;
 	}
 	EXIT_IF(state.width == 0 || state.height == 0 || state.num_layers == 0 ||

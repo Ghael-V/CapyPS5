@@ -856,6 +856,9 @@ public:
 	[[nodiscard]] uint8_t GetStencilClearValue() const { return m_stencil_clear_value; }
 	void SetStencilClearValue(uint8_t clear_value) { m_stencil_clear_value = clear_value; }
 
+	// PA_SU_VTX_CNTL: bit 0 PIX_CENTER (1 = pixel centers at 0.5), ROUND_MODE, QUANT_MODE.
+	[[nodiscard]] uint32_t GetVtxControl() const { return m_vtx_control; }
+	void                   SetVtxControl(uint32_t value) { m_vtx_control = value; }
 	[[nodiscard]] float    GetLineWidth() const { return m_line_width; }
 	void                   SetLineWidth(float width) { m_line_width = width; }
 	[[nodiscard]] uint32_t GetPrimitiveResetIndex() const { return m_primitive_reset_index; }
@@ -905,6 +908,7 @@ public:
 
 private:
 	float    m_line_width            = 1.0f;
+	uint32_t m_vtx_control           = 0x2du;
 	uint32_t m_primitive_reset_index = 0xffffffffu;
 
 	BlendControl    m_blend_control[8];

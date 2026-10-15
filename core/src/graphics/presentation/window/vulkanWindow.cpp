@@ -643,6 +643,8 @@ static vk::Device VulkanCreateDevice(GraphicContext& graphics,
 	                                           : static_cast<void*>(&fragment_barycentric);
 #endif
 	features13.robustImageAccess   = supported_features13.robustImageAccess;
+	features13.shaderDemoteToHelperInvocation = supported_features13.shaderDemoteToHelperInvocation;
+	features13.shaderTerminateInvocation      = supported_features13.shaderTerminateInvocation;
 	features13.subgroupSizeControl =
 	    graphics.compute_subgroup_size_control_enabled ? VK_TRUE : VK_FALSE;
 
