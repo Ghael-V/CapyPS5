@@ -60,6 +60,14 @@ public:
 // Create a guest-callable trampoline that forwards an x86_64 call to an ARM64 host function
 uint64_t GetOrCreateHleTrampoline(uint64_t host_func_ptr, const char* name = nullptr);
 
+// x86 registers of the guest thread running on this host thread, as of its current HLE call.
+struct GuestRegisters {
+	uint64_t rax, rbx, rcx, rdx, rsi, rdi, rbp, rsp;
+	uint64_t r8, r9, r10, r11, r12, r13, r14, r15;
+	uint64_t rip, rflags, fs_base;
+};
+bool GetCurrentGuestRegisters(GuestRegisters* regs);
+
 // Handle unaligned memory access triggered by FEXCore JIT on ARM64 host
 bool HandleFexUnalignedAccess(void* native_context);
 

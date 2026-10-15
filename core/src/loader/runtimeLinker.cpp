@@ -2239,7 +2239,14 @@ void RuntimeLinker::SetupTlsHandler(Program* program) {
 
 	auto* code = new (reinterpret_cast<void*>(program->tls.handler_vaddr)) Jit::SafeCall;
 
+#if !defined(__x86_64__) && !defined(_M_X64)
+	// The stub is guest x86 code: on ARM64 it must call an HLE trampoline, not the host function
+	// (Unity games jumped into TlsMainGetAddr's ARM bytes and faulted).
+	code->SetFunc(reinterpret_cast<Jit::SafeCall::func_t>(Cpu::GetOrCreateHleTrampoline(
+	    reinterpret_cast<uint64_t>(TlsMainGetAddr), "TlsMainGetAddr")));
+#else
 	code->SetFunc(TlsMainGetAddr);
+#endif
 
 	for (uint8_t reg = 1; reg < 8; reg++) {
 		if (reg == 4) {
@@ -2283,12 +2290,26 @@ void RuntimeLinker::SetApplicationHeapApi(void* const api[10]) {
 	    reinterpret_cast<application_heap_posix_memalign_func_t>(api[6]);
 }
 
+// The application heap API is guest x86 code: under the JIT it must run through the CPU
+// backend (Rogue Prince of Persia hit SIGILL calling its posix_memalign natively).
+static bool GuestCallsNeedJit() {
+	return Cpu::CpuBackend::Instance()->GetType() != Cpu::BackendType::Native;
+}
+
 void* RuntimeLinker::ApplicationHeapMemalign(uint64_t alignment, uint64_t size) {
 	Common::LockGuard lock(m_mutex);
 
 	if (m_application_heap_posix_memalign != nullptr) {
 		void* ptr = nullptr;
-		return m_application_heap_posix_memalign(&ptr, alignment, size) == 0 ? ptr : nullptr;
+		int   result = 0;
+		if (GuestCallsNeedJit()) {
+			result = static_cast<int>(Cpu::CpuBackend::Instance()->CallGuestCallback(
+			    reinterpret_cast<uint64_t>(m_application_heap_posix_memalign),
+			    reinterpret_cast<uint64_t>(&ptr), alignment, size));
+		} else {
+			result = m_application_heap_posix_memalign(&ptr, alignment, size);
+		}
+		return result == 0 ? ptr : nullptr;
 	}
 
 	return nullptr;
@@ -2297,7 +2318,14 @@ void* RuntimeLinker::ApplicationHeapMemalign(uint64_t alignment, uint64_t size) 
 void* RuntimeLinker::ApplicationHeapMalloc(uint64_t size) {
 	Common::LockGuard lock(m_mutex);
 
-	return m_application_heap_malloc != nullptr ? m_application_heap_malloc(size) : nullptr;
+	if (m_application_heap_malloc == nullptr) {
+		return nullptr;
+	}
+	if (GuestCallsNeedJit()) {
+		return reinterpret_cast<void*>(Cpu::CpuBackend::Instance()->CallGuestCallback(
+		    reinterpret_cast<uint64_t>(m_application_heap_malloc), size));
+	}
+	return m_application_heap_malloc(size);
 }
 
 } // namespace Loader

@@ -22,6 +22,7 @@
 #include <unistd.h>
 #endif
 
+#include "cpu/cpuBackend.h"
 #include "common/assert.h"
 #include "common/common.h"
 #include "common/emulatorConfig.h"
@@ -3624,7 +3625,13 @@ int KYTY_SYSV_ABI NetCtlCheckCallback() {
 	const int event = (NetCtlConnected() ? NET_CTL_EVENT_IPOBTAINED : NET_CTL_EVENT_DISCONNECTED);
 	for (auto& cb: g_net_ctl_callbacks) {
 		if (cb.func != nullptr && cb.last_event != event) {
-			cb.func(event, cb.arg);
+			if (Cpu::CpuBackend::Instance()->GetType() != Cpu::BackendType::Native) {
+				Cpu::CpuBackend::Instance()->CallGuestCallback(
+				    reinterpret_cast<uint64_t>(cb.func), static_cast<uint64_t>(event),
+				    reinterpret_cast<uint64_t>(cb.arg));
+			} else {
+				cb.func(event, cb.arg);
+			}
 			cb.last_event = event;
 		}
 	}

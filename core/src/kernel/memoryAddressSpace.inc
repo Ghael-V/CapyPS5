@@ -15,7 +15,10 @@ static constexpr uint64_t HOST_SYSTEM_RESERVED_MAX = 0x0fffffffffull;
 static constexpr uint64_t HOST_USER_MIN            = 0x1000000000ull;
 #endif
 #if defined(__ANDROID__) || defined(ANDROID) || defined(KYTY_PLATFORM_ANDROID)
-static constexpr uint64_t HOST_USER_MAX = 0x6fffffffffull;
+// Android arm64 kernels often give a 39-bit (512 GiB) address space. Reserving up to
+// 0x6fffffffff left the host ~64 GiB, and FEX's allocator (256 MiB spans per thread) ran out
+// of address space once Unity started its job workers. Guests rarely need more than a few GiB.
+static constexpr uint64_t HOST_USER_MAX = 0x2fffffffffull;
 #else
 static constexpr uint64_t HOST_USER_MAX = 0xfbffffffffull;
 #endif
@@ -660,7 +663,13 @@ private:
 			case VirtualMemory::Mode::Read: return PROT_READ;
 			case VirtualMemory::Mode::Write:
 			case VirtualMemory::Mode::ReadWrite: return PROT_READ | PROT_WRITE;
+#if defined(__aarch64__)
+			// The JIT reads guest code to translate it: execute-only guest pages must stay
+			// readable on the host (Unity games faulted decoding an --x eboot page).
+			case VirtualMemory::Mode::Execute: return PROT_EXEC | PROT_READ;
+#else
 			case VirtualMemory::Mode::Execute: return PROT_EXEC;
+#endif
 			case VirtualMemory::Mode::ExecuteRead: return PROT_EXEC | PROT_READ;
 			case VirtualMemory::Mode::ExecuteWrite:
 			case VirtualMemory::Mode::ExecuteReadWrite: return PROT_EXEC | PROT_READ | PROT_WRITE;

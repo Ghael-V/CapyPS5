@@ -53,7 +53,12 @@ static int get_protection_flag(Mode mode) {
 		case Mode::Read: protect = PROT_READ; break;
 		case Mode::Write:
 		case Mode::ReadWrite: protect = PROT_READ | PROT_WRITE; break; // NOLINT
+#if defined(__aarch64__)
+		// Translated guest code is read by the JIT, so execute-only must stay readable.
+		case Mode::Execute: protect = PROT_EXEC | PROT_READ; break;
+#else
 		case Mode::Execute: protect = PROT_EXEC; break;
+#endif
 		case Mode::ExecuteRead: protect = PROT_EXEC | PROT_READ; break; // NOLINT
 		case Mode::ExecuteWrite:
 		case Mode::ExecuteReadWrite:

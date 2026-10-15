@@ -39,7 +39,10 @@
 namespace FEXCore::Allocator {
 void InitializeAllocator(size_t PageSize);
 void InitializeThread();
+void* aligned_alloc(size_t a, size_t s);
+void aligned_free(void* ptr);
 }
+extern "C" int rpmalloc_is_thread_initialized(void);
 #endif
 
 #if defined(__ANDROID__) || defined(ANDROID)
@@ -53,6 +56,11 @@ void InitializeThread();
 #define ALOGW(...) std::printf(__VA_ARGS__)
 #define ALOGE(...) std::fprintf(stderr, __VA_ARGS__)
 #endif
+
+namespace Libs::LibKernel {
+bool KernelHasPendingSignals();
+void KernelDispatchPendingSignalForCurrentThread();
+} // namespace Libs::LibKernel
 
 namespace Cpu {
 
@@ -175,6 +183,9 @@ namespace {
 #if defined(__aarch64__)
 thread_local FEXCore::Core::InternalThreadState* s_current_fex_thread = nullptr;
 #endif
+// Counts ExecuteGuestCode runs on this host thread, so an HLE call can tell whether it ran
+// guest code nested inside it (e.g. sceKernelLoadStartModule running module_start).
+thread_local uint64_t s_nested_guest_runs = 0;
 
 std::mutex s_trampoline_mutex;
 std::unordered_map<uint64_t, uint64_t> s_trampoline_cache;
@@ -245,10 +256,65 @@ public:
 			                             uint64_t, uint64_t, uint64_t, uint64_t,
 			                             uint64_t, uint64_t, uint64_t, uint64_t);
 			auto fn = reinterpret_cast<hle_fn_t>(host_func);
+			// Nested guest code run by the HLE function leaves its registers in this frame
+			// (Unity games crashed after sceKernelLoadStartModule with RBP = module_start's
+			// argc). Restore the caller's full CPU state when that happened.
+			const auto runs_before = s_nested_guest_runs;
+			struct SavedRegisters {
+				uint64_t gregs[16];
+				uint64_t avx_high[16][2];
+				decltype(FEXCore::Core::CPUState::xmm) xmm;
+				uint64_t mm[8][2];
+				uint8_t  flags[48];
+				uint32_t pf_raw, af_raw, mxcsr;
+				uint64_t fs_cached, gs_cached, callret_sp;
+			} saved;
+			auto& state = Frame->State;
+			std::memcpy(saved.gregs, state.gregs, sizeof(saved.gregs));
+			std::memcpy(saved.avx_high, state.avx_high, sizeof(saved.avx_high));
+			std::memcpy(&saved.xmm, &state.xmm, sizeof(saved.xmm));
+			std::memcpy(saved.mm, state.mm, sizeof(saved.mm));
+			std::memcpy(saved.flags, state.flags, sizeof(saved.flags));
+			saved.pf_raw = state.pf_raw;
+			saved.af_raw = state.af_raw;
+			saved.mxcsr = state.mxcsr;
+			saved.fs_cached = state.fs_cached;
+			saved.gs_cached = state.gs_cached;
+			saved.callret_sp = state.callret_sp;
 			uint64_t ret = fn(a0, a1, a2, a3, a4, a5, a6, a7,
 			                  a8, a9, a10, a11, a12, a13, a14, a15);
+			if (s_nested_guest_runs != runs_before) {
+				static std::atomic<uint32_t> restored_log {0};
+				if (restored_log.fetch_add(1) < 8) {
+					__android_log_print(ANDROID_LOG_WARN, "CapyPS5-Cpu",
+					    "HLE call ran nested guest code: restored caller registers (rbp 0x%llx -> 0x%llx)",
+					    static_cast<unsigned long long>(state.gregs[FEXCore::X86State::REG_RBP]),
+					    static_cast<unsigned long long>(saved.gregs[FEXCore::X86State::REG_RBP]));
+				}
+				std::memcpy(state.gregs, saved.gregs, sizeof(saved.gregs));
+				std::memcpy(state.avx_high, saved.avx_high, sizeof(saved.avx_high));
+				std::memcpy(&state.xmm, &saved.xmm, sizeof(saved.xmm));
+				std::memcpy(state.mm, saved.mm, sizeof(saved.mm));
+				std::memcpy(state.flags, saved.flags, sizeof(saved.flags));
+				state.pf_raw = saved.pf_raw;
+				state.af_raw = saved.af_raw;
+				state.mxcsr = saved.mxcsr;
+				state.fs_cached = saved.fs_cached;
+				state.gs_cached = saved.gs_cached;
+				state.callret_sp = saved.callret_sp;
+			}
+#if defined(__aarch64__)
+			s_current_fex_thread = Frame->Thread;
+#endif
 
 			Frame->State.gregs[FEXCore::X86State::REG_RAX] = ret;
+			// Deliver guest signals (sceKernelRaiseException) queued for this thread while it
+			// runs JIT code; blocking HLE waits poll on their own.
+			if (Libs::LibKernel::KernelHasPendingSignals()) {
+				Frame->State.rip = call_rip + 2;
+				Libs::LibKernel::KernelDispatchPendingSignalForCurrentThread();
+				Frame->State.gregs[FEXCore::X86State::REG_RAX] = ret;
+			}
 		} else {
 			ALOGW("CapySyscallHandler: Raw syscall %llu requested", static_cast<unsigned long long>(host_func));
 			Frame->State.gregs[FEXCore::X86State::REG_RAX] = static_cast<uint64_t>(-1);
@@ -501,6 +567,20 @@ private:
 		uint64_t sentinel_addr = reinterpret_cast<uint64_t>(s_trampoline_pool);
 
 		ALOGI("ExecuteGuestCode: 2. stack_top check (in=%016llx)", static_cast<unsigned long long>(stack_top));
+#if defined(__aarch64__)
+		// Nested run (an HLE call made by guest code, e.g. sceKernelLoadStartModule running
+		// module_start): continue below the caller's live stack. Starting from the top of the
+		// main guest stack overwrote the caller's frames (Unity games crashed on startup).
+		if (stack_top == 0 && s_current_fex_thread != nullptr) {
+			const auto caller_rsp =
+			    s_current_fex_thread->CurrentFrame->State.gregs[FEXCore::X86State::REG_RSP];
+			if (caller_rsp != 0) {
+				stack_top = (caller_rsp - 0x400) & ~0xFull;
+				ALOGI("ExecuteGuestCode: nested run below caller rsp=%016llx",
+				      static_cast<unsigned long long>(caller_rsp));
+			}
+		}
+#endif
 		if (stack_top == 0) {
 			void* main_stack = Libs::LibKernel::PthreadCreateMainGuestStack();
 			stack_top = reinterpret_cast<uint64_t>(main_stack);
@@ -574,6 +654,17 @@ private:
 		}
 		ALOGI("ExecuteGuestCode: 4a. TCB fs_cached=%016llx", static_cast<unsigned long long>(initial_state.fs_cached));
 
+		// Diagnose FEX thread allocation failures (Unity job workers crashed in CreateThread with
+		// a null allocation).
+		if (void* probe = FEXCore::Allocator::aligned_alloc(0x1000, 0x3000); probe == nullptr) {
+			char name[32] = {};
+			pthread_getname_np(pthread_self(), name, sizeof(name));
+			ALOGE("ExecuteGuestCode: FEX allocator returned null on thread '%s' (tid %d, rpmalloc init=%d, errno=%d)",
+			      name, gettid(), rpmalloc_is_thread_initialized(), errno);
+			FEXCore::Allocator::InitializeThread();
+		} else {
+			FEXCore::Allocator::aligned_free(probe);
+		}
 		ALOGI("ExecuteGuestCode: 5. CreateThread(&initial_state)");
 		auto* thread = m_fex_context->CreateThread(&initial_state);
 		ALOGI("ExecuteGuestCode: 5a. CreateThread returned %p", static_cast<void*>(thread));
@@ -600,16 +691,30 @@ private:
 		      static_cast<unsigned long long>(entry_addr), static_cast<unsigned long long>(rsp),
 		      static_cast<unsigned long long>(arg0), static_cast<unsigned long long>(arg1), static_cast<unsigned long long>(arg2));
 
+		s_nested_guest_runs++;
 #if defined(__aarch64__)
+		auto* const outer_fex_thread = s_current_fex_thread;
 		s_current_fex_thread = thread;
 #endif
 		m_fex_context->ExecuteThread(thread);
 #if defined(__aarch64__)
-		s_current_fex_thread = nullptr;
+		s_current_fex_thread = outer_fex_thread;
 #endif
 
 		uint64_t ret = thread->CurrentFrame->State.gregs[FEXCore::X86State::REG_RAX];
 		ALOGI("Arm64CpuBackend: JIT returned from guest code with RAX=0x%016llx", static_cast<unsigned long long>(ret));
+		{
+			// A normal exit pops the sentinel: RSP = entry RSP + 8 and RIP just past the HLT.
+			const auto end_rsp = thread->CurrentFrame->State.gregs[FEXCore::X86State::REG_RSP];
+			const auto end_rip = thread->CurrentFrame->State.rip;
+			if (end_rsp != rsp + 8) {
+				__android_log_print(ANDROID_LOG_WARN, "CapyPS5-Cpu",
+				    "guest run 0x%llx ended abnormally: rip=0x%llx rsp=0x%llx (entry rsp=0x%llx) rax=0x%llx",
+				    static_cast<unsigned long long>(entry_addr), static_cast<unsigned long long>(end_rip),
+				    static_cast<unsigned long long>(end_rsp), static_cast<unsigned long long>(rsp),
+				    static_cast<unsigned long long>(ret));
+			}
+		}
 
 		m_fex_context->DestroyThread(thread);
 		if (callret_alloc && callret_alloc != MAP_FAILED) {
@@ -620,6 +725,39 @@ private:
 };
 
 #endif
+
+bool GetCurrentGuestRegisters(GuestRegisters* regs) {
+#if defined(__aarch64__)
+	auto* thread = s_current_fex_thread;
+	if (regs == nullptr || thread == nullptr || thread->CurrentFrame == nullptr) {
+		return false;
+	}
+	const auto& state = thread->CurrentFrame->State;
+	regs->rax     = state.gregs[FEXCore::X86State::REG_RAX];
+	regs->rbx     = state.gregs[FEXCore::X86State::REG_RBX];
+	regs->rcx     = state.gregs[FEXCore::X86State::REG_RCX];
+	regs->rdx     = state.gregs[FEXCore::X86State::REG_RDX];
+	regs->rsi     = state.gregs[FEXCore::X86State::REG_RSI];
+	regs->rdi     = state.gregs[FEXCore::X86State::REG_RDI];
+	regs->rbp     = state.gregs[FEXCore::X86State::REG_RBP];
+	regs->rsp     = state.gregs[FEXCore::X86State::REG_RSP];
+	regs->r8      = state.gregs[FEXCore::X86State::REG_R8];
+	regs->r9      = state.gregs[FEXCore::X86State::REG_R9];
+	regs->r10     = state.gregs[FEXCore::X86State::REG_R10];
+	regs->r11     = state.gregs[FEXCore::X86State::REG_R11];
+	regs->r12     = state.gregs[FEXCore::X86State::REG_R12];
+	regs->r13     = state.gregs[FEXCore::X86State::REG_R13];
+	regs->r14     = state.gregs[FEXCore::X86State::REG_R14];
+	regs->r15     = state.gregs[FEXCore::X86State::REG_R15];
+	regs->rip     = state.rip;
+	regs->rflags  = 0x202;
+	regs->fs_base = state.fs_cached;
+	return true;
+#else
+	(void)regs;
+	return false;
+#endif
+}
 
 bool HandleFexUnalignedAccess(void* native_context) {
 #if defined(__aarch64__)

@@ -1,3 +1,4 @@
+#include "cpu/cpuBackend.h"
 #include "libs/ime.h"
 
 #include "libs/errno.h"
@@ -455,7 +456,13 @@ int KYTY_SYSV_ABI ImeUpdate(EventHandler handler) {
 			SyncGuestText(item.work, item.input, item.max_length, item.queued.text);
 			item.queued.event.param.text.str = item.work;
 		}
-		handler(item.arg, &item.queued.event);
+		if (Cpu::CpuBackend::Instance()->GetType() != Cpu::BackendType::Native) {
+			Cpu::CpuBackend::Instance()->CallGuestCallback(
+			    reinterpret_cast<uint64_t>(handler), reinterpret_cast<uint64_t>(item.arg),
+			    reinterpret_cast<uint64_t>(&item.queued.event));
+		} else {
+			handler(item.arg, &item.queued.event);
+		}
 	}
 	return OK;
 }

@@ -1,3 +1,4 @@
+#include "cpu/cpuBackend.h"
 #include "common/abi.h"
 #include "common/assert.h"
 #include "common/common.h"
@@ -264,7 +265,14 @@ int KYTY_SYSV_ABI KernelDlsym(KernelModule handle, const char* symbol, void** ad
 	}
 
 	if (handle == 0 && std::strcmp(symbol, "scriptingGetMem") == 0) {
+#if !defined(__x86_64__) && !defined(_M_X64)
+		// Guest code calls this pointer: on ARM64 hand out an HLE trampoline, not the host
+		// function (Unity games jumped into its ARM bytes and their main thread stopped).
+		*addr = reinterpret_cast<void*>(Cpu::GetOrCreateHleTrampoline(
+		    reinterpret_cast<uint64_t>(&KernelApplicationHeapGetMem), "KernelApplicationHeapGetMem"));
+#else
 		*addr = reinterpret_cast<void*>(&KernelApplicationHeapGetMem);
+#endif
 		if (index < 32 || (index % 600) == 0) {
 			LOGF("\t resolved = 0x%016" PRIx64 " (application heap scriptingGetMem)\n",
 			     reinterpret_cast<uint64_t>(*addr));
@@ -1076,23 +1084,72 @@ static void SignalApcHandler(void* arg1, void* arg2, void* /*arg3*/, PCONTEXT co
 
 #endif
 
+// Signals queued by sceKernelRaiseException and not yet delivered (fast path for the JIT
+// backend, which polls after every HLE call).
+static std::atomic<int32_t> g_pending_guest_signals {0};
+
+bool KernelHasPendingSignals() {
+	return g_pending_guest_signals.load(std::memory_order_relaxed) > 0;
+}
+
+static bool IsJitBackend() {
+	return Cpu::CpuBackend::Instance()->GetType() != Cpu::BackendType::Native;
+}
+
+// Guest handlers are x86 code: under the JIT they must run through the CPU backend, with the
+// guest thread's own registers in the context (Unity's GC scans the stack from them).
+static void InvokeGuestSignalHandler(void* handler, int signum, Pthread thread) {
+	SignalDispatchScope scope;
+	auto                ctx = CreateSignalUcontext();
+	Cpu::GuestRegisters regs {};
+	if (IsJitBackend() && Cpu::GetCurrentGuestRegisters(&regs)) {
+		auto& mc     = ctx.uc_mcontext;
+		mc.mc_rax    = regs.rax;
+		mc.mc_rbx    = regs.rbx;
+		mc.mc_rcx    = regs.rcx;
+		mc.mc_rdx    = regs.rdx;
+		mc.mc_rsi    = regs.rsi;
+		mc.mc_rdi    = regs.rdi;
+		mc.mc_rbp    = regs.rbp;
+		mc.mc_rsp    = regs.rsp;
+		mc.mc_r8     = regs.r8;
+		mc.mc_r9     = regs.r9;
+		mc.mc_r10    = regs.r10;
+		mc.mc_r11    = regs.r11;
+		mc.mc_r12    = regs.r12;
+		mc.mc_r13    = regs.r13;
+		mc.mc_r14    = regs.r14;
+		mc.mc_r15    = regs.r15;
+		mc.mc_rip    = regs.rip;
+		mc.mc_rflags = regs.rflags;
+		mc.mc_fsbase = regs.fs_base;
+		mc.mc_len    = sizeof(SignalMcontext);
+	} else {
+		SanitizeNonGuestSignalUcontext(&ctx, thread);
+	}
+	if (IsJitBackend()) {
+		Cpu::CpuBackend::Instance()->CallGuestCallback(reinterpret_cast<uint64_t>(handler),
+		                                               static_cast<uint64_t>(signum),
+		                                               reinterpret_cast<uint64_t>(&ctx));
+	} else {
+		reinterpret_cast<exception_handler_func_t>(handler)(signum, &ctx);
+	}
+}
+
 void KernelDispatchPendingSignalForCurrentThread() {
 	Pthread current = PthreadSelfOrNull();
 	if (current == nullptr) {
 		return;
 	}
 
-	for (int signum = 0; signum < static_cast<int>(std::size(g_exception_handlers)); signum++) {
+	for (int signum = 0; signum < 64; signum++) {
 		if (!PthreadTakePendingSignal(current, signum)) {
 			continue;
 		}
+		g_pending_guest_signals.fetch_sub(1, std::memory_order_relaxed);
 
-		auto* handler = reinterpret_cast<exception_handler_func_t>(g_exception_handlers[signum]);
-		if (handler != nullptr) {
-			SignalDispatchScope scope;
-			auto                ctx = CreateSignalUcontext();
-			SanitizeNonGuestSignalUcontext(&ctx, current);
-			handler(signum, &ctx);
+		if (auto* handler = g_exception_handlers[signum]; handler != nullptr) {
+			InvokeGuestSignalHandler(handler, signum, current);
 		}
 		return;
 	}
@@ -1206,8 +1263,16 @@ static int KYTY_SYSV_ABI KernelRaiseException(Pthread thread, int signum) {
 		WaitForSignalDispatch(thread, signum);
 		return OK;
 #else
-		auto ctx = CreateSignalUcontext();
-		handler(signum, &ctx);
+		// JIT backend: run on the target thread. A thread raising on itself runs the handler
+		// now; otherwise queue it and the target delivers it at its next HLE call or wait poll.
+		if (thread == PthreadSelfOrNull()) {
+			InvokeGuestSignalHandler(reinterpret_cast<void*>(handler), signum, thread);
+			return OK;
+		}
+		g_pending_guest_signals.fetch_add(1, std::memory_order_relaxed);
+		PthreadQueuePendingSignal(thread, signum);
+		PthreadWakeForSignal(thread);
+		WaitForSignalDispatch(thread, signum);
 #endif
 	}
 
@@ -3368,6 +3433,11 @@ static void AddLibkernelUnityFunc(Loader::SymbolDatabase* s, const char* nid, ui
 	sr.module_version_major = 1;
 	sr.module_version_minor = 1;
 	sr.type                 = Loader::SymbolType::Func;
+	// Same as LIB_FUNC: guest code calls this address, so the JIT backend needs a trampoline
+	// (Unity games jumped into KernelInstallExceptionHandler's ARM bytes and stopped).
+	if (Cpu::CpuBackend::Instance()->GetType() != Cpu::BackendType::Native) {
+		func = Cpu::GetOrCreateHleTrampoline(func, dbg_name.c_str());
+	}
 	s->Add(sr, func, dbg_name);
 }
 
