@@ -447,7 +447,7 @@ void LowerTessellationMemory(IR::Program& program, const CompileOptions& options
 		}
 	}
 	ConstantPropagationPass(program.blocks, program.wave_size);
-	RemoveIdentities(program.blocks);
+	RemoveIdentities(program);
 	EliminateDeadCode(program.blocks);
 	// Patch constant stores whose EXEC selects were not stripped would land in control points.
 	EXIT_NOT_IMPLEMENTED(options.stage == ShaderType::TessellationControl &&

@@ -574,7 +574,7 @@ void PrepareCallTarget(ShaderSource& source, const CompileOptions& options) {
 	}
 	RewriteToSsa(query.blocks);
 	ConstantPropagationPass(query.blocks, query.wave_size);
-	RemoveIdentities(query.blocks);
+	RemoveIdentities(query);
 	EliminateDeadCode(query.blocks);
 	for (auto& value: source.call->target) value = value.Instruction()->Arg(0).Resolve();
 	query.value_storage.clear();
@@ -898,8 +898,7 @@ TranslateResult TranslateProgram(const Decoder::Program& decoded, const CompileO
 	IR::RewriteToSsa(ir.blocks);
 	const auto simplify = [&ir] {
 		IR::ConstantPropagationPass(ir.blocks, ir.wave_size);
-		IR::ResolveControlFlowIdentities(ir);
-		IR::RemoveIdentities(ir.blocks);
+		IR::RemoveIdentities(ir);
 		IR::EliminateDeadCode(ir.blocks);
 	};
 	simplify();
@@ -979,7 +978,7 @@ CompileResult CompileProgram(TranslateResult translated, const CompileOptions& o
 		}
 	}
 	ir.value_storage.clear();
-	IR::RemoveIdentities(ir.blocks);
+	IR::RemoveIdentities(ir);
 	IR::EliminateDeadCode(ir.blocks);
 
 	IR::CollectShaderInfo(ir, options.input_info);

@@ -646,9 +646,20 @@ private:
 				candidates.push_back(inst);
 			}
 		}
-		if (candidates.empty()) return value;
 		const auto source_at = [&](uint32_t pc) {
 			Value source;
+			bool dynamic = false;
+			for (auto write = std::ranges::lower_bound(m_scalar_writes, pc, {}, &Program::ScalarWrite::pc);
+			     write != m_scalar_writes.end() && write->pc == pc; ++write) {
+				if (RegIndex(write->reg) != reg) continue;
+				if (!write->value.IsImmediate() || write->value.GetType() != Type::U32) {
+					dynamic = true;
+					continue;
+				}
+				if (!source.IsEmpty() && source != write->value) return Value {};
+				source = write->value;
+			}
+			if (!source.IsEmpty()) return dynamic ? Value {} : source;
 			const auto native = std::ranges::lower_bound(m_decoded.instructions, pc, {},
 			                                            &Decoder::Instruction::pc);
 			for (const auto* candidate: candidates) {
@@ -686,8 +697,9 @@ private:
 			const auto source = source_at(pc);
 			if (source.IsEmpty()) return false;
 			if (!selected.IsEmpty()) {
-				const auto op = source.TryInstruction()->GetOpcode();
-				if ((op == ValueOpcode::LoadAddressU32 || op == ValueOpcode::ReadConstBuffer) &&
+				const auto* inst = source.TryInstruction();
+				if (inst != nullptr &&
+				    (inst->GetOpcode() == ValueOpcode::LoadAddressU32 || inst->GetOpcode() == ValueOpcode::ReadConstBuffer) &&
 				    selected_pc != pc) return false;
 				if (!EquivalentValue(m_program, selected, source)) return false;
 			}

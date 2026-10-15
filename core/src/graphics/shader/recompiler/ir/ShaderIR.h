@@ -806,7 +806,7 @@ struct Program: ResourcePlan {
 	bool                          dispatcher_fallback = false;
 	CFG::FailureKind              cfg_failure_kind    = CFG::FailureKind::None;
 	std::string                   fallback_reason;
-	struct ScalarWrite { uint32_t pc; ScalarReg reg; };
+	struct ScalarWrite { uint32_t pc; ScalarReg reg; Value value; };
 	std::vector<ScalarWrite>      scalar_writes;
 	// Typed memory and export instructions reference shader-local metadata by dense index.
 	// Decoder-only details (such as NSA register numbers) have already become IR operands.
@@ -822,7 +822,6 @@ uint32_t StorageBufferElementBits(const Program& program, const MemoryInfo& memo
 std::string ProgramToString(const Program& program);
 
 void  ValidateProgram(const Program& program);
-void  ResolveControlFlowIdentities(Program& program);
 bool  EquivalentValue(const ResourcePlan& program, Value left, Value right);
 bool  EquivalentSelectorDomain(const ResourcePlan& program,
                                const DescriptorSource::IndirectDescriptor& left,
