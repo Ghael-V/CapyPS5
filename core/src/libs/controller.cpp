@@ -954,6 +954,12 @@ int GameController::ReadStates(ControllerState* states, int states_num, bool* fl
 			}
 		}
 	}
+	// The buffered states already carry every press since the last read. Keeping the latch would
+	// make the next read without new states (ReadState) report the press again: Unity games
+	// (scePadRead) saw every button press twice.
+	if (ret_num != 0) {
+		m_latched_buttons = 0;
+	}
 
 	return ret_num;
 }
