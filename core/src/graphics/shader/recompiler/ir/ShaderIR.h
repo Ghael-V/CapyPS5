@@ -686,6 +686,12 @@ struct UniformFillPlan {
 // Resource analysis retained by the shader cache. It owns immutable descriptor/SRT,
 // condition and fill values without translated blocks, plus reusable evaluation scratch.
 struct ResourcePlan {
+	struct SelectorKeys {
+		uint32_t              source = UINT32_MAX;
+		std::vector<uint32_t> values;
+		bool                  resolved = false;
+	};
+
 	struct EvaluationContext {
 		struct Entry {
 			uint64_t value      = 0;
@@ -714,6 +720,10 @@ struct ResourcePlan {
 	std::list<Inst>                     value_storage;
 	std::vector<MemoryInfo>             memory_info;
 	std::vector<DescriptorSource>       descriptor_sources;
+	std::vector<uint32_t>               selector_groups;
+	// One entry per shared selector domain (its first source); the keys resolved for a
+	// materialization live in the evaluating thread's EvaluationScratch::selector_keys.
+	std::vector<SelectorKeys>           selector_keys;
 	std::vector<ResourceBlock>          control_flow;
 	std::unordered_map<const Inst*, std::vector<uint32_t>> control_phi_predecessors;
 	std::vector<SrtRead>                srt_reads;
@@ -752,6 +762,7 @@ struct ResourcePlan {
 		std::vector<uint8_t>          reachable_blocks;
 		std::vector<uint32_t>         pending_blocks;
 		std::vector<uint32_t>         material_keys;
+		std::vector<SelectorKeys>     selector_keys;
 		std::vector<uint32_t>         flat_words;
 		std::vector<size_t>           flat_bases;
 	};
