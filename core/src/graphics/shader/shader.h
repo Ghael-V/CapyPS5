@@ -72,6 +72,18 @@ inline uint8_t GetDstSel(uint32_t swizzle, uint32_t channel) {
 	return (swizzle >> (channel * 3u)) & 0x7u;
 }
 
+[[nodiscard]] inline bool IsValidImageSwizzle(uint32_t swizzle,
+                                             uint32_t component_count = 4) noexcept {
+	if ((swizzle & ~0xfffu) != 0) {
+		return false;
+	}
+	for (uint32_t channel = 0; channel < 4; channel++) {
+		const auto selector = GetDstSel(swizzle, channel);
+		if (selector > 1 && (selector < 4 || selector >= 4 + component_count)) return false;
+	}
+	return true;
+}
+
 struct ShaderClipSpaceTransform {
 	float scale[2]       = {};
 	float offset[2]      = {};
