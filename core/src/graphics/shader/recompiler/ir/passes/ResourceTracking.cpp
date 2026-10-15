@@ -3118,8 +3118,7 @@ private:
 	}
 
 	bool TryMakeTableDescriptor(Inst& handle, const DescriptorSource& descriptor,
-	                            IndirectDescriptorPlan& plan,
-	                            const IndirectDescriptorPlan* paired_sampler) {
+	                            IndirectDescriptorPlan& plan) {
 		const bool sampler = handle.GetOpcode() == ValueOpcode::GetSamplerResource;
 		if ((!sampler && handle.GetOpcode() != ValueOpcode::GetImageResource) ||
 		    handle.NumArgs() != (sampler ? 4u : 8u)) return RejectIndirect(__LINE__);
@@ -3269,26 +3268,42 @@ private:
 			// Keep the GPU selector and descriptor reads, and preserve the proven scalar
 			// offset domain within the bounded image table.
 			if (sampler || plan.split_offsets) return RejectIndirect(__LINE__);
+			const auto active = [&](const Use& use, bool sampler) -> Value {
+				const auto& access = *use.user;
+				if (use.operand != (sampler ? 1u : 0u) ||
+				    ImageOpcodeInfoOf(access.GetOpcode()).access == ImageAccess::None) return {};
+				if (sampler && (access.GetOpcode() != ValueOpcode::ImageSampleRaw ||
+				    (m_program.memory_info[access.Flags<MemoryFlags>().index].image_sample_flags &
+				     Decoder::ImageSampleFlagAdjust) != 0u)) return {};
+				const auto mask = access.Arg(access.NumArgs() - 1u);
+				return mask.GetType() == Type::U1 ? mask : Value {};
+			};
 			bool shared_selector = false;
-			if (!plan.table_indexed && paired_sampler != nullptr &&
-			    m_sources[paired_sampler->source].indirect_descriptor->selector &&
-			    EquivalentValue(m_program, key, paired_sampler->key) &&
-			    std::ranges::all_of(handle.Uses(), [&](const Use& use) {
-				    return use.user->GetOpcode() == ValueOpcode::ImageSampleRaw &&
-				        use.user->Arg(1).Resolve().TryInstruction() == paired_sampler->handle &&
-				        (m_program.memory_info[use.user->Flags<MemoryFlags>().index].image_sample_flags &
-				         Decoder::ImageSampleFlagAdjust) == 0u;
-			    })) {
-				// This sampler already requires these exact keys. Prove the pairing before
-				// interning, so image-only handles keep their independent heap domain.
-				auto selected = indirect;
-				DescriptorSource selected_source;
-				if (MatchScalarMaterialKey(key, selected, selected_source, false, true) &&
-				    EquivalentSelectorDomain(m_program, selected,
-				        *m_sources[paired_sampler->source].indirect_descriptor)) {
-					indirect = std::move(selected);
-					material_source = std::move(selected_source);
+			if (!plan.table_indexed) {
+				for (const auto& owner: m_indirect_descriptors) {
+					const auto& selected = *m_sources[owner.source].indirect_descriptor;
+					if (!selected.selector || !EquivalentValue(m_program, key, owner.key) ||
+					    !std::ranges::all_of(handle.Uses(), [&](const Use& target) {
+						    const auto target_active = active(target, false);
+						    return !target_active.IsEmpty() &&
+						        std::ranges::any_of(owner.handle->Uses(), [&](const Use& witness) {
+							        const auto owner_active = active(witness,
+							            owner.handle->GetOpcode() == ValueOpcode::GetSamplerResource);
+							        return !owner_active.IsEmpty() && AvailableBefore(*witness.user, *target.user) &&
+							            Implies(target_active, owner_active);
+						        });
+					    })) continue;
+					// These exact keys are already required wherever this image is accessed.
+					// Reuse their proven domain without adding selector reads or a second plan.
+					indirect.selector = selected.selector;
+					indirect.key_count = selected.key_count;
+					indirect.selector_first = selected.selector_first;
+					indirect.selector_mask = selected.selector_mask;
+					indirect.signed_count = selected.signed_count;
+					indirect.workgroup_axis = selected.workgroup_axis;
+					material_source = m_sources[selected.selector->source];
 					shared_selector = true;
+					break;
 				}
 			}
 			if (!shared_selector) {
@@ -3856,7 +3871,6 @@ private:
 				}
 				const auto flags = inst.Flags<MemoryFlags>();
 				const auto& memory = m_program.memory_info[flags.index];
-				const IndirectDescriptorPlan* paired_sampler = nullptr;
 				const auto plan_handle = [&](Value value, uint32_t width, uint32_t base, bool sampler) {
 					auto* handle = value.Resolve().TryInstruction();
 					if (handle == nullptr || FindIndirectDescriptor(*handle) != nullptr) return;
@@ -3892,7 +3906,7 @@ private:
 					if (TryMakeNestedDescriptor(*handle, descriptor, plan) ||
 					    (sampler && TryMakeFiniteDescriptor(*handle, plan)) ||
 					    ((m_indirect_reject_line = 0), false) ||
-					    TryMakeTableDescriptor(*handle, descriptor, plan, paired_sampler) ||
+					    TryMakeTableDescriptor(*handle, descriptor, plan) ||
 					    ((m_image_reject_line = m_indirect_reject_line), (m_indirect_reject_line = 0), false) ||
 					    (!sampler && (TryMakeFiniteDescriptor(*handle, plan) ||
 					                  TryMakeIndirectBuffer(*handle, descriptor, plan)))) {
@@ -3906,8 +3920,6 @@ private:
 				};
 				if (inst.GetOpcode() == ValueOpcode::ImageSampleRaw) {
 					plan_handle(inst.Arg(1), 4u, memory.sampler * 4u, true);
-					if (const auto* handle = inst.Arg(1).Resolve().TryInstruction())
-						paired_sampler = FindIndirectDescriptor(*handle);
 				}
 				plan_handle(inst.Arg(0), IndirectBufferAccess(inst) ? 4u : 8u,
 				            memory.resource * 4u, false);
