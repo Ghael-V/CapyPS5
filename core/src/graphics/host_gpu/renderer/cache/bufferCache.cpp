@@ -564,6 +564,12 @@ std::pair<Buffer*, uint64_t> BufferCache::ObtainBuffer(uint64_t vaddr, uint64_t 
 		    m_graphics.physical_device_properties.limits.minUniformBufferOffsetAlignment, 1);
 		auto [mapped, offset] = m_stream_buffer.Map(size, alignment, false);
 		if (mapped != nullptr) {
+			// `debug.capy.split_on_fresh 1`: still serve the fresh copy but end the render pass
+			// first (tells the pass split apart from the data it serves).
+			static Common::DebugFlags::CachedValue split_on_fresh("debug.capy.split_on_fresh", 0);
+			if (in_pass_fresh && split_on_fresh.Get() != 0) {
+				command.EndRendering();
+			}
 			if (!Libs::LibKernel::Memory::ReadGuestMemory(vaddr, mapped, size)) {
 				std::memset(mapped, 0, size);
 			}

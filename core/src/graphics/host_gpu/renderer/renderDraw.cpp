@@ -1389,6 +1389,9 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 		    rendering.depth_stencil_attachment.has_depth ? 1 : 0,
 		    rendering.depth_stencil_attachment.has_stencil ? 1 : 0,
 		    static_cast<uint32_t>(feedback_aspects));
+		Common::DebugFlags::FrameTrace("    psctl kill=%d zexport=%d early_z=%d",
+		    state.ps_input_info.ps_pixel_kill_enable ? 1 : 0,
+		    state.ps_input_info.ps_depth_export_enable ? 1 : 0, state.ps_input_info.ps_early_z ? 1 : 0);
 		for (int r = 0; r < state.vertex_info[0].resources_num; r++) {
 			const auto& res = state.vertex_info[0].resources[r];
 			Common::DebugFlags::FrameTrace("    vtx[%d] addr=0x%llx stride=%u records=%u fmt=%u sel=0x%03x", r,
@@ -1450,10 +1453,75 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 		SetDrawDebugPhase(buffer, submit_id, draw, 0x400u);
 	}
 	// `debug.capy.force_split 1`: end the render pass before every draw (tests whether resuming
-	// a pass is harmful on the host driver).
+	// a pass is harmful on the host driver). 2: only draws whose pixel shader hashes to
+	// `split_rem` modulo `split_mod` (bisects which draw needs it); 3: only pixel shader `split_ps`; 4: only draws
+	// whose first color target is at guest address `split_ps`.
 	static Common::DebugFlags::CachedValue force_split("debug.capy.force_split", 0);
-	if (force_split.Get() != 0) {
+	static Common::DebugFlags::CachedValue split_mod("debug.capy.split_mod", 2);
+	static Common::DebugFlags::CachedValue split_rem("debug.capy.split_rem", 0);
+	static Common::DebugFlags::CachedValue split_ps("debug.capy.split_ps", 0);
+	const auto split_mode = force_split.Get();
+	const uint64_t split_addr = state.ps_active ? buffer.GetShaders().GetPs().ps_regs.data_addr : 0;
+	const uint64_t split_hash = (split_addr >> 8) * 0x9E3779B97F4A7C15ull >> 32;
+	if (split_mode == 1 ||
+	    (split_mode == 2 && split_mod.Get() > 0 &&
+	     static_cast<int64_t>(split_hash % static_cast<uint64_t>(split_mod.Get())) == split_rem.Get()) ||
+	    (split_mode == 3 && split_addr == static_cast<uint64_t>(split_ps.Get())) ||
+	    (split_mode == 4 && state.color_count > 0 &&
+	     state.color_info[0].desc.info.data.address == static_cast<uint64_t>(split_ps.Get()))) {
 		m_context.GetCommandScheduler().EndRendering();
+	}
+	// 6: within the run of consecutive draws to target `split_ps`, split every `split_mod` draws;
+	// 7: split only before draw `split_rem` of that run (0-based).
+	static uint64_t run_target = 0;
+	static int64_t  run_index  = 0;
+	const uint64_t  rt0_addr   = state.color_count > 0 ? state.color_info[0].desc.info.data.address : 0;
+	// `debug.capy.run_log 1`: log the draw and index count of every run of draws to `split_ps`
+	// (tag CapyPS5-Run), to spot frames where the game submits fewer draws.
+	static Common::DebugFlags::CachedValue run_log("debug.capy.run_log", 0);
+	static uint64_t run_indices = 0;
+	if (rt0_addr != run_target) {
+#if defined(__ANDROID__)
+		if (run_log.Get() != 0 && run_target == static_cast<uint64_t>(split_ps.Get())) {
+			__android_log_print(ANDROID_LOG_WARN, "CapyPS5-Run", "frame %llu draws %lld indices %llu",
+			                    static_cast<unsigned long long>(Common::Telemetry::g_game_frames.load()),
+			                    static_cast<long long>(run_index + 1),
+			                    static_cast<unsigned long long>(run_indices));
+		}
+#endif
+		run_target  = rt0_addr;
+		run_index   = 0;
+		run_indices = 0;
+	} else {
+		run_index++;
+	}
+	run_indices += draw.index_count;
+	if (rt0_addr == static_cast<uint64_t>(split_ps.Get()) &&
+	    ((split_mode == 6 && split_mod.Get() > 0 && run_index % split_mod.Get() == 0) ||
+	     (split_mode == 7 && run_index == split_rem.Get()))) {
+		m_context.GetCommandScheduler().EndRendering();
+	}
+	// `debug.capy.force_split 5`: end the pass when the depth compare direction (less vs greater)
+	// flips inside it (Adreno LRZ investigation).
+	static int pass_depth_direction = 0;
+	if (!m_context.GetCommandScheduler().Current().IsRendering()) {
+		pass_depth_direction = 0;
+	}
+	if (state.depth_info.depth_test_enable) {
+		int direction = 0;
+		switch (state.depth_info.depth_compare_op) {
+			case vk::CompareOp::eLess:
+			case vk::CompareOp::eLessOrEqual: direction = 1; break;
+			case vk::CompareOp::eGreater:
+			case vk::CompareOp::eGreaterOrEqual: direction = 2; break;
+			default: break;
+		}
+		if (direction != 0) {
+			if (split_mode == 5 && pass_depth_direction != 0 && pass_depth_direction != direction) {
+				m_context.GetCommandScheduler().EndRendering();
+			}
+			pass_depth_direction = direction;
+		}
 	}
 	m_context.GetCommandScheduler().BeginRendering(rendering);
 	vk_buffer.bindPipeline(vk::PipelineBindPoint::eGraphics, pipeline.pipeline);
@@ -1513,15 +1581,27 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 		watch_dump_seen = watch_dump.Get();
 		watch_dump_left = watch_dump_seen;
 	}
+	// watch_ps 1 instead dumps every `watch_step`-th draw of the run of draws to target `split_ps`
+	// and also saves its depth target (<name>_d.img).
+	static Common::DebugFlags::CachedValue watch_step("debug.capy.watch_step", 1);
+	const bool watch_run = watch_ps_dump.Get() == 1 && rt0_addr == static_cast<uint64_t>(split_ps.Get()) &&
+	                       watch_step.Get() > 0 && run_index % watch_step.Get() == 0;
 	if (watch_dump_left > 0 && state.ps_active && state.color_count > 0 &&
-	    static_cast<uint64_t>(watch_ps_dump.Get()) == buffer.GetShaders().GetPs().ps_regs.data_addr) {
+	    (watch_run ||
+	     static_cast<uint64_t>(watch_ps_dump.Get()) == buffer.GetShaders().GetPs().ps_regs.data_addr)) {
 		const auto dir = AndroidGetFilesDir() + "/watch";
 		Common::File::CreateDirectories(dir);
 		char name[64];
 		std::snprintf(name, sizeof(name), "/%06llu_%03lld.img",
 		              static_cast<unsigned long long>(Common::Telemetry::g_game_frames.load()),
-		              static_cast<long long>(watch_dump_seen - watch_dump_left));
+		              static_cast<long long>(watch_run ? run_index : watch_dump_seen - watch_dump_left));
 		m_context.GetTextureCache().DebugSaveImageLinear(state.color_info[0].image_id, dir + name);
+		if (watch_run && state.depth_info.image_id) {
+			std::snprintf(name, sizeof(name), "/%06llu_%03lld_d.img",
+			              static_cast<unsigned long long>(Common::Telemetry::g_game_frames.load()),
+			              static_cast<long long>(run_index));
+			m_context.GetTextureCache().DebugSaveImageLinear(state.depth_info.image_id, dir + name);
+		}
 		watch_dump_left--;
 	}
 #endif

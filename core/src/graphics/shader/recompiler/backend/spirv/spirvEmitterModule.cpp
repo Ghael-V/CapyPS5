@@ -833,8 +833,11 @@ void DefineModule(EmitterState& state) {
 		if (state.depth_variable != 0) {
 			state.builder.AddExecutionMode(state.main_func, spv::ExecutionModeDepthReplacing);
 		}
-		// `setprop debug.capy.no_early_z 1` (before shaders compile) never forces early tests.
-		static Common::DebugFlags::CachedValue no_early_z("debug.capy.no_early_z", 0);
+		// Never force early tests by default: on the Adreno, a render pass that mixes early-test
+		// draws that write depth with late-test (kill) draws loses the early draws' depth writes
+		// while its low-resolution Z keeps them, so later draws vanish in 8x8 blocks (Rogue Prince
+		// of Persia). `setprop debug.capy.no_early_z 0` (before shaders compile) re-enables them.
+		static Common::DebugFlags::CachedValue no_early_z("debug.capy.no_early_z", 1);
 		// `debug.capy.force_early_z 1` (before shaders compile) also forces early tests on shaders
 		// that kill pixels: an experiment to tell lost late depth writes apart from other causes.
 		static Common::DebugFlags::CachedValue force_early_z("debug.capy.force_early_z", 0);

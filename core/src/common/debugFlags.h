@@ -186,6 +186,21 @@ inline bool Verbose() {
 	return verbose.Get() != 0;
 }
 
+/** `debug.capy.depthw_log 1`: logs every transfer write into a depth image (tag CapyPS5-DepthW). */
+inline void LogDepthWrite(const char* who, uint64_t addr) {
+	static CachedValue enabled("debug.capy.depthw_log", 0);
+	if (enabled.Get() == 0) {
+		return;
+	}
+#if defined(__ANDROID__)
+	__android_log_print(ANDROID_LOG_WARN, "CapyPS5-DepthW", "%s addr=0x%llx", who,
+	                    static_cast<unsigned long long>(addr));
+#else
+	(void)who;
+	(void)addr;
+#endif
+}
+
 } // namespace Common::DebugFlags
 
 #endif /* COMMON_DEBUG_FLAGS_H */

@@ -1605,6 +1605,7 @@ void TextureCache::ClearImage(CommandBuffer& command, ImageId id, vk::Format for
 		command.Handle().clearColorImage(image.backing.image, vk::ImageLayout::eTransferDstOptimal,
 		                                 &clear.color, 1, &native_range);
 	} else {
+		Common::DebugFlags::LogDepthWrite("ClearDepthStencilImage", image.track_addr);
 		command.Handle().clearDepthStencilImage(image.backing.image,
 		                                        vk::ImageLayout::eTransferDstOptimal,
 		                                        &clear.depthStencil, 1, &native_range);
@@ -1757,7 +1758,9 @@ bool TextureCache::DebugSaveImageLinear(ImageId id, const std::string& path) {
 	}
 	const uint32_t width  = image.info.extent.width;
 	const uint32_t height = image.info.extent.height;
-	const uint32_t bpp    = image.info.bytes_per_block;
+	const bool     is_depth = image.backing.format == vk::Format::eD32Sfloat ||
+	                      image.backing.format == vk::Format::eD32SfloatS8Uint;
+	const uint32_t bpp    = is_depth ? 4u : image.info.bytes_per_block;
 	if (width == 0 || height == 0 || bpp == 0 || bpp > 16) {
 		return false;
 	}
@@ -1770,7 +1773,7 @@ bool TextureCache::DebugSaveImageLinear(ImageId id, const std::string& path) {
 	download.Commit();
 	vk::BufferImageCopy copy {};
 	copy.bufferOffset      = offset;
-	copy.imageSubresource  = {vk::ImageAspectFlagBits::eColor, 0, 0, 1};
+	copy.imageSubresource  = {is_depth ? vk::ImageAspectFlagBits::eDepth : vk::ImageAspectFlagBits::eColor, 0, 0, 1};
 	copy.imageExtent       = vk::Extent3D {width, height, 1};
 	image.Download(std::span {&copy, 1}, download.Handle(), offset, size);
 	const auto format = static_cast<uint32_t>(image.backing.format);
