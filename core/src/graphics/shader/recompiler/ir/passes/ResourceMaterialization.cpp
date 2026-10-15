@@ -436,8 +436,10 @@ bool MaterializeIndirectDescriptor(const ResourcePlan&                         p
 			      (table.Stride() & 3u) != 0u || table.Stride() < indirect.table_record_bytes)))
 				return false;
 			const bool affine = indirect.table_stride != 0u;
+			const bool image_heap = dword_count == 8u && !indirect.pointer_offset;
 			const uint64_t step = indirect.table_maximum ? indirect.table_stride
-			    : affine ? uint64_t {1} << std::countr_zero(indirect.table_stride) : 4u;
+			    : affine ? std::max(uint64_t {1} << std::countr_zero(indirect.table_stride), uint64_t {4})
+			             : 4u;
 			const uint64_t first = ((indirect.table_maximum ? indirect.table_offset
 			    : indirect.table_offset % step) & ~uint64_t {3}) +
 			                       (indirect.table_immediate & ~3u);
@@ -446,10 +448,10 @@ bool MaterializeIndirectDescriptor(const ResourcePlan&                         p
 			const auto count = table_size >= first + 4u
 			    ? std::min((table_size - first - 4u) / step + 1u, domain)
 			    : 0u;
-			if (affine && count > MaxIndirectDescriptorProbes) return false;
+			if (!image_heap && count > MaxIndirectDescriptorProbes) return false;
 			// Affine SMEM offsets wrap in U32 before adding the aligned immediate.
-			// Read only their congruence class; unrestricted image tables retain a bulk read.
-			if (!affine) {
+			// Image heaps retain one bulk snapshot and their absolute byte-offset mapping.
+			if (image_heap) {
 				keys.resize(table_size / 4u);
 				if (!ReadScalarTable(table_base, table_size, 0u, runtime, keys)) return false;
 			}
@@ -458,7 +460,7 @@ bool MaterializeIndirectDescriptor(const ResourcePlan&                         p
 			snapshot.flattened_srt.resize(mapping_offset + 2u, 0u);
 			for (uint32_t word = 0; word < count; ++word) {
 				DescriptorValue candidate {.dword_count = dword_count};
-				const auto table_offset = affine || indirect.pointer_offset
+				const auto table_offset = affine
 				    ? first + word * step : uint64_t {word} * 4u;
 				if (indirect.pointer_offset) {
 					std::array<uint32_t, 2> address {};
@@ -466,11 +468,13 @@ bool MaterializeIndirectDescriptor(const ResourcePlan&                         p
 					    !ReadScalarTable((uint64_t {address[1]} << 32u) | address[0], UINT64_MAX,
 					                     *indirect.pointer_offset, runtime,
 					                     std::span(candidate.dwords).first(read_dwords))) return false;
-				} else if (affine) {
+				} else if (!image_heap) {
 					if (!ReadScalarTable(table_base, table_size, table_offset, runtime,
 					                     std::span(candidate.dwords).first(read_dwords))) return false;
 				} else {
-					std::copy_n(keys.begin() + word, std::min<size_t>(read_dwords, keys.size() - word),
+					const auto table_word = table_offset / 4u;
+					std::copy_n(keys.begin() + table_word,
+					            std::min<size_t>(read_dwords, keys.size() - table_word),
 					            candidate.dwords.begin());
 				}
 				if (!normalize(candidate))
@@ -479,8 +483,9 @@ bool MaterializeIndirectDescriptor(const ResourcePlan&                         p
 				uint32_t ordinal;
 				if (!intern_candidate(candidate, ordinal)) return false;
 				if (ordinal == 0u) continue;
-				snapshot.flattened_srt.resize(mapping_offset + 2u + word, 0u);
-				snapshot.flattened_srt[mapping_offset + 1u + word] = ordinal;
+				const auto mapping_word = image_heap ? table_offset / 4u : word;
+				snapshot.flattened_srt.resize(mapping_offset + 2u + mapping_word, 0u);
+				snapshot.flattened_srt[mapping_offset + 1u + mapping_word] = ordinal;
 			}
 			if (descriptors.size() == children_begin) {
 				snapshot.flattened_srt.resize(mapping_offset);
@@ -883,7 +888,7 @@ static bool BuildResourceSpecialization(const ResourcePlan& program, ResourceSna
 			if (i >= program.info.images.size() && source != nullptr &&
 			    source->indirect_descriptor &&
 			    IsBoundedDescriptorTable(program, *source->indirect_descriptor) &&
-			    source->indirect_descriptor->table_stride == 0u) {
+			    !source->indirect_descriptor->pointer_offset) {
 				const auto& indirect = *source->indirect_descriptor;
 				const size_t mapping = specialization.images[base_index].indirect_mapping_offset;
 				const auto& flat = snapshot.flattened_srt;
