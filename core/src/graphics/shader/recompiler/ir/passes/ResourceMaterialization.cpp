@@ -305,7 +305,7 @@ bool IsBoundedDescriptorTable(const ResourcePlan& program,
                               const DescriptorSource::IndirectDescriptor& indirect) {
 	const auto* table = Source(program, indirect.table_source);
 	return indirect.sources.empty() && !indirect.selector &&
-	       indirect.key_count.IsEmpty() && indirect.workgroup_axis == UINT32_MAX &&
+	       (indirect.key_count.IsEmpty() || indirect.table_maximum) && indirect.workgroup_axis == UINT32_MAX &&
 	       table != nullptr && table->dword_count == 4u;
 }
 
@@ -635,11 +635,19 @@ bool MaterializeIndirectDescriptor(const ResourcePlan&                         p
 			const auto* pointer = indirect.pointer_table ? &*indirect.pointer_table : nullptr;
 			const bool indexed_pointer = pointer != nullptr && pointer->indexed;
 			const auto child_count = pointer != nullptr ? pointer->count : 1u;
+			uint64_t domain = indirect.table_maximum ? uint64_t {*indirect.table_maximum} + 1u
+			                                       : uint64_t {1} << 32u;
+			if (!indirect.key_count.IsEmpty()) {
+				uint32_t key_count = 0u;
+				if (!EvaluateIndirectCount(indirect, runtime, clean, key_count)) return false;
+				domain = std::min(domain, uint64_t {key_count});
+			}
 			if (indexed_pointer &&
 			    (!indirect.table_maximum || table.Type() != 0u || table.SwizzleEnabled() || table.AddTid() ||
 			     table.OutOfBounds() != 0u || (table_base & 3u) != 0u || (table.Stride() & 3u) != 0u ||
 			     uint64_t {indirect.table_immediate} + 8u > table.Stride() ||
-			     *indirect.table_maximum >= table.NumRecords())) return failed("indexed pointer geometry");
+			     domain > table.NumRecords()))
+				return failed("indexed pointer geometry", fmt::format("rows={}", domain));
 			const bool affine = indirect.table_stride != 0u || indexed_pointer;
 			const bool image_heap = dword_count == 8u && pointer == nullptr;
 			const uint64_t step = indexed_pointer ? table.Stride()
@@ -649,8 +657,7 @@ bool MaterializeIndirectDescriptor(const ResourcePlan&                         p
 			const uint64_t first = ((indirect.table_maximum ? indirect.table_offset
 			    : indirect.table_offset % step) & ~uint64_t {3}) +
 			                       (indirect.table_immediate & ~3u);
-			const uint64_t domain = indirect.table_maximum ? uint64_t {*indirect.table_maximum} + 1u
-			                                           : (uint64_t {1} << 32u) / step;
+			if (!indirect.table_maximum) domain /= step;
 			const auto count = table_size >= first + 4u
 			    ? std::min((table_size - first - 4u) / step + 1u, domain)
 			    : 0u;

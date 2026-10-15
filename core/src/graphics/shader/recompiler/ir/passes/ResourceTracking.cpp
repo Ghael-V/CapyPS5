@@ -2977,19 +2977,26 @@ private:
 
 	bool SetExactTableMaximum(Value key, DescriptorSource::IndirectDescriptor& indirect,
 	                          const Inst* handle = nullptr) {
-		uint32_t maximum = 0u;
+		const auto* lane = key.Resolve().TryInstruction();
+		if (lane != nullptr && lane->GetOpcode() != ValueOpcode::ReadFirstLane) lane = nullptr;
+		SelectorDomain result {0u};
 		if (handle != nullptr) {
 			if (handle->Uses().empty()) return false;
 			for (const auto& use: handle->Uses()) {
 				if (ImageOpcodeInfoOf(use.user->GetOpcode()).access == ImageAccess::None) return false;
-				maximum = std::max(maximum, SelectorMaximum(key, {}, 0u,
-				    use.user->Arg(use.user->NumArgs() - 1u)));
+				const auto active = use.user->Arg(use.user->NumArgs() - 1u);
+				if (lane != nullptr) {
+					if (!Implies(active, lane->Arg(1))) return false;
+				} else result.maximum = std::max(result.maximum, SelectorMaximum(key, {}, 0u, active));
 			}
-		} else maximum = SelectorMaximum(key);
-		if (maximum > UINT32_MAX / 4u ||
-		    uint64_t {maximum} * indirect.table_stride + indirect.table_offset > UINT32_MAX)
+		}
+		if (lane != nullptr) result = SelectedFiniteDomain(*lane, handle != nullptr ? lane->Arg(1) : Value {});
+		else if (handle == nullptr) result.maximum = SelectorMaximum(key);
+		if (result.maximum > UINT32_MAX / 4u ||
+		    uint64_t {result.maximum} * indirect.table_stride + indirect.table_offset > UINT32_MAX)
 			return false;
-		indirect.table_maximum = maximum;
+		indirect.table_maximum = result.maximum;
+		indirect.key_count = result.count;
 		return true;
 	}
 
@@ -3525,7 +3532,12 @@ private:
 		       SelectorMaximum(inst->Arg(1), bounds, depth + 1u) <= target;
 	}
 
-	uint32_t FiniteSelectorMaximum(Value value, Value guard) const {
+	struct SelectorDomain {
+		uint32_t maximum = UINT32_MAX;
+		Value count;
+	};
+
+	SelectorDomain FiniteSelectorDomain(Value value, Value guard) const {
 		value = value.Resolve();
 		bool nonnegative = false;
 		if (const auto* root = value.TryInstruction()) {
@@ -3539,31 +3551,55 @@ private:
 				    Implies(guard, Value(use.user))) nonnegative = true;
 			}
 		}
-		std::vector<Value> pending {value};
+		struct Arm { Value value; const Inst* choice = nullptr; bool positive = true; };
+		std::vector<Arm> pending {{value}};
 		std::vector<const Inst*> visited;
 		uint32_t maximum = 0u;
 		bool found = false;
+		bool counted = true;
+		Value count;
 		for (size_t at = 0; at < pending.size(); ++at) {
 			uint32_t literal;
-			const auto current = pending[at].Resolve();
+			const auto current = ActiveValue(pending[at].value, guard);
 			if (ImmediateU32(current, literal)) {
 				if (nonnegative && std::bit_cast<int32_t>(literal) < 0) continue;
 				maximum = std::max(maximum, literal);
 				found = true;
+				if (counted) {
+					Value candidate;
+					if (const auto* choice = pending[at].choice; choice != nullptr) {
+						if (choice->GetOpcode() == ValueOpcode::SelectU32)
+							candidate = UnsignedBound(choice->Arg(0), current, pending[at].positive,
+							    false, pending[at].positive ? choice->Arg(0) : Value {});
+						if (candidate.IsEmpty() && choice->Parent() != nullptr)
+							candidate = UnsignedBoundOnEntry(current, choice->Parent());
+					}
+					if (candidate.IsEmpty() || !ValidateRuntimeValue(m_program, candidate, RuntimeValueType::Integer) ||
+					    (!count.IsEmpty() && !EquivalentValue(m_program, count, candidate))) counted = false;
+					else count = candidate;
+				}
 				continue;
 			}
 			const auto* choice = current.TryInstruction();
-			if (choice == nullptr) return UINT32_MAX;
+			if (choice == nullptr) return {};
 			const bool phi = choice->GetOpcode() == ValueOpcode::Phi;
 			if ((!phi && choice->GetOpcode() != ValueOpcode::SelectU32) ||
 			    (phi && (choice->NumArgs() == 0u || choice->Parent() == nullptr ||
-			             InCycle(choice->Parent())))) return UINT32_MAX;
+			             InCycle(choice->Parent())))) return {};
+			// Each literal uses only its own choice and block-entry proof. A shared
+			// choice therefore cannot borrow a bound from a different parent path.
 			if (std::ranges::find(visited, choice) != visited.end()) continue;
 			visited.push_back(choice);
 			for (size_t arm = phi ? 0u : 1u; arm < choice->NumArgs(); ++arm)
-				pending.push_back(choice->Arg(arm));
+				pending.push_back({choice->Arg(arm), choice, arm == 1u});
 		}
-		return found ? maximum : UINT32_MAX;
+		return found ? SelectorDomain {maximum, counted ? count : Value {}} : SelectorDomain {};
+	}
+
+	SelectorDomain SelectedFiniteDomain(const Inst& lane, Value guard) const {
+		if (guard.IsEmpty() ? !HasActiveLane(lane.Arg(1), lane.Parent())
+		                    : !Implies(guard, lane.Arg(1))) return {};
+		return FiniteSelectorDomain(lane.Arg(0), lane.Arg(1));
 	}
 
 	uint32_t SelectorMaximum(Value value, SelectorBounds bounds = {}, uint32_t depth = 0,
@@ -3580,9 +3616,7 @@ private:
 		};
 		switch (inst->GetOpcode()) {
 			case ValueOpcode::ReadFirstLane:
-				if (guard.IsEmpty() ? !HasActiveLane(inst->Arg(1), inst->Parent())
-				                    : !Implies(guard, inst->Arg(1))) return UINT32_MAX;
-				return FiniteSelectorMaximum(inst->Arg(0), inst->Arg(1));
+				return SelectedFiniteDomain(*inst, guard).maximum;
 			case ValueOpcode::ReadLane:
 				// ReadLane ignores EXEC; only context-free bounds on every source lane apply.
 				return PossibleU32Bits(inst->Arg(0));
