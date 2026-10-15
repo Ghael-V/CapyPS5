@@ -193,6 +193,11 @@ bool     ProtectGuestMemory(uint64_t vaddr, uint64_t size, Common::VirtualMemory
 // Transient PageManager watch state; does not change the guest mapping's semantic protection.
 bool ProtectGuestHostMemory(uint64_t vaddr, uint64_t size, Common::VirtualMemory::Mode mode);
 bool FreeGuestMemory(uint64_t vaddr, uint64_t size);
+// Called after the guest changes page protection (mprotect & co.) so write-tracking can re-apply
+// the watch protection that the new host protection just overwrote.
+using GuestProtectionHook = void (*)(void* context, uint64_t vaddr, uint64_t size,
+                                     Common::VirtualMemory::Mode guest_mode);
+void SetGuestProtectionHook(GuestProtectionHook hook, void* context);
 
 #if defined(KYTY_VIRTUAL_MEMORY_ALLOCATION_TESTS)
 void     TestBeforeNextBackingMap(callback_func_t callback);

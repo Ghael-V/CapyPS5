@@ -533,8 +533,23 @@ std::pair<Buffer*, uint64_t> BufferCache::ObtainBuffer(uint64_t vaddr, uint64_t 
 	// `setprop debug.capy.stream_max <bytes>`: copy CPU-owned read-only buffers up to that size
 	// fresh from guest memory on every use, bypassing page write tracking.
 	static Common::DebugFlags::CachedValue stream_max("debug.capy.stream_max", 0);
-	const bool fresh_copy = !is_written && stream_max.Get() > 0 &&
-	                        size <= static_cast<uint64_t>(stream_max.Get()) &&
+	// `debug.capy.stream_lo/stream_hi`: same, but only for buffers starting in [lo, hi) (bisection).
+	static Common::DebugFlags::CachedValue stream_lo("debug.capy.stream_lo", 0);
+	static Common::DebugFlags::CachedValue stream_hi("debug.capy.stream_hi", 0);
+	const bool in_window = static_cast<int64_t>(vaddr) >= stream_lo.Get() &&
+	                       static_cast<int64_t>(vaddr) < stream_hi.Get() && size <= 4u * 1024 * 1024;
+	// Syncing a cached buffer needs a transfer, which ends the open render pass. On the Adreno the
+	// pass that resumes afterwards loses its depth writes (Dead Cells: wall depth vanished every
+	// third frame and light shafts leaked through). Inside a pass, serve CPU-modified read-only
+	// data fresh from the stream buffer instead; the cached copy syncs later outside a pass.
+	// `debug.capy.in_pass_stream 0` disables this.
+	static Common::DebugFlags::CachedValue in_pass_stream("debug.capy.in_pass_stream", 1);
+	const bool in_pass_fresh = in_pass_stream.Get() != 0 && command.IsRendering() &&
+	                           !is_texel_buffer && size <= 16u * 1024 * 1024 &&
+	                           m_memory_tracker.IsRegionCpuModified(vaddr, size);
+	const bool fresh_copy = !is_written &&
+	                        ((stream_max.Get() > 0 && size <= static_cast<uint64_t>(stream_max.Get())) ||
+	                         in_window || in_pass_fresh) &&
 	                        !m_memory_tracker.IsRegionGpuModified(vaddr, size);
 	if (fresh_copy || (!is_written && size <= CACHING_PAGESIZE &&
 	    !Common::DebugFlags::Enabled(Common::DebugFlags::NoStreamBuffer) &&
@@ -557,7 +572,31 @@ std::pair<Buffer*, uint64_t> BufferCache::ObtainBuffer(uint64_t vaddr, uint64_t 
 	}
 	auto& buffer = m_slot_buffers[id];
 	TouchBuffer(buffer);
+	// `debug.capy.probe_addr <vaddr>`: log tracker state and content hash of that buffer per use.
+	static Common::DebugFlags::CachedValue probe_addr("debug.capy.probe_addr", 0);
+	const bool probe = probe_addr.Get() != 0 && static_cast<uint64_t>(probe_addr.Get()) == vaddr;
+	uint64_t probe_hash = 0;
+	bool     probe_dirty = false;
+	if (probe) {
+		std::vector<uint64_t> words((size + 7) / 8);
+		(void)Libs::LibKernel::Memory::ReadGuestMemory(vaddr, words.data(), size);
+		probe_hash = 1469598103934665603ull;
+		for (const auto w: words) {
+			probe_hash = (probe_hash ^ w) * 1099511628211ull;
+		}
+		probe_dirty = m_memory_tracker.IsRegionCpuModified(vaddr, size);
+	}
 	(void)SynchronizeBuffer(buffer, vaddr, size, is_written, is_texel_buffer);
+	if (probe) {
+		static uint64_t last_hash = 0;
+		__android_log_print(ANDROID_LOG_WARN, "CapyPS5-Probe",
+		    "buf 0x%llx size=%llu id=%u base=0x%llx bsize=%llu dirty=%d hash=%016llx changed=%d",
+		    static_cast<unsigned long long>(vaddr), static_cast<unsigned long long>(size),
+		    static_cast<uint32_t>(id.index), static_cast<unsigned long long>(buffer.CpuAddress()),
+		    static_cast<unsigned long long>(buffer.Size()), probe_dirty ? 1 : 0,
+		    static_cast<unsigned long long>(probe_hash), probe_hash != last_hash ? 1 : 0);
+		last_hash = probe_hash;
+	}
 	if (is_written) {
 		m_gpu_modified_ranges.Add(vaddr, size);
 	}

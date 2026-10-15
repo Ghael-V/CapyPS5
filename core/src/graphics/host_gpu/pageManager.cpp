@@ -279,6 +279,30 @@ struct PageManager::Impl {
 		}
 	}
 
+	// The guest just set `guest_mode` on a range, overwriting any watch protection. Re-apply
+	// the watched pages' protection (never looser than what the guest asked for).
+	void ReapplyWatchProtection(uint64_t vaddr, uint64_t size,
+	                            Common::VirtualMemory::Mode guest_mode) noexcept {
+		using Mode       = Common::VirtualMemory::Mode;
+		const auto begin = Common::AlignDown(vaddr, PAGE_SIZE);
+		const auto end   = Common::AlignUp(vaddr + size, PAGE_SIZE);
+		for (auto page_addr = begin; page_addr < end; page_addr += PAGE_SIZE) {
+			auto* region = FindRegion(page_addr);
+			if (region == nullptr) {
+				continue;
+			}
+			SpinGuard lock(region->lock);
+			const auto index = static_cast<size_t>((page_addr % REGION_SIZE) / PAGE_SIZE);
+			const auto watch = region->pages[index].Perms();
+			if (watch == Mode::ReadWrite) {
+				continue;
+			}
+			const auto bits = static_cast<uint32_t>(guest_mode) &
+			                  (static_cast<uint32_t>(watch) | static_cast<uint32_t>(Mode::Execute));
+			Protect(page_addr, PAGE_SIZE, static_cast<Mode>(bits));
+		}
+	}
+
 	std::unique_ptr<std::atomic<Region*>[]> regions;
 	std::vector<std::unique_ptr<Region>>    region_storage;
 	std::mutex                              region_mutex;
@@ -286,9 +310,17 @@ struct PageManager::Impl {
 
 static_assert(std::atomic<void*>::is_always_lock_free);
 
-PageManager::PageManager(): m_impl(std::make_unique<Impl>()) {}
+PageManager::PageManager(): m_impl(std::make_unique<Impl>()) {
+	Libs::LibKernel::Memory::SetGuestProtectionHook(
+	    [](void* context, uint64_t vaddr, uint64_t size, Common::VirtualMemory::Mode mode) {
+		    static_cast<Impl*>(context)->ReapplyWatchProtection(vaddr, size, mode);
+	    },
+	    m_impl.get());
+}
 
-PageManager::~PageManager() = default;
+PageManager::~PageManager() {
+	Libs::LibKernel::Memory::SetGuestProtectionHook(nullptr, nullptr);
+}
 
 uint64_t PageManager::GetPageSize() const {
 	return PAGE_SIZE;

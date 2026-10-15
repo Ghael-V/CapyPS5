@@ -833,31 +833,38 @@ public:
 	bool MapBacking(uint64_t vaddr, uint64_t size, uint64_t backing_offset,
 	                VirtualMemory::Mode               mode,
 	                GuestBackingStore::FailureReason* failure_reason = nullptr) {
-		std::lock_guard lock(m_mutex);
-#if KYTY_PLATFORM == KYTY_PLATFORM_LINUX
-		const bool replacing = ContainsMappedUnlocked(vaddr, size, MappingType::Backing);
-#else
-		constexpr bool replacing = false;
-#endif
-		if (!replacing && !ConsumeUnlocked(vaddr, size)) {
-			if (failure_reason != nullptr) {
-				*failure_reason = GuestBackingStore::FailureReason::AddressRangeUnavailable;
-			}
-			return false;
-		}
 		const auto host_mode = VirtualMemory::IsExecute(mode)
 		                           ? VirtualMemory::Mode::ExecuteReadWrite
 		                           : VirtualMemory::Mode::ReadWrite;
-		if (m_backing->MapFixed(vaddr, size, backing_offset, host_mode, failure_reason)) {
+		bool replacing = false;
+		{
+			std::lock_guard lock(m_mutex);
+#if KYTY_PLATFORM == KYTY_PLATFORM_LINUX
+			replacing = ContainsMappedUnlocked(vaddr, size, MappingType::Backing);
+#endif
+			if (!replacing && !ConsumeUnlocked(vaddr, size)) {
+				if (failure_reason != nullptr) {
+					*failure_reason = GuestBackingStore::FailureReason::AddressRangeUnavailable;
+				}
+				return false;
+			}
+			if (!m_backing->MapFixed(vaddr, size, backing_offset, host_mode, failure_reason)) {
+				if (!replacing) {
+					AddFreeUnlocked(vaddr, size);
+				}
+				return false;
+			}
 			if (!replacing) {
 				EXIT_IF(!AddMappedUnlocked(vaddr, size, MappingType::Backing));
 			}
-			return true;
 		}
-		if (!replacing) {
-			AddFreeUnlocked(vaddr, size);
-		}
-		return false;
+		// A fixed remap resets host protection to RW, silently dropping write-tracking watches on
+		// pages that were mapped before; re-apply them (outside the lock: the hook protects).
+		Common::DebugFlags::NoteOnce("CapyPS5-Remap", (vaddr >> 12) ^ 0x7265000000000000ull,
+		    "map backing 0x%llx size=0x%llx replacing=%d", static_cast<unsigned long long>(vaddr),
+		    static_cast<unsigned long long>(size), replacing ? 1 : 0);
+		NotifyGuestProtection(vaddr, size, host_mode);
+		return true;
 	}
 
 	bool UnmapBacking(uint64_t vaddr, uint64_t size) {

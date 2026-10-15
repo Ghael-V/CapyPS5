@@ -174,6 +174,7 @@ static callback_func_t g_test_before_backing_map                   = nullptr;
 static callback_func_t g_test_backing_read                         = nullptr;
 #endif
 
+static void NotifyGuestProtection(uint64_t vaddr, uint64_t size, VirtualMemory::Mode mode);
 #include "memoryAddressSpace.inc"
 
 enum class VirtualRangeType {
@@ -3946,8 +3947,23 @@ bool ProtectGuestMemory(uint64_t vaddr, uint64_t size, VirtualMemory::Mode mode,
 	if (!g_guest_address_space->Protect(aligned_addr, aligned_size, mode)) {
 		return false;
 	}
+	NotifyGuestProtection(aligned_addr, aligned_size, mode);
 	g_virtual_ranges->Protect(aligned_addr, aligned_size, ProgramProtection(mode));
 	return true;
+}
+
+static std::atomic<GuestProtectionHook> g_protection_hook {nullptr};
+static std::atomic<void*>               g_protection_hook_context {nullptr};
+
+void SetGuestProtectionHook(GuestProtectionHook hook, void* context) {
+	g_protection_hook_context.store(context, std::memory_order_release);
+	g_protection_hook.store(hook, std::memory_order_release);
+}
+
+static void NotifyGuestProtection(uint64_t vaddr, uint64_t size, VirtualMemory::Mode mode) {
+	if (auto* hook = g_protection_hook.load(std::memory_order_acquire); hook != nullptr) {
+		hook(g_protection_hook_context.load(std::memory_order_acquire), vaddr, size, mode);
+	}
 }
 
 bool ProtectGuestHostMemory(uint64_t vaddr, uint64_t size, VirtualMemory::Mode mode) {
@@ -4012,6 +4028,10 @@ static int ProtectMemory(const void* addr, size_t len, int prot) {
 		     " prot=0x%08x\n",
 		     aligned_addr, aligned_len, prot);
 	}
+	Common::DebugFlags::NoteOnce("CapyPS5-Mprotect", (aligned_addr >> 12) ^ 0x6d70000000000000ull,
+	    "guest mprotect 0x%llx size=0x%llx prot=0x%x", static_cast<unsigned long long>(aligned_addr),
+	    static_cast<unsigned long long>(aligned_len), prot);
+	NotifyGuestProtection(aligned_addr, aligned_len, mode);
 	for (const auto& old_range: old_ranges) {
 		if (old_range.type == VirtualRangeType::Direct) {
 			g_physical_memory->ProtectMapping(old_range.start, old_range.size, prot, mode,

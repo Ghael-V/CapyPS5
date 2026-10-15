@@ -1030,6 +1030,9 @@ static PreparedIndexBuffer PrepareIndexBuffer(CommandBuffer&               buffe
 		prepared.offset = stream.Copy(source.host_data, source.size, 16);
 		prepared.buffer = stream.Handle();
 	} else {
+		Common::DebugFlags::FrameTrace("    ib 0x%llx size=%llu",
+		                               static_cast<unsigned long long>(source.address),
+		                               static_cast<unsigned long long>(source.size));
 		auto [buffer_ptr, offset] =
 		    buffer.GetContext().GetBufferCache().ObtainBuffer(source.address, source.size, false);
 		prepared.buffer = buffer_ptr->Handle();
