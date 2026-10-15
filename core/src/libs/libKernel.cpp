@@ -30,6 +30,11 @@
 #include <array>
 #include <atomic>
 #include <bit>
+#if defined(__ANDROID__)
+#include <dlfcn.h>
+#include <pthread.h>
+#include <unistd.h>
+#endif
 #include <chrono>
 #include <cstddef>
 #include <cstdio>
@@ -1146,11 +1151,42 @@ void KernelDispatchPendingSignalForCurrentThread() {
 		return;
 	}
 
-	for (int signum = 0; signum < 64; signum++) {
+	// Called after every HLE call and wait poll: read the mask once instead of 64 atomic RMWs.
+	uint64_t pending = PthreadPendingSignalMask(current);
+	while (pending != 0) {
+		const int signum = std::countr_zero(pending);
+		pending &= pending - 1;
 		if (!PthreadTakePendingSignal(current, signum)) {
 			continue;
 		}
 		g_pending_guest_signals.fetch_sub(1, std::memory_order_relaxed);
+#if defined(__ANDROID__)
+		// `debug.capy.hle_stats 1`: report signals (Unity GC suspend requests) delivered late,
+		// with the HLE call this thread was blocked in (offset into the library, for addr2line).
+		static Common::DebugFlags::CachedValue late_log("debug.capy.hle_stats", 0);
+		if (late_log.Get() != 0) {
+			const auto queued = PthreadPendingSignalQueuedNs(current);
+			const auto now    = std::chrono::duration_cast<std::chrono::nanoseconds>(
+			                     std::chrono::steady_clock::now().time_since_epoch())
+			                     .count();
+			if (queued != 0 && now - queued > 100000000) {
+				Dl_info info {};
+				const auto base = dladdr(reinterpret_cast<void*>(&KernelDispatchPendingSignalForCurrentThread),
+				                         &info) != 0
+				                      ? reinterpret_cast<uint64_t>(info.dli_fbase)
+				                      : 0;
+				char name[32] = {};
+				pthread_getname_np(pthread_self(), name, sizeof(name));
+				__android_log_print(ANDROID_LOG_WARN, "CapyPS5-Signal",
+				                    "late signal %d on tid %d [%s]: %lld ms, polled from +0x%llx after hle +0x%llx",
+				                    signum, static_cast<int>(gettid()), name,
+				                    static_cast<long long>((now - queued) / 1000000),
+				                    static_cast<unsigned long long>(
+				                        reinterpret_cast<uint64_t>(__builtin_return_address(0)) - base),
+				                    static_cast<unsigned long long>(Cpu::LastHleFunction() - base));
+			}
+		}
+#endif
 
 		if (auto* handler = g_exception_handlers[signum]; handler != nullptr) {
 			InvokeGuestSignalHandler(handler, signum, current);

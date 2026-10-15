@@ -25,6 +25,7 @@
 #include <ucontext.h>
 #endif
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cstdlib>
@@ -61,6 +62,116 @@ namespace Libs::LibKernel {
 bool KernelHasPendingSignals();
 void KernelDispatchPendingSignalForCurrentThread();
 } // namespace Libs::LibKernel
+
+namespace {
+// `setprop debug.capy.hle_stats 1`: per (thread, HLE function) call count and time spent inside,
+// logged every 3 s under CapyPS5-Hle (function as offset into the library, for addr2line).
+struct HleStat {
+	uint64_t func  = 0;
+	int      tid   = 0;
+	uint64_t calls = 0;
+	uint64_t ns    = 0;
+};
+// Call each thread is currently inside (logged with the stats, to catch calls that block long).
+struct HleInFlight {
+	std::atomic<uint64_t> func {0};
+	std::atomic<int64_t>  start_ns {0};
+	int                   tid = 0;
+};
+std::mutex                g_hle_inflight_mutex;
+std::vector<HleInFlight*> g_hle_inflight;
+
+HleInFlight& CurrentHleInFlight() {
+	thread_local HleInFlight* slot = [] {
+		auto* created = new HleInFlight;
+		created->tid  = static_cast<int>(gettid());
+		std::lock_guard lock(g_hle_inflight_mutex);
+		g_hle_inflight.push_back(created);
+		return created;
+	}();
+	return *slot;
+}
+
+int64_t HleNowNs() {
+	return std::chrono::duration_cast<std::chrono::nanoseconds>(
+	           std::chrono::steady_clock::now().time_since_epoch())
+	    .count();
+}
+
+thread_local uint64_t t_last_hle_func = 0;
+
+std::mutex           g_hle_stats_mutex;
+std::vector<HleStat> g_hle_stats;
+int64_t              g_hle_stats_next_ms = 0;
+
+bool HleStatsEnabled() {
+	static Common::DebugFlags::CachedValue enabled("debug.capy.hle_stats", 0);
+	return enabled.Get() != 0;
+}
+
+void HleStatsRecord(uint64_t func, uint64_t ns) {
+	const int tid = static_cast<int>(gettid());
+	std::lock_guard lock(g_hle_stats_mutex);
+	bool found = false;
+	for (auto& stat: g_hle_stats) {
+		if (stat.func == func && stat.tid == tid) {
+			stat.calls++;
+			stat.ns += ns;
+			found = true;
+			break;
+		}
+	}
+	if (!found && g_hle_stats.size() < 4096) {
+		g_hle_stats.push_back({func, tid, 1, ns});
+	}
+	const auto now = std::chrono::duration_cast<std::chrono::milliseconds>(
+	                     std::chrono::steady_clock::now().time_since_epoch())
+	                     .count();
+	if (g_hle_stats_next_ms == 0) {
+		g_hle_stats_next_ms = now + 3000;
+	}
+	if (now < g_hle_stats_next_ms) {
+		return;
+	}
+	g_hle_stats_next_ms = now + 3000;
+	std::sort(g_hle_stats.begin(), g_hle_stats.end(),
+	          [](const HleStat& a, const HleStat& b) { return a.ns > b.ns; });
+	Dl_info info {};
+	const auto base = dladdr(reinterpret_cast<void*>(&HleStatsRecord), &info) != 0
+	                      ? reinterpret_cast<uint64_t>(info.dli_fbase)
+	                      : 0;
+	for (size_t n = 0; n < g_hle_stats.size() && n < 25; n++) {
+		const auto& stat = g_hle_stats[n];
+		char name[32] = {};
+		char path[64];
+		std::snprintf(path, sizeof(path), "/proc/self/task/%d/comm", stat.tid);
+		if (auto* file = std::fopen(path, "r"); file != nullptr) {
+			if (std::fgets(name, sizeof(name), file) != nullptr) {
+				name[std::strcspn(name, "\n")] = 0;
+			}
+			std::fclose(file);
+		}
+		__android_log_print(ANDROID_LOG_WARN, "CapyPS5-Hle", "tid %d [%s] fn +0x%llx calls %llu ms %.1f",
+		                    stat.tid, name, static_cast<unsigned long long>(stat.func - base),
+		                    static_cast<unsigned long long>(stat.calls), static_cast<double>(stat.ns) / 1e6);
+	}
+	{
+		const auto now_ns = HleNowNs();
+		std::lock_guard inflight_lock(g_hle_inflight_mutex);
+		for (const auto* slot: g_hle_inflight) {
+			const auto func  = slot->func.load(std::memory_order_relaxed);
+			const auto start = slot->start_ns.load(std::memory_order_relaxed);
+			if (func != 0 && now_ns - start > 100000000) {
+				__android_log_print(ANDROID_LOG_WARN, "CapyPS5-Hle", "in flight: tid %d fn +0x%llx for %.0f ms",
+				                    slot->tid, static_cast<unsigned long long>(func - base),
+				                    static_cast<double>(now_ns - start) / 1e6);
+			}
+		}
+	}
+	__android_log_print(ANDROID_LOG_WARN, "CapyPS5-Hle", "----");
+	g_hle_stats.clear();
+}
+} // namespace
 
 namespace Cpu {
 
@@ -281,8 +392,24 @@ public:
 			saved.fs_cached = state.fs_cached;
 			saved.gs_cached = state.gs_cached;
 			saved.callret_sp = state.callret_sp;
+			const bool hle_stats = HleStatsEnabled();
+			auto&      in_flight = CurrentHleInFlight();
+			const auto outer_func  = in_flight.func.load(std::memory_order_relaxed);
+			const auto outer_start = in_flight.start_ns.load(std::memory_order_relaxed);
+			in_flight.start_ns.store(HleNowNs(), std::memory_order_relaxed);
+			in_flight.func.store(host_func, std::memory_order_relaxed);
+			const auto hle_start = hle_stats ? std::chrono::steady_clock::now()
+			                                 : std::chrono::steady_clock::time_point {};
 			uint64_t ret = fn(a0, a1, a2, a3, a4, a5, a6, a7,
 			                  a8, a9, a10, a11, a12, a13, a14, a15);
+			t_last_hle_func = host_func;
+			in_flight.func.store(outer_func, std::memory_order_relaxed);
+			in_flight.start_ns.store(outer_start, std::memory_order_relaxed);
+			if (hle_stats) {
+				HleStatsRecord(host_func, static_cast<uint64_t>(
+				    std::chrono::duration_cast<std::chrono::nanoseconds>(
+				        std::chrono::steady_clock::now() - hle_start).count()));
+			}
 			if (s_nested_guest_runs != runs_before) {
 				static std::atomic<uint32_t> restored_log {0};
 				if (restored_log.fetch_add(1) < 8) {
@@ -798,4 +925,10 @@ CpuBackend* CpuBackend::Instance() {
 #endif
 }
 
+} // namespace Cpu
+
+namespace Cpu {
+uint64_t LastHleFunction() {
+	return t_last_hle_func;
+}
 } // namespace Cpu

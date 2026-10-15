@@ -4,6 +4,7 @@
 
 #include <atomic>
 #include <cerrno>
+#include <algorithm>
 #include <chrono>             // IWYU pragma: keep
 #include <condition_variable> // IWYU pragma: keep
 #include <mutex>
@@ -350,8 +351,30 @@ bool CondVar::WaitFor(Mutex* mutex, uint32_t micros) {
 	           0 &&
 	       GetLastError() == ERROR_TIMEOUT);
 #else
-	ok = (m_cond_var->m_cv.wait_for(cpp_lock, std::chrono::microseconds(micros)) ==
-	      std::cv_status::no_timeout);
+	if (g_cond_wait_poll_callback == nullptr) {
+		ok = (m_cond_var->m_cv.wait_for(cpp_lock, std::chrono::microseconds(micros)) ==
+		      std::cv_status::no_timeout);
+	} else {
+		// Wait in 10 ms slices and poll between them, as Wait() does: a guest thread in a long
+		// timed wait must still take its pending signals (Unity's GC suspends every thread and
+		// froze Blasphemous for up to the wait's whole timeout).
+		const auto deadline = std::chrono::steady_clock::now() + std::chrono::microseconds(micros);
+		for (;;) {
+			const auto now = std::chrono::steady_clock::now();
+			if (now >= deadline) {
+				break;
+			}
+			const auto slice = std::min<std::chrono::steady_clock::duration>(
+			    deadline - now, std::chrono::milliseconds(10));
+			if (m_cond_var->m_cv.wait_for(cpp_lock, slice) == std::cv_status::no_timeout) {
+				ok = true;
+				break;
+			}
+			cpp_lock.unlock();
+			g_cond_wait_poll_callback();
+			cpp_lock.lock();
+		}
+	}
 	cpp_lock.release();
 #endif
 	return ok;

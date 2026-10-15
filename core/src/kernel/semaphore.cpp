@@ -1,6 +1,7 @@
 #include "kernel/semaphore.h"
 
 #include "common/assert.h"
+#include "common/debugFlags.h"
 #include "common/logging/log.h"
 #include "common/stringUtils.h"
 #include "common/threads.h"
@@ -13,6 +14,11 @@
 #include <limits>
 #include <unordered_map>
 #include <vector>
+
+#if defined(__ANDROID__)
+#include <android/log.h>
+#include <unistd.h>
+#endif
 
 namespace Libs::LibKernel {
 void KernelDispatchPendingSignalForCurrentThread();
@@ -55,6 +61,7 @@ private:
 		int    need_count = 0;
 		Result result     = Result::TimedOut;
 		bool   ready      = false;
+		uint32_t logged   = 0;
 	};
 
 	void AddWaiter(WaitingThread* waiter);
@@ -180,6 +187,11 @@ void KernelSemaPrivate::WakeWaiters() {
 	}
 }
 
+static bool HleWaitLogEnabled() {
+	static Common::DebugFlags::CachedValue enabled("debug.capy.hle_stats", 0);
+	return enabled.Get() != 0;
+}
+
 KernelSemaPrivate::Result KernelSemaPrivate::Wait(int need_count, uint32_t* ptr_micros) {
 	Common::LockGuard lock(m_mutex);
 
@@ -240,6 +252,19 @@ KernelSemaPrivate::Result KernelSemaPrivate::Wait(int need_count, uint32_t* ptr_
 		m_mutex.Lock();
 
 		elapsed = static_cast<uint32_t>(t.GetTimeS() * 1000000.0);
+#if defined(__ANDROID__)
+		// `debug.capy.hle_stats 1` also reports waits longer than 2 s (lost wakeup hunting).
+		if (Common::DebugFlags::Verbose() || HleWaitLogEnabled()) {
+			const auto waited_s = elapsed / 2000000u;
+			if (waited_s != 0 && waited_s != waiter.logged) {
+				waiter.logged = waited_s;
+				__android_log_print(ANDROID_LOG_WARN, "CapyPS5-Sema",
+				                    "tid %d waits '%s' need=%d count=%d waiters=%zu for %u ms",
+				                    static_cast<int>(gettid()), m_name.c_str(), need_count, m_count,
+				                    m_waiting_threads.size(), elapsed / 1000u);
+			}
+		}
+#endif
 	}
 
 	RemoveWaiter(&waiter);

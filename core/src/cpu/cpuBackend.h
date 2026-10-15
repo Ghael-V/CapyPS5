@@ -19,6 +19,9 @@ using pthread_entry_func_t = KYTY_SYSV_ABI void* (*)(void*);
 
 namespace Cpu {
 
+/** Host address of the last HLE function the current thread returned from (diagnostics). */
+uint64_t LastHleFunction();
+
 enum class BackendType {
 	Native,      // Direct x86_64 host execution (PC)
 	Dynarec,     // Dynamic binary translation (FEXCore / ARM64 JIT)

@@ -422,6 +422,7 @@ struct PthreadPrivate {
 	uint64_t              cond_sequence = 0;
 	std::condition_variable cond_cv;
 	std::atomic<uint64_t> pending_signal_mask {0};
+	std::atomic<int64_t>  pending_signal_queued_ns {0};
 #if KYTY_PLATFORM == KYTY_PLATFORM_WINDOWS
 	uintptr_t guest_host_gs8;
 	uintptr_t guest_host_gs10;
@@ -3116,8 +3117,17 @@ void PthreadQueuePendingSignal(Pthread thread, int signum) {
 		return;
 	}
 
+	thread->pending_signal_queued_ns.store(
+	    std::chrono::duration_cast<std::chrono::nanoseconds>(
+	        std::chrono::steady_clock::now().time_since_epoch())
+	        .count(),
+	    std::memory_order_relaxed);
 	thread->pending_signal_mask.fetch_or(1ull << static_cast<uint32_t>(signum),
 	                                     std::memory_order_release);
+}
+
+int64_t PthreadPendingSignalQueuedNs(Pthread thread) {
+	return thread == nullptr ? 0 : thread->pending_signal_queued_ns.load(std::memory_order_relaxed);
 }
 
 bool PthreadHasPendingSignal(Pthread thread, int signum) {
@@ -3127,6 +3137,10 @@ bool PthreadHasPendingSignal(Pthread thread, int signum) {
 
 	const auto mask = 1ull << static_cast<uint32_t>(signum);
 	return (thread->pending_signal_mask.load(std::memory_order_acquire) & mask) != 0;
+}
+
+uint64_t PthreadPendingSignalMask(Pthread thread) {
+	return thread == nullptr ? 0 : thread->pending_signal_mask.load(std::memory_order_acquire);
 }
 
 bool PthreadTakePendingSignal(Pthread thread, int signum) {
