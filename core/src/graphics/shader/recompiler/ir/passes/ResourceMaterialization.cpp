@@ -398,19 +398,13 @@ bool MaterializeIndirectDescriptor(const ResourcePlan&                         p
 	uint64_t table_size = UINT64_MAX; // Scalar addresses have no buffer descriptor bounds.
 	const auto normalization_failed = [&](uint64_t offset, uint32_t key, uint64_t step,
 	                                      std::string_view key_kind) {
-		if (!sources.empty())
-			return SpecializationFail(fmt::format(
-			    "indirect candidate resource={} source_entry={} source={}",
-			    resource_index, key, sources[key]));
 		return SpecializationFail(fmt::format(
 		    "indirect candidate resource={} table_source={} table_base={:#x} table_size={} "
-		    "{}={:#x} {}={} stride={} step={} maximum={} offset={} immediate={} pointee_offset={}",
+		    "candidate_offset={:#x} {}={} stride={} step={} maximum={} offset={} immediate={}",
 		    resource_index, indirect.table_source, table_base & AddressMask & ~uint64_t {3}, table_size,
-		    indirect.pointer_offset ? "pointer_row_offset" : "candidate_offset", offset & ~uint64_t {3},
-		    key_kind, key, indirect.table_stride, step,
+		    offset & ~uint64_t {3}, key_kind, key, indirect.table_stride, step,
 		    indirect.table_maximum ? fmt::format("{}", *indirect.table_maximum) : "none",
-		    indirect.table_offset, indirect.table_immediate,
-		    indirect.pointer_offset ? fmt::format("{}", *indirect.pointer_offset) : "none"));
+		    indirect.table_offset, indirect.table_immediate));
 	};
 	if (sources.empty()) {
 		keys.clear();
