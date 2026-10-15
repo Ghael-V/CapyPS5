@@ -2,7 +2,14 @@
 
 #include "common/assert.h"
 #include "common/common.h"
+#if defined(__ANDROID__)
+#include <android/log.h>
+#endif
 #include "common/debugFlags.h"
+#if defined(__ANDROID__)
+#include "android/capyps5_jni.h"
+#endif
+#include "common/file.h"
 #include "common/passInspector.h"
 #include "common/telemetry.h"
 #include "common/emulatorConfig.h"
@@ -1307,6 +1314,46 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 			                               ok ? 1 : 0);
 		}
 	}
+	// `setprop debug.capy.watch_ps 0x<ps>`: one line per draw of that pixel shader (no frame trace)
+	// with its user data, the memory its SRT pointer s[28:29] reaches and its images, so frames
+	// that render wrong can be told apart. Tag CapyPS5-Watch.
+	static Common::DebugFlags::CachedValue watch_ps("debug.capy.watch_ps", 0);
+	if (state.ps_active && watch_ps.Get() != 0 &&
+	    static_cast<uint64_t>(watch_ps.Get()) == buffer.GetShaders().GetPs().ps_regs.data_addr) {
+		const auto& sgpr = buffer.GetShaders().GetPs().ps_user_sgpr;
+		auto hash_mem = [](uint64_t addr, uint64_t size) {
+			std::vector<uint32_t> words(size / 4);
+			if (addr == 0 || !Libs::LibKernel::Memory::ReadGuestMemory(addr, words.data(), size)) {
+				return uint64_t {0};
+			}
+			uint64_t h = 1469598103934665603ull;
+			for (const auto w: words) {
+				h = (h ^ w) * 1099511628211ull;
+			}
+			return h;
+		};
+		const uint64_t srt = sgpr.value[28] | (static_cast<uint64_t>(sgpr.value[29] & 0xffffu) << 32u);
+		uint32_t vsharp[12] = {};
+		if (srt != 0) {
+			(void)Libs::LibKernel::Memory::ReadGuestMemory(srt, vsharp, sizeof(vsharp));
+		}
+		std::string line;
+		char        tmp[96];
+		for (int v = 0; v < 3; v++) {
+			const uint64_t base = vsharp[v * 4] | (static_cast<uint64_t>(vsharp[v * 4 + 1] & 0xffffu) << 32u);
+			std::snprintf(tmp, sizeof(tmp), " cb%d=0x%llx:%016llx", v, static_cast<unsigned long long>(base),
+			              static_cast<unsigned long long>(hash_mem(base, 128)));
+			line += tmp;
+		}
+		for (const auto& image: bindings.pixel->images) {
+			std::snprintf(tmp, sizeof(tmp), " img%u@0x%llx", static_cast<uint32_t>(image.image_id.index),
+			              static_cast<unsigned long long>(image.desc.info.data.address));
+			line += tmp;
+		}
+		__android_log_print(ANDROID_LOG_WARN, "CapyPS5-Watch", "f=%llu srt=0x%llx%s",
+		                    static_cast<unsigned long long>(Common::Telemetry::g_game_frames.load()),
+		                    static_cast<unsigned long long>(srt), line.c_str());
+	}
 	PreparedVertexBuffers vertex_bindings;
 	PreparedIndexBuffer   index_binding;
 	if (!mesh_active) {
@@ -1402,6 +1449,12 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 	if (!draw.IsIndexed()) {
 		SetDrawDebugPhase(buffer, submit_id, draw, 0x400u);
 	}
+	// `debug.capy.force_split 1`: end the render pass before every draw (tests whether resuming
+	// a pass is harmful on the host driver).
+	static Common::DebugFlags::CachedValue force_split("debug.capy.force_split", 0);
+	if (force_split.Get() != 0) {
+		m_context.GetCommandScheduler().EndRendering();
+	}
 	m_context.GetCommandScheduler().BeginRendering(rendering);
 	vk_buffer.bindPipeline(vk::PipelineBindPoint::eGraphics, pipeline.pipeline);
 	if (!draw.IsIndexed()) {
@@ -1449,6 +1502,29 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 			}
 		}
 	}
+#if defined(__ANDROID__)
+	// `debug.capy.watch_dump N` with watch_ps: save the first color target of the next N draws of
+	// that pixel shader linearly to <files>/watch/<game frame>_<n>.img (no frame trace needed).
+	static Common::DebugFlags::CachedValue watch_ps_dump("debug.capy.watch_ps", 0);
+	static Common::DebugFlags::CachedValue watch_dump("debug.capy.watch_dump", 0);
+	static int64_t watch_dump_left = 0;
+	static int64_t watch_dump_seen = 0;
+	if (watch_dump.Get() != watch_dump_seen) {
+		watch_dump_seen = watch_dump.Get();
+		watch_dump_left = watch_dump_seen;
+	}
+	if (watch_dump_left > 0 && state.ps_active && state.color_count > 0 &&
+	    static_cast<uint64_t>(watch_ps_dump.Get()) == buffer.GetShaders().GetPs().ps_regs.data_addr) {
+		const auto dir = AndroidGetFilesDir() + "/watch";
+		Common::File::CreateDirectories(dir);
+		char name[64];
+		std::snprintf(name, sizeof(name), "/%06llu_%03lld.img",
+		              static_cast<unsigned long long>(Common::Telemetry::g_game_frames.load()),
+		              static_cast<long long>(watch_dump_seen - watch_dump_left));
+		m_context.GetTextureCache().DebugSaveImageLinear(state.color_info[0].image_id, dir + name);
+		watch_dump_left--;
+	}
+#endif
 	LogDrawPhase(draw.Name(), "DrawComplete");
 	if (!draw.IsIndexed()) {
 		SetDrawDebugPhase(buffer, submit_id, draw, 0x700u);

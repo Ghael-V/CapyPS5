@@ -165,6 +165,8 @@ bool BufferCache::DownloadBufferMemory(Buffer& buffer, uint64_t vaddr, uint64_t 
 	if (copies.empty()) {
 		return false;
 	}
+	Common::DebugFlags::FrameTrace("    download %zu ranges, %llu bytes", copies.size(),
+	                               static_cast<unsigned long long>(total_size));
 
 	auto [mapped, offset] = m_download_buffer.Map(total_size, 64);
 	std::unique_ptr<Buffer> temporary;
@@ -308,6 +310,9 @@ void BufferCache::ReadMemory(uint64_t vaddr, uint64_t size, bool is_write) {
 		// sprite batches rendered from stale CPU data. Clearing after an empty download (unlike
 		// upstream) avoids an endless fault loop on pages with no dirty bytes left.
 		auto& buffer = m_slot_buffers[FindBuffer(vaddr, size)];
+		Common::DebugFlags::FrameTrace("  cpu fault download 0x%llx size=%llu write=%d buffer=0x%llx+%llu",
+		    static_cast<unsigned long long>(vaddr), static_cast<unsigned long long>(size), is_write ? 1 : 0,
+		    static_cast<unsigned long long>(buffer.CpuAddress()), static_cast<unsigned long long>(buffer.Size()));
 		(void)DownloadBufferMemory<false>(buffer, vaddr, size);
 		m_memory_tracker.UnmarkRegionAsGpuModified(vaddr, size);
 		if (is_write) {

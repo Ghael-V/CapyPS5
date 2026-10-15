@@ -1,3 +1,7 @@
+#if defined(__ANDROID__)
+#include <android/log.h>
+#endif
+#include "common/debugFlags.h"
 #include "cpu/cpuBackend.h"
 #include "common/abi.h"
 #include "common/assert.h"
@@ -1263,6 +1267,19 @@ static int KYTY_SYSV_ABI KernelRaiseException(Pthread thread, int signum) {
 		WaitForSignalDispatch(thread, signum);
 		return OK;
 #else
+		// `debug.capy.log_signals 1`: log every raise with its delivery latency (Unity GC pauses).
+		static Common::DebugFlags::CachedValue log_signals("debug.capy.log_signals", 0);
+		const auto raise_start = std::chrono::steady_clock::now();
+		struct RaiseLog {
+			bool enabled; std::chrono::steady_clock::time_point start; int signum;
+			~RaiseLog() {
+				if (enabled) {
+					__android_log_print(ANDROID_LOG_WARN, "CapyPS5-Signal", "raise sig=%d took %lld us", signum,
+					    static_cast<long long>(std::chrono::duration_cast<std::chrono::microseconds>(
+					        std::chrono::steady_clock::now() - start).count()));
+				}
+			}
+		} raise_log {log_signals.Get() != 0, raise_start, signum};
 		// JIT backend: run on the target thread. A thread raising on itself runs the handler
 		// now; otherwise queue it and the target delivers it at its next HLE call or wait poll.
 		if (thread == PthreadSelfOrNull()) {

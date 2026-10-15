@@ -95,6 +95,15 @@ bool ResolveComputeBufferFill(const ShaderComputeInputInfo& input, uint32_t grou
 	const auto element_size = fill.words * sizeof(uint32_t);
 	const auto descriptor =
 	    DecodeNativeDescriptor<ShaderBufferResource>(resources.buffers[fill.resource]);
+	if (Common::DebugFlags::FrameTracing()) {
+		Common::DebugFlags::FrameTrace(
+		    "    fill words=%u stride=%u fmt=%u swz=%d idxstride=%u addtid=%d records=%u threads=%u,%u,%u "
+		    "gstride=%u groups=%u,%u,%u mode=0x%x dtd=%d",
+		    fill.words, descriptor.Stride(), static_cast<uint32_t>(descriptor.Format()),
+		    descriptor.SwizzleEnabled() ? 1 : 0, descriptor.IndexStride(), descriptor.AddTid() ? 1 : 0,
+		    descriptor.NumRecords(), input.threads_num[0], input.threads_num[1], input.threads_num[2],
+		    fill.group_stride[0], group_x, group_y, group_z, mode, input.dispatch_thread_dimensions ? 1 : 0);
+	}
 	constexpr std::array formats {
 	    Prospero::BufferFormat::k32UInt, Prospero::BufferFormat::k32_32UInt,
 	    Prospero::BufferFormat::k32_32_32UInt, Prospero::BufferFormat::k32_32_32_32UInt};

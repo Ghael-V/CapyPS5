@@ -76,6 +76,9 @@ public:
 		std::scoped_lock lock {m_lock};
 		return DownloadImageMemory(id);
 	}
+	// Debug aid: copies mip 0 / layer 0 of an image linearly (as the host stores it) to `path`
+	// once the GPU has run it. File: "CAPYIMG1", width, height, vk format, bytes per texel, data.
+	bool DebugSaveImageLinear(ImageId id, const std::string& path);
 
 private:
 	struct MetaDataInfo {

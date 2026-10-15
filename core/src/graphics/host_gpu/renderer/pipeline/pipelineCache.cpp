@@ -1,3 +1,6 @@
+#if defined(__ANDROID__)
+#include <android/log.h>
+#endif
 #include "graphics/host_gpu/renderer/pipeline/pipelineCache.h"
 
 #include "common/assert.h"
@@ -477,6 +480,17 @@ struct PipelineCache::ProgramCache {
 		    stage_name, options, std::move(translated), entry->second.specialization, push_data_cursor,
 		    entry->second.FunctionCode()));
 		const auto& permutation = entry->second.permutations.back();
+#if defined(__ANDROID__)
+		{
+			static std::atomic<uint32_t> compiles {0};
+			const auto n = compiles.fetch_add(1) + 1;
+			if (n > 200 || entry->second.permutations.size() > 1) {
+				__android_log_print(ANDROID_LOG_WARN, "CapyPS5-Compile",
+				    "compile #%u %s hash=0x%016llx permutations=%zu", n, stage_name,
+				    static_cast<unsigned long long>(options.shader_hash), entry->second.permutations.size());
+			}
+		}
+#endif
 		input_info.stage = {.program = &permutation.program, .resources = &entry->second.resources};
 		permutation.program.bindings.AdvancePushData(push_data_cursor);
 

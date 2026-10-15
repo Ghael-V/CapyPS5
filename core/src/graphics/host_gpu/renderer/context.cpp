@@ -135,6 +135,21 @@ void CommandBuffer::BeginRendering(const RenderState& state) const {
 	        state.num_color_attachments > RENDER_COLOR_ATTACHMENTS_MAX);
 	EndRendering();
 
+	// `debug.capy.full_barrier 1`: a full memory barrier before every render pass (diagnoses
+	// missing synchronization; expensive).
+	static Common::DebugFlags::CachedValue full_barrier("debug.capy.full_barrier", 0);
+	if (full_barrier.Get() != 0) {
+		vk::MemoryBarrier2 barrier {};
+		barrier.srcStageMask  = vk::PipelineStageFlagBits2::eAllCommands;
+		barrier.srcAccessMask = vk::AccessFlagBits2::eMemoryRead | vk::AccessFlagBits2::eMemoryWrite;
+		barrier.dstStageMask  = vk::PipelineStageFlagBits2::eAllCommands;
+		barrier.dstAccessMask = vk::AccessFlagBits2::eMemoryRead | vk::AccessFlagBits2::eMemoryWrite;
+		vk::DependencyInfo dependency {};
+		dependency.memoryBarrierCount = 1;
+		dependency.pMemoryBarriers    = &barrier;
+		Handle().pipelineBarrier2(dependency);
+	}
+
 	std::array<vk::RenderingAttachmentInfo, RENDER_COLOR_ATTACHMENTS_MAX> colors {};
 	for (uint32_t i = 0; i < state.num_color_attachments; i++) {
 		const auto& attachment = state.color_attachments[i];
@@ -170,6 +185,12 @@ void CommandBuffer::BeginRendering(const RenderState& state) const {
 	rendering.pColorAttachments    = colors.data();
 	rendering.pDepthAttachment     = depth_stencil.has_depth ? &depth : nullptr;
 	rendering.pStencilAttachment   = depth_stencil.has_stencil ? &stencil : nullptr;
+	if (Common::DebugFlags::FrameTracing()) {
+		Common::DebugFlags::FrameTrace("  rp begin %ux%u colors=%u depth=%d dclear=%d", state.width,
+		                               state.height, state.num_color_attachments,
+		                               state.depth_stencil_attachment.has_depth ? 1 : 0,
+		                               state.depth_stencil_attachment.depth_clear ? 1 : 0);
+	}
 	Handle().beginRendering(rendering);
 	m_render_state = state;
 	m_rendering    = true;
@@ -178,6 +199,9 @@ void CommandBuffer::BeginRendering(const RenderState& state) const {
 void CommandBuffer::EndRendering() const {
 	if (!m_rendering) {
 		return;
+	}
+	if (Common::DebugFlags::FrameTracing()) {
+		Common::DebugFlags::FrameTrace("  rp end (caller %p)", __builtin_return_address(0));
 	}
 	Handle().endRendering();
 	m_rendering    = false;

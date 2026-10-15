@@ -1749,6 +1749,45 @@ bool BufferCache::SynchronizeBufferFromImage(Buffer& buffer, uint64_t vaddr, uin
 	return true;
 }
 
+bool TextureCache::DebugSaveImageLinear(ImageId id, const std::string& path) {
+	std::scoped_lock lock {m_lock};
+	auto& image = m_slot_images[id];
+	if (image.depth_id || image.backing.image == nullptr || image.info.samples != 1) {
+		return false;
+	}
+	const uint32_t width  = image.info.extent.width;
+	const uint32_t height = image.info.extent.height;
+	const uint32_t bpp    = image.info.bytes_per_block;
+	if (width == 0 || height == 0 || bpp == 0 || bpp > 16) {
+		return false;
+	}
+	const uint64_t size     = static_cast<uint64_t>(width) * height * bpp;
+	auto&          download = m_buffer_cache.GetUtilityBuffer(MemoryUsage::Download);
+	auto [mapped, offset]   = download.Map(size, 16);
+	if (mapped == nullptr) {
+		return false;
+	}
+	download.Commit();
+	vk::BufferImageCopy copy {};
+	copy.bufferOffset      = offset;
+	copy.imageSubresource  = {vk::ImageAspectFlagBits::eColor, 0, 0, 1};
+	copy.imageExtent       = vk::Extent3D {width, height, 1};
+	image.Download(std::span {&copy, 1}, download.Handle(), offset, size);
+	const auto format = static_cast<uint32_t>(image.backing.format);
+	m_scheduler.DeferPriorityOperation([&download, mapped, offset, size, width, height, format, bpp,
+	                                    path] {
+		download.Invalidate(offset, size);
+		if (auto* out = std::fopen(path.c_str(), "wb"); out != nullptr) {
+			const uint32_t header[4] = {width, height, format, bpp};
+			std::fwrite("CAPYIMG1", 1, 8, out);
+			std::fwrite(header, sizeof(header), 1, out);
+			std::fwrite(mapped, 1, size, out);
+			std::fclose(out);
+		}
+	});
+	return true;
+}
+
 bool TextureCache::DownloadImageMemory(ImageId id) {
 	auto& image = m_slot_images[id];
 	if (image.depth_id) {
