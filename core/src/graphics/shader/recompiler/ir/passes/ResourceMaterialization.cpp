@@ -260,7 +260,13 @@ bool NormalizeIndirectBuffer(DescriptorValue& value, bool indexed, const BufferR
 	}
 	if (descriptor.SwizzleEnabled() || descriptor.AddTid() ||
 	    descriptor.OutOfBounds() != (indexed ? 0u : 3u)) {
-		return SpecializationFail("indirect buffers require exact linear index or byte bounds");
+		return SpecializationFail(fmt::format(
+		    "indirect buffers require exact linear index or byte bounds: "
+		    "descriptor={:08x},{:08x},{:08x},{:08x} swizzle={} add_tid={} oob={} "
+		    "indexed={} formatted={} read={} written={} max_extent={}",
+		    value.dwords[0], value.dwords[1], value.dwords[2], value.dwords[3],
+		    descriptor.SwizzleEnabled(), descriptor.AddTid(), descriptor.OutOfBounds(), indexed,
+		    resource.formatted, resource.read, resource.written, resource.max_byte_extent));
 	}
 	if (resource.formatted) {
 		const auto format = Format::GetFormatInfo(descriptor.Format());
@@ -390,6 +396,22 @@ bool MaterializeIndirectDescriptor(const ResourcePlan&                         p
 	};
 	uint64_t table_base = 0;
 	uint64_t table_size = UINT64_MAX; // Scalar addresses have no buffer descriptor bounds.
+	const auto normalization_failed = [&](uint64_t offset, uint32_t key, uint64_t step,
+	                                      std::string_view key_kind) {
+		if (!sources.empty())
+			return SpecializationFail(fmt::format(
+			    "indirect candidate resource={} source_entry={} source={}",
+			    resource_index, key, sources[key]));
+		return SpecializationFail(fmt::format(
+		    "indirect candidate resource={} table_source={} table_base={:#x} table_size={} "
+		    "{}={:#x} {}={} stride={} step={} maximum={} offset={} immediate={} pointee_offset={}",
+		    resource_index, indirect.table_source, table_base & AddressMask & ~uint64_t {3}, table_size,
+		    indirect.pointer_offset ? "pointer_row_offset" : "candidate_offset", offset & ~uint64_t {3},
+		    key_kind, key, indirect.table_stride, step,
+		    indirect.table_maximum ? fmt::format("{}", *indirect.table_maximum) : "none",
+		    indirect.table_offset, indirect.table_immediate,
+		    indirect.pointer_offset ? fmt::format("{}", *indirect.pointer_offset) : "none"));
+	};
 	if (sources.empty()) {
 		keys.clear();
 		DescriptorValue material_value;
@@ -442,20 +464,24 @@ bool MaterializeIndirectDescriptor(const ResourcePlan&                         p
 			snapshot.flattened_srt.resize(mapping_offset + 2u, 0u);
 			for (uint32_t word = 0; word < count; ++word) {
 				DescriptorValue candidate {.dword_count = dword_count};
+				const auto table_offset = affine || indirect.pointer_offset
+				    ? first + word * step : uint64_t {word} * 4u;
 				if (indirect.pointer_offset) {
 					std::array<uint32_t, 2> address {};
-					if (!ReadScalarTable(table_base, table_size, first + word * step, runtime, address) ||
+					if (!ReadScalarTable(table_base, table_size, table_offset, runtime, address) ||
 					    !ReadScalarTable((uint64_t {address[1]} << 32u) | address[0], UINT64_MAX,
 					                     *indirect.pointer_offset, runtime,
 					                     std::span(candidate.dwords).first(dword_count))) return false;
 				} else if (affine) {
-					if (!ReadScalarTable(table_base, table_size, first + word * step, runtime,
+					if (!ReadScalarTable(table_base, table_size, table_offset, runtime,
 					                     std::span(candidate.dwords).first(dword_count))) return false;
 				} else {
 					std::copy_n(keys.begin() + word, std::min<size_t>(dword_count, keys.size() - word),
 					            candidate.dwords.begin());
 				}
-				if (!normalize(candidate)) return false;
+				if (!normalize(candidate))
+					return normalization_failed(table_offset, word, step,
+					                            indirect.table_maximum ? "key" : "probe");
 				uint32_t ordinal;
 				if (!intern_candidate(candidate, ordinal)) return false;
 				if (ordinal == 0u) continue;
@@ -669,12 +695,12 @@ bool MaterializeIndirectDescriptor(const ResourcePlan&                         p
 	snapshot.flattened_srt[mapping_offset] = static_cast<uint32_t>(key_count);
 	for (uint32_t entry = 0; entry < key_count; ++entry) {
 		const auto key = sources.empty() ? keys[entry] : entry;
+		uint64_t table_offset = 0;
 		DescriptorValue candidate;
 		candidate.dword_count = dword_count;
 		if (sources.empty()) {
-			const uint64_t table_offset =
-			    uint64_t {(key * indirect.table_stride + indirect.table_offset) & ~3u} +
-			    (indirect.table_immediate & ~3u);
+			table_offset = uint64_t {(key * indirect.table_stride + indirect.table_offset) & ~3u} +
+			               (indirect.table_immediate & ~3u);
 			if (!ReadScalarTable(table_base, table_size, table_offset, runtime,
 			                     std::span(candidate.dwords).first(dword_count))) {
 				return false;
@@ -682,7 +708,8 @@ bool MaterializeIndirectDescriptor(const ResourcePlan&                         p
 		} else if (!clean.EvaluateDescriptor(sources[entry], candidate)) {
 			return false;
 		}
-		if (!normalize(candidate)) return false;
+		if (!normalize(candidate))
+			return normalization_failed(table_offset, key, indirect.table_stride, "key");
 		uint32_t ordinal = 0;
 		if (entry == 0) {
 			descriptors[resource_index] = candidate;
