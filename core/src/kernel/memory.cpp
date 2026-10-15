@@ -4028,9 +4028,6 @@ static int ProtectMemory(const void* addr, size_t len, int prot) {
 		     " prot=0x%08x\n",
 		     aligned_addr, aligned_len, prot);
 	}
-	Common::DebugFlags::NoteOnce("CapyPS5-Mprotect", (aligned_addr >> 12) ^ 0x6d70000000000000ull,
-	    "guest mprotect 0x%llx size=0x%llx prot=0x%x", static_cast<unsigned long long>(aligned_addr),
-	    static_cast<unsigned long long>(aligned_len), prot);
 	NotifyGuestProtection(aligned_addr, aligned_len, mode);
 	for (const auto& old_range: old_ranges) {
 		if (old_range.type == VirtualRangeType::Direct) {

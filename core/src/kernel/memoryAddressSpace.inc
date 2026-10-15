@@ -869,9 +869,6 @@ public:
 		}
 		// A fixed remap resets host protection to RW, silently dropping write-tracking watches on
 		// pages that were mapped before; re-apply them (outside the lock: the hook protects).
-		Common::DebugFlags::NoteOnce("CapyPS5-Remap", (vaddr >> 12) ^ 0x7265000000000000ull,
-		    "map backing 0x%llx size=0x%llx replacing=%d", static_cast<unsigned long long>(vaddr),
-		    static_cast<unsigned long long>(size), replacing ? 1 : 0);
 		NotifyGuestProtection(vaddr, size, host_mode);
 		return true;
 	}

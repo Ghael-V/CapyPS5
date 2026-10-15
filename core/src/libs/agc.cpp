@@ -1,3 +1,4 @@
+#include "common/debugFlags.h"
 #include "libs/agc.h"
 
 #include "common/assert.h"
@@ -2106,7 +2107,9 @@ uint32_t* KYTY_SYSV_ABI AgcCbReleaseMem(CommandBuffer* buf, uint8_t action, uint
 
 	auto address_value = reinterpret_cast<uint64_t>(address);
 	auto packet_data   = data;
-	if ((data_sel & 0x7u) == 0u || address == nullptr) {
+	// A null address is legal: Unity fills it later with QueueEndOfPipeActionPatchAddress, so the
+	// data must survive (zeroing it made every such release write 0 and its wait time out).
+	if ((data_sel & 0x7u) == 0u) {
 		address_value = 0;
 		packet_data   = 0;
 	} else if ((data_sel & 0x7u) == 5u) {
@@ -3894,6 +3897,9 @@ int KYTY_SYSV_ABI AgcWaitRegMemPatchReference(uint32_t* cmd, uint64_t reference)
 	if (wait == nullptr) {
 		return GRAPHICS5_ERROR_INVALID_PACKET;
 	}
+	Common::DebugFlags::NoteOnce("CapyPS5-Agc", 0x5752000000000000ull | (reference & 0xffffu),
+	    "WaitRegMemPatchReference cmd=0x%llx ref=0x%llx", static_cast<unsigned long long>(reinterpret_cast<uint64_t>(cmd)),
+	    static_cast<unsigned long long>(reference));
 
 	// The native patch helper changes only the low reference DWORD for both packet sizes.
 	wait[4] = static_cast<uint32_t>(reference);
@@ -3948,6 +3954,9 @@ int KYTY_SYSV_ABI AgcQueueEndOfPipeActionPatchData(uint32_t* cmd, uint64_t data)
 	}
 
 	const auto data_sel  = (cmd[2] >> 29u) & 0x7u;
+	Common::DebugFlags::NoteOnce("CapyPS5-Agc", 0x5044000000000000ull | (data & 0xffffu),
+	    "EndOfPipeActionPatchData cmd=0x%llx data=0x%llx data_sel=%u", static_cast<unsigned long long>(reinterpret_cast<uint64_t>(cmd)),
+	    static_cast<unsigned long long>(data), data_sel);
 	if (data_sel != 0u && data_sel != 5u) {
 		cmd[5] = static_cast<uint32_t>(data & 0xffffffffu);
 		cmd[6] = static_cast<uint32_t>((data >> 32u) & 0xffffffffu);

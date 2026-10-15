@@ -116,13 +116,13 @@ inline void WatchWrite(const char* who, uint64_t addr, uint64_t size, uint64_t v
 #endif
 }
 
-/** Logs a warning the first time `key` is seen (at most 256 distinct keys). */
+/** Logs a warning the first time `key` is seen (at most 4096 distinct keys). */
 inline void NoteOnce(const char* tag, uint64_t key, const char* fmt, ...) {
 	static std::mutex            mutex;
 	static std::vector<uint64_t> seen;
 	{
 		std::lock_guard lock(mutex);
-		if (seen.size() >= 256 || std::find(seen.begin(), seen.end(), key) != seen.end()) {
+		if (seen.size() >= 4096 || std::find(seen.begin(), seen.end(), key) != seen.end()) {
 			return;
 		}
 		seen.push_back(key);

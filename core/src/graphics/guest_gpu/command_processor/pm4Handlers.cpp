@@ -1786,6 +1786,9 @@ KYTY_CP_OP_PARSER(CpOpEventWriteEop) {
 	auto*    dst_gpu_addr =
 	    reinterpret_cast<void*>(buffer[1] | (static_cast<uint64_t>(buffer[2] & 0xffffu) << 32u));
 	uint64_t value = (buffer[3] | (static_cast<uint64_t>(buffer[4]) << 32u));
+	Common::DebugFlags::NoteOnce("CapyPS5-Eop", 0x4545000000000000ull | (event_write_source << 8u) | eop_event_type,
+	    "EVENT_WRITE_EOP src=%u event=0x%x dw: %08x %08x %08x %08x %08x", event_write_source,
+	    eop_event_type, buffer[0], buffer[1], buffer[2], buffer[3], buffer[4]);
 
 	cp.WriteAtEndOfPipe64(cache_policy, event_write_dest, eop_event_type, cache_action, event_index,
 	                      event_write_source, dst_gpu_addr, value, interrupt_selector);
@@ -2259,6 +2262,10 @@ KYTY_CP_OP_PARSER(CpOpReleaseMem) {
 	    reinterpret_cast<void*>(buffer[2] | (static_cast<uint64_t>(buffer[3]) << 32u));
 	uint64_t value                = buffer[4] | (static_cast<uint64_t>(buffer[5]) << 32u);
 	uint32_t interrupt_context_id = buffer[6] & 0x07ffffffu;
+	Common::DebugFlags::NoteOnce("CapyPS5-Eop", 0x524d000000000000ull | (data_sel << 8u) | eop_event_type,
+	    "RELEASE_MEM data_sel=%u event=0x%x dst=%u int=%u dw: %08x %08x %08x %08x %08x %08x %08x",
+	    data_sel, eop_event_type, release_dst, interrupt_selector, buffer[0], buffer[1], buffer[2],
+	    buffer[3], buffer[4], buffer[5], buffer[6]);
 
 
 

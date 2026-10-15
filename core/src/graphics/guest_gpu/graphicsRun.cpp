@@ -255,6 +255,7 @@ void GuestGpu::SuspendPoint() {
 		__android_log_print(ANDROID_LOG_WARN, "CapyPS5-Gpu",
 		                    "SuspendPoint: GPU busy for >2 s, still waiting");
 #endif
+		SyncDump("SuspendPoint stall");
 		m_suspend_point_ready->Acquire();
 	}
 	Submission submission;
