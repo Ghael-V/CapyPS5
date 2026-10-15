@@ -1070,7 +1070,7 @@ private:
 				shared_image_heap = descriptor.dword_count == 8u &&
 				    (a.table_record_bytes != 0u || b.table_record_bytes != 0u);
 				if (a.selector != b.selector || a.table_maximum != b.table_maximum ||
-				    a.pointer_offset != b.pointer_offset ||
+				    a.pointer_table != b.pointer_table ||
 				    a.table_source != b.table_source ||
 				    (!shared_image_heap && (a.table_offset != b.table_offset ||
 				                           a.table_immediate != b.table_immediate ||
@@ -2877,12 +2877,13 @@ private:
 		         memory.component_count == 4u));
 	}
 
-	bool MatchDescriptorTable(Inst& handle, const DescriptorSource& descriptor,
-	                          IndirectDescriptorPlan& plan,
-	                          DescriptorSource& table_source, Value& key, uint32_t& table_offset,
-	                          uint32_t& table_stride, uint32_t& table_immediate) {
+	bool MatchDescriptorReads(Inst& handle, const DescriptorSource& descriptor,
+	                          IndirectDescriptorPlan& plan, Value& key, uint32_t& table_offset,
+	                          uint32_t& table_stride, uint32_t& table_immediate,
+	                          bool allow_fixed = false) {
 		Inst* table_handle = nullptr;
 		Value table_guard;
+		const uint32_t alignment_mask = allow_fixed ? ~3u : UINT32_MAX;
 		for (uint32_t dword = 0; dword < plan.read_dwords; ++dword) {
 			auto* read = descriptor.dwords[dword].Resolve().TryInstruction();
 			if (read == nullptr) {
@@ -2914,7 +2915,7 @@ private:
 				    (dword != 0u && !EquivalentValue(m_program, table_guard, read->Arg(4)))) return RejectIndirect(__LINE__);
 				table_guard = read->Arg(4);
 			}
-			if (memory->offset > INT32_MAX || (memory->offset & 3u) != 0u ||
+			if (memory->offset > INT32_MAX || (!allow_fixed && (memory->offset & 3u) != 0u) ||
 			    !MemoryIndexBelongsTo(memory_index, *read)) {
 				return RejectIndirect(__LINE__);
 			}
@@ -2932,7 +2933,8 @@ private:
 			     Decoder::GetGuestIsa() != Decoder::GuestIsa::Gfx7) ||
 			    (table_handle != nullptr &&
 			     !EquivalentValue(m_program, Value(table_handle), Value(current_handle))) ||
-			    (!indexed && !MatchTableOffset(read->Arg(1), current_key, offset, stride))) {
+			    (!indexed && !(allow_fixed && ImmediateU32(read->Arg(1), offset)) &&
+			     !MatchTableOffset(read->Arg(1), current_key, offset, stride))) {
 				return RejectIndirect(__LINE__);
 			}
 			if (indexed) {
@@ -2948,8 +2950,9 @@ private:
 				table_stride = stride;
 			} else if (plan.table_indexed != indexed || table_stride != stride ||
 			           !EquivalentValue(m_program, key, current_key) ||
-			           uint64_t {table_offset} + table_immediate + dword * sizeof(uint32_t) !=
-			               uint64_t {offset} + memory->offset) {
+			           uint64_t {table_offset & alignment_mask} + (table_immediate & alignment_mask) +
+			                   dword * sizeof(uint32_t) !=
+			               uint64_t {offset & alignment_mask} + (memory->offset & alignment_mask)) {
 				return RejectIndirect(__LINE__);
 			}
 			plan.split_offsets |= !indexed && offset != table_offset;
@@ -2969,14 +2972,20 @@ private:
 			plan.reads[dword] = read;
 		}
 
-		if (!MakeRuntimeTableSource(*plan.reads[0], table_source)) {
-			return RejectIndirect(__LINE__);
-		}
 		return true;
 	}
 
-	bool SetExactTableMaximum(Value key, DescriptorSource::IndirectDescriptor& indirect) {
-		const auto maximum = SelectorMaximum(key);
+	bool SetExactTableMaximum(Value key, DescriptorSource::IndirectDescriptor& indirect,
+	                          const Inst* handle = nullptr) {
+		uint32_t maximum = 0u;
+		if (handle != nullptr) {
+			if (handle->Uses().empty()) return false;
+			for (const auto& use: handle->Uses()) {
+				if (ImageOpcodeInfoOf(use.user->GetOpcode()).access == ImageAccess::None) return false;
+				maximum = std::max(maximum, SelectorMaximum(key, {}, 0u,
+				    use.user->Arg(use.user->NumArgs() - 1u)));
+			}
+		} else maximum = SelectorMaximum(key);
 		if (maximum > UINT32_MAX / 4u ||
 		    uint64_t {maximum} * indirect.table_stride + indirect.table_offset > UINT32_MAX)
 			return false;
@@ -2988,61 +2997,112 @@ private:
 	                             IndirectDescriptorPlan& plan) {
 		if (handle.GetOpcode() != ValueOpcode::GetImageResource &&
 		    handle.GetOpcode() != ValueOpcode::GetSamplerResource) return false;
-		Inst* pointer = nullptr;
-		uint32_t descriptor_offset = 0;
-		for (uint32_t word = 0; word < plan.read_dwords; ++word) {
-			const auto* read = descriptor.dwords[word].Resolve().TryInstruction();
-			uint32_t index, offset;
-			const auto* memory = read != nullptr ? ScalarReadMemory(*read, index) : nullptr;
-			if (memory == nullptr || memory->kind != ResourceKind::ScalarAddress ||
-			    memory->offset > INT32_MAX || !ImmediateU32(read->Arg(1), offset) ||
-			    !AvailableBefore(*read, handle)) return false;
-			auto* address = read->Arg(0).Resolve().TryInstruction();
-			const uint64_t current_offset = uint64_t {offset & ~3u} + (memory->offset & ~3u);
-			if (address == nullptr || address->GetOpcode() != ValueOpcode::GetAddressResource ||
-			    address->NumArgs() != 2u || current_offset > UINT32_MAX ||
-			    (pointer != nullptr && (!EquivalentValue(m_program, Value(pointer), Value(address)) ||
-			                            current_offset != uint64_t {descriptor_offset} + word * 4u)))
-				return false;
-			if (word == 0u) descriptor_offset = static_cast<uint32_t>(current_offset);
-			pointer = address;
-		}
-		// An out-of-bounds pointer pair is zero. Guest mappings exclude the first
-		// 16 KiB page, so these pointed reads have the existing null-image semantics.
-		if (pointer == nullptr || uint64_t {descriptor_offset} + plan.read_dwords * 4u > 0x4000u)
-			return false;
-		const auto* low = pointer->Arg(0).Resolve().TryInstruction();
-		const auto* high = pointer->Arg(1).Resolve().TryInstruction();
-		uint32_t low_index, high_index;
-		const auto* low_memory = low != nullptr ? ScalarReadMemory(*low, low_index) : nullptr;
-		const auto* high_memory = high != nullptr ? ScalarReadMemory(*high, high_index) : nullptr;
-		if (low_memory == nullptr || high_memory == nullptr ||
-		    low_memory->kind != ResourceKind::ScalarBuffer ||
-		    high_memory->kind != ResourceKind::ScalarBuffer ||
-		    low_memory->offset > INT32_MAX || high_memory->offset > INT32_MAX ||
-		    (low_memory->offset & ~3u) + 4u != (high_memory->offset & ~3u) ||
-		    !EquivalentValue(m_program, low->Arg(0), high->Arg(0)) ||
-		    !EquivalentValue(m_program, low->Arg(1), high->Arg(1)) ||
-		    !AvailableBefore(*low, *pointer) || !AvailableBefore(*high, *pointer)) return false;
-		Value key;
+		auto reads = plan;
+		Value child_key;
+		uint32_t offset = 0, stride = 0, immediate = 0;
+		if (!MatchDescriptorReads(handle, descriptor, reads, child_key, offset, stride, immediate, true) ||
+		    m_program.memory_info[reads.memory[0]].kind != ResourceKind::ScalarAddress ||
+		    uint64_t {offset & ~3u} + (immediate & ~3u) > UINT32_MAX) return false;
+		const auto* pointer = reads.reads[0]->Arg(0).ResolveInstruction();
 		DescriptorSource::IndirectDescriptor indirect;
-		if (!MatchTableOffset(low->Arg(1), key, indirect.table_offset, indirect.table_stride) ||
-		    indirect.table_stride < 8u || (indirect.table_stride & 3u) != 0u) return false;
-		if (!SetExactTableMaximum(key, indirect) ||
-		    (key.TryInstruction() != nullptr && !AvailableBefore(*key.Instruction(), handle)))
-			return false;
+		DescriptorSource::IndirectDescriptor::PointerTable child {
+		    .offset = (offset & ~3u) + (immediate & ~3u), .stride = stride};
 		DescriptorSource table_source;
-		if (!MakeRuntimeTableSource(*low, table_source) || table_source.dword_count != 4u)
-			return false;
+		Value key;
+		if (child_key.IsEmpty()) {
+			// Missing scalar-buffer pointer words are zero-filled. Only the existing
+			// unmapped first page permits omitted rows to map directly to a null image.
+			if (uint64_t {child.offset} + plan.read_dwords * 4u > 0x4000u) return false;
+			const auto* low = pointer->Arg(0).Resolve().TryInstruction();
+			const auto* high = pointer->Arg(1).Resolve().TryInstruction();
+			uint32_t low_index, high_index;
+			const auto* low_memory = low != nullptr ? ScalarReadMemory(*low, low_index) : nullptr;
+			const auto* high_memory = high != nullptr ? ScalarReadMemory(*high, high_index) : nullptr;
+			if (low_memory == nullptr || high_memory == nullptr ||
+			    low_memory->kind != ResourceKind::ScalarBuffer ||
+			    high_memory->kind != ResourceKind::ScalarBuffer ||
+			    low_memory->offset > INT32_MAX || high_memory->offset > INT32_MAX ||
+			    (low_memory->offset & ~3u) + 4u != (high_memory->offset & ~3u) ||
+			    !EquivalentValue(m_program, low->Arg(0), high->Arg(0)) ||
+			    !EquivalentValue(m_program, low->Arg(1), high->Arg(1)) ||
+			    !AvailableBefore(*low, *pointer) || !AvailableBefore(*high, *pointer) ||
+			    !MatchTableOffset(low->Arg(1), key, indirect.table_offset, indirect.table_stride) ||
+			    indirect.table_stride < 8u || (indirect.table_stride & 3u) != 0u ||
+			    !SetExactTableMaximum(key, indirect) ||
+			    (key.TryInstruction() != nullptr && !AvailableBefore(*key.Instruction(), handle)) ||
+			    !MakeRuntimeTableSource(*low, table_source)) return false;
+			indirect.table_immediate = low_memory->offset & ~3u;
+		} else {
+			if (handle.GetOpcode() != ValueOpcode::GetImageResource ||
+			    !ImmediateU32(UnsignedResourceBound(child_key, handle), child.count) || child.count == 0u ||
+			    child.count > MaxIndirectDescriptorProbes || stride < plan.read_dwords * 4u ||
+			    ((offset | stride) & 3u) != 0u ||
+			    uint64_t {child.offset} + uint64_t {child.count - 1u} * stride +
+			        plan.read_dwords * 4u > UINT32_MAX) return false;
+			const auto* low = pointer->Arg(0).Resolve().TryInstruction();
+			const auto* high = pointer->Arg(1).Resolve().TryInstruction();
+			if (low == nullptr || high == nullptr || low->GetOpcode() != ValueOpcode::ReadFirstLane ||
+			    high->GetOpcode() != ValueOpcode::ReadFirstLane ||
+			    !EquivalentValue(m_program, low->Arg(1), high->Arg(1))) return false;
+			const auto active = low->Arg(1);
+			const auto* low_word = ActiveValue(low->Arg(0), active).TryInstruction();
+			auto high_value = ActiveValue(high->Arg(0), active);
+			const auto* extended = high_value.TryInstruction();
+			// Scalar addresses use the low 48 bits, so signed high-WORD extension
+			// preserves exactly the same pointer as the original pair in memory.
+			if (extended != nullptr && extended->GetOpcode() == ValueOpcode::BitFieldSExtract &&
+			    extended->Arg(1).Resolve() == Value(0u) && extended->Arg(2).Resolve() == Value(16u))
+				high_value = ActiveValue(extended->Arg(0), active);
+			const auto* high_word = high_value.TryInstruction();
+			if (low_word == nullptr || high_word == nullptr ||
+			    low_word->GetOpcode() != ValueOpcode::CompositeExtractU32x2 ||
+			    high_word->GetOpcode() != ValueOpcode::CompositeExtractU32x2 ||
+			    low_word->Arg(1).Resolve() != Value(0u) || high_word->Arg(1).Resolve() != Value(1u) ||
+			    low_word->Arg(0).Resolve() != high_word->Arg(0).Resolve()) return false;
+			const auto* read = low_word->Arg(0).Resolve().TryInstruction();
+			if (read == nullptr || read->GetOpcode() != ValueOpcode::LoadBufferU32x2 ||
+			    !Implies(active, read->Arg(4))) return false;
+			const auto& memory = m_program.memory_info[read->Flags<MemoryFlags>().index];
+			if (memory.kind != ResourceKind::Buffer || memory.typed || memory.formatted ||
+			    !memory.idxen || memory.offen || memory.data_bits != 32u || memory.data_dwords != 2u ||
+			    (memory.offset & 3u) != 0u || memory.offset > UINT32_MAX - 8u ||
+			    read->Arg(2).Resolve() != Value(0u) || read->Arg(3).Resolve() != Value(0u)) return false;
+			for (const auto& use: handle.Uses()) {
+				if (use.operand != 0u || ImageOpcodeInfoOf(use.user->GetOpcode()).access == ImageAccess::None)
+					return false;
+				const auto executing = use.user->Arg(use.user->NumArgs() - 1u);
+				if (!Implies(executing, active)) return false;
+				const auto outer = EqualLocalKey(executing, read->Arg(1));
+				const auto* lane = outer.TryInstruction();
+				if (lane == nullptr || lane->GetOpcode() != ValueOpcode::ReadFirstLane ||
+				    !EquivalentValue(m_program, lane->Arg(0), read->Arg(1)) ||
+				    !EquivalentValue(m_program, lane->Arg(1), active) ||
+				    !AvailableBefore(*lane, handle) ||
+				    (!key.IsEmpty() && !EquivalentValue(m_program, key, outer))) return false;
+				key = outer;
+			}
+			if (!SetExactTableMaximum(key, indirect, &handle) ||
+			    (uint64_t {*indirect.table_maximum} + 1u) * child.count > MaxIndirectDescriptorProbes ||
+			    !MakeRuntimeTableSource(*read, table_source)) return false;
+			indirect.table_immediate = memory.offset;
+			child.indexed = true;
+		}
+		if (table_source.dword_count != 4u) return false;
 		indirect.table_source = InternSource(table_source);
-		indirect.table_immediate = low_memory->offset & ~3u;
 		indirect.table_scalar = true;
-		indirect.pointer_offset = descriptor_offset;
+		indirect.pointer_table = child;
 		DescriptorSource source;
 		source.dword_count = handle.NumArgs();
 		source.dwords.fill(Value(0u));
 		std::copy_n(table_source.dwords.begin(), 4u, source.dwords.begin());
 		source.indirect_descriptor = indirect;
+		if (!child_key.IsEmpty()) {
+			auto* block = handle.Parent();
+			const auto where = std::ranges::find_if(block->Instructions(),
+			    [&](const Inst& inst) { return &inst == &handle; });
+			key = Value(&*block->PrependNewInst(where, ValueOpcode::IMul32, {key, Value(child.count)}));
+			key = Value(&*block->PrependNewInst(where, ValueOpcode::IAdd32, {key, child_key}));
+		}
 		plan.handle = &handle;
 		plan.source = InternSource(source);
 		plan.key = key;
@@ -3061,8 +3121,9 @@ private:
 		uint32_t table_offset = 0;
 		uint32_t table_stride = 0;
 		uint32_t table_immediate = 0;
-		if (!MatchDescriptorTable(handle, descriptor, plan, table_source, key, table_offset,
-		                          table_stride, table_immediate)) return RejectIndirect(__LINE__);
+		if (!MatchDescriptorReads(handle, descriptor, plan, key, table_offset,
+		                          table_stride, table_immediate) ||
+		    !MakeRuntimeTableSource(*plan.reads[0], table_source)) return RejectIndirect(__LINE__);
 		DescriptorSource material_source;
 		DescriptorSource::IndirectDescriptor indirect;
 		indirect.table_offset = table_offset;
@@ -3079,6 +3140,10 @@ private:
 			// Keep live descriptor payloads, but project descriptor-only SMEM onto
 			// the GPU key using the same plan as other indirect image reads.
 			plan.retain_reads |= table_source.dword_count == 4u;
+		} else if (sampler && table_source.dword_count == 4u && !plan.table_indexed &&
+		           SetExactTableMaximum(key, indirect, &handle)) {
+			indirect.table_scalar = true;
+			plan.retain_reads = true;
 		} else if (table_source.dword_count == 2u) {
 			// A packed T#/S# array (stride 32/16) or records holding one (a PS4 light list uses
 			// 0x108-byte entries); materialization reads key * stride + offset either way.
@@ -3319,8 +3384,9 @@ private:
 		uint32_t table_offset = 0;
 		uint32_t table_stride = 0;
 		uint32_t table_immediate = 0;
-		if (!MatchDescriptorTable(handle, descriptor, plan, table_source, key, table_offset,
+		if (!MatchDescriptorReads(handle, descriptor, plan, key, table_offset,
 		                          table_stride, table_immediate) ||
+		    !MakeRuntimeTableSource(*plan.reads[0], table_source) ||
 		    table_stride < 16u || (table_stride & 3u) != 0u) return false;
 		DescriptorSource::IndirectDescriptor indirect;
 		indirect.table_stride = table_stride;
@@ -3459,6 +3525,47 @@ private:
 		       SelectorMaximum(inst->Arg(1), bounds, depth + 1u) <= target;
 	}
 
+	uint32_t FiniteSelectorMaximum(Value value, Value guard) const {
+		value = value.Resolve();
+		bool nonnegative = false;
+		if (const auto* root = value.TryInstruction()) {
+			for (const auto& use: root->Uses()) {
+				const auto& compare = *use.user;
+				const auto op = compare.GetOpcode();
+				if (((op == ValueOpcode::SLessThanEqual32 && use.operand == 1u &&
+				      compare.Arg(0).Resolve() == Value(0u)) ||
+				     (op == ValueOpcode::SGreaterThanEqual32 && use.operand == 0u &&
+				      compare.Arg(1).Resolve() == Value(0u))) &&
+				    Implies(guard, Value(use.user))) nonnegative = true;
+			}
+		}
+		std::vector<Value> pending {value};
+		std::vector<const Inst*> visited;
+		uint32_t maximum = 0u;
+		bool found = false;
+		for (size_t at = 0; at < pending.size(); ++at) {
+			uint32_t literal;
+			const auto current = pending[at].Resolve();
+			if (ImmediateU32(current, literal)) {
+				if (nonnegative && std::bit_cast<int32_t>(literal) < 0) continue;
+				maximum = std::max(maximum, literal);
+				found = true;
+				continue;
+			}
+			const auto* choice = current.TryInstruction();
+			if (choice == nullptr) return UINT32_MAX;
+			const bool phi = choice->GetOpcode() == ValueOpcode::Phi;
+			if ((!phi && choice->GetOpcode() != ValueOpcode::SelectU32) ||
+			    (phi && (choice->NumArgs() == 0u || choice->Parent() == nullptr ||
+			             InCycle(choice->Parent())))) return UINT32_MAX;
+			if (std::ranges::find(visited, choice) != visited.end()) continue;
+			visited.push_back(choice);
+			for (size_t arm = phi ? 0u : 1u; arm < choice->NumArgs(); ++arm)
+				pending.push_back(choice->Arg(arm));
+		}
+		return found ? maximum : UINT32_MAX;
+	}
+
 	uint32_t SelectorMaximum(Value value, SelectorBounds bounds = {}, uint32_t depth = 0,
 	                         Value guard = {}) const {
 		if (depth > 32u) return UINT32_MAX;
@@ -3472,6 +3579,10 @@ private:
 			return SelectorMaximum(inst->Arg(arg), bounds, depth + 1u, guard);
 		};
 		switch (inst->GetOpcode()) {
+			case ValueOpcode::ReadFirstLane:
+				if (guard.IsEmpty() ? !HasActiveLane(inst->Arg(1), inst->Parent())
+				                    : !Implies(guard, inst->Arg(1))) return UINT32_MAX;
+				return FiniteSelectorMaximum(inst->Arg(0), inst->Arg(1));
 			case ValueOpcode::ReadLane:
 				// ReadLane ignores EXEC; only context-free bounds on every source lane apply.
 				return PossibleU32Bits(inst->Arg(0));

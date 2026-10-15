@@ -617,9 +617,17 @@ struct DescriptorSource {
 
 			bool operator==(const SelectorRead& other) const = default;
 		};
+		struct PointerTable {
+			uint32_t offset = 0;
+			uint32_t stride = 0;
+			uint32_t count = 1;
+			bool indexed = false; // Parent pointers use raw MUBUF record addressing.
+
+			bool operator==(const PointerTable& other) const = default;
+		};
 		std::optional<SelectorRead> selector;
 		std::optional<uint32_t> table_maximum;
-		std::optional<uint32_t> pointer_offset;
+		std::optional<PointerTable> pointer_table;
 		uint32_t table_source    = 0;
 		uint32_t table_offset    = 0;
 		uint32_t table_immediate = 0;
