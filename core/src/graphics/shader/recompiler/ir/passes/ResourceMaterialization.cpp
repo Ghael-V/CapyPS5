@@ -312,13 +312,13 @@ bool IsBoundedDescriptorTable(const ResourcePlan& program,
 template <typename Specialization, typename Normalize>
 bool MaterializeIndirectDescriptor(const ResourcePlan&                         program,
                                    const DescriptorSource::IndirectDescriptor& indirect,
-                                   uint32_t resource_index, uint32_t dword_count,
+                                   uint32_t resource_index, uint32_t dword_count, uint32_t read_dwords,
                                    const SrtRuntime& runtime, SrtWalker& clean,
                                    ResourceSnapshot&             snapshot,
                                    std::vector<DescriptorValue>& descriptors,
                                    std::vector<Specialization>&  specializations,
                                    uint32_t maximum_resources, Normalize&& normalize) {
-	const auto  descriptor_bytes = dword_count * sizeof(uint32_t);
+	const auto  descriptor_bytes = read_dwords * sizeof(uint32_t);
 	const auto& sources = indirect.sources;
 	const auto* selector = indirect.selector ? &*indirect.selector : nullptr;
 	auto& keys = program.Scratch().material_keys;
@@ -471,12 +471,12 @@ bool MaterializeIndirectDescriptor(const ResourcePlan&                         p
 					if (!ReadScalarTable(table_base, table_size, table_offset, runtime, address) ||
 					    !ReadScalarTable((uint64_t {address[1]} << 32u) | address[0], UINT64_MAX,
 					                     *indirect.pointer_offset, runtime,
-					                     std::span(candidate.dwords).first(dword_count))) return false;
+					                     std::span(candidate.dwords).first(read_dwords))) return false;
 				} else if (affine) {
 					if (!ReadScalarTable(table_base, table_size, table_offset, runtime,
-					                     std::span(candidate.dwords).first(dword_count))) return false;
+					                     std::span(candidate.dwords).first(read_dwords))) return false;
 				} else {
-					std::copy_n(keys.begin() + word, std::min<size_t>(dword_count, keys.size() - word),
+					std::copy_n(keys.begin() + word, std::min<size_t>(read_dwords, keys.size() - word),
 					            candidate.dwords.begin());
 				}
 				if (!normalize(candidate))
@@ -702,7 +702,7 @@ bool MaterializeIndirectDescriptor(const ResourcePlan&                         p
 			table_offset = uint64_t {(key * indirect.table_stride + indirect.table_offset) & ~3u} +
 			               (indirect.table_immediate & ~3u);
 			if (!ReadScalarTable(table_base, table_size, table_offset, runtime,
-			                     std::span(candidate.dwords).first(dword_count))) {
+			                     std::span(candidate.dwords).first(read_dwords))) {
 				return false;
 			}
 		} else if (!clean.EvaluateDescriptor(sources[entry], candidate)) {
@@ -1656,7 +1656,7 @@ bool MaterializeResources(const ResourcePlan& program, const SrtRuntime& runtime
 				snapshot.buffers[i] = {.dword_count = 4u};
 				if (active.empty() || active[base.source]) {
 					if (!MaterializeIndirectDescriptor(
-					        program, *source->indirect_descriptor, i, 4u, observed, clean, snapshot,
+					        program, *source->indirect_descriptor, i, 4u, 4u, observed, clean, snapshot,
 					        snapshot.buffers, specialization.buffers, UINT32_MAX,
 					        [&](DescriptorValue& value) {
 						        return NormalizeIndirectBuffer(
@@ -1723,7 +1723,7 @@ bool MaterializeResources(const ResourcePlan& program, const SrtRuntime& runtime
 			const auto& indirect = *source->indirect_descriptor;
 			const bool bounded_table = IsBoundedDescriptorTable(program, indirect);
 			if (!MaterializeIndirectDescriptor(
-			        program, indirect, i, 8u, observed, clean, snapshot, snapshot.images,
+			        program, indirect, i, 8u, image.r128 ? 4u : 8u, observed, clean, snapshot, snapshot.images,
 			        specialization.images, UINT32_MAX, [&](DescriptorValue& value) {
 				        // Table entries are guest T#s too: a PS4 one needs the same conversion as
 				        // a directly loaded descriptor.
@@ -1779,7 +1779,7 @@ bool MaterializeResources(const ResourcePlan& program, const SrtRuntime& runtime
 			if (indirect != nullptr && indirect->sources.empty()) {
 				snapshot.samplers[i] = {.dword_count = 4u};
 				if ((active.empty() || active[source]) && !MaterializeIndirectDescriptor(
-				        program, *indirect, i, 4u, observed, clean, snapshot, snapshot.samplers,
+				        program, *indirect, i, 4u, 4u, observed, clean, snapshot, snapshot.samplers,
 				        specialization.samplers, ShaderInfo::MaxSamplers,
 				        [](DescriptorValue&) { return true; })) return false;
 			} else {
