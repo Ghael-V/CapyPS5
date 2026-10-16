@@ -1,4 +1,7 @@
 #include "graphics/guest_gpu/graphicsRun.h"
+#if defined(__ANDROID__) || defined(__linux__)
+#include <pthread.h>
+#endif
 
 #include "common/assert.h"
 #include "common/debugFlags.h"
@@ -95,6 +98,10 @@ void SyncDump(const char* reason) {
 #endif
 }
 } // namespace
+
+void GpuSyncRecord(const char* what, uint64_t a, uint64_t b, uint64_t c) {
+	SyncRecord(what, a, b, c);
+}
 
 static thread_local CommandProcessor* g_current_processor = nullptr;
 static thread_local Pm4Execution*     g_current_execution = nullptr;
@@ -681,6 +688,9 @@ void GuestGpu::ThreadRun(void* data) {
 	auto* gpu = static_cast<GuestGpu*>(data);
 	EXIT_IF(gpu == nullptr);
 	KYTY_PROFILER_THREAD("Thread_Gpu");
+#if defined(__ANDROID__) || defined(__linux__)
+	pthread_setname_np(pthread_self(), "CapyGpu");
+#endif
 	g_gpu_thread = true;
 	g_gpu_state  = gpu;
 
@@ -1031,6 +1041,13 @@ void CommandProcessor::ProcessPm4(Pm4Execution& execution) {
 			LOGF("CP packet: offset=0x%05" PRIx32 " cmd_id=0x%08" PRIx32 " op=0x%02" PRIx32
 			     " len=%" PRIu32 "\n",
 			     total_dw - remaining_dw, packet_header, opcode, KYTY_PM4_LEN(packet_header));
+		}
+
+		// `debug.capy.sync_pm4 1`: record every packet in the sync event ring, so a GPU stall dump
+		// shows the packet the GPU thread is stuck in (header, address, second dword).
+		static Common::DebugFlags::CachedValue sync_pm4("debug.capy.sync_pm4", 0);
+		if (sync_pm4.Get() != 0) {
+			SyncRecord("pm4", packet_header, reinterpret_cast<uint64_t>(packet), packet[1]);
 		}
 
 		if ((packet_header & 1u) != 0 && ShouldSkipPredicatedPackets()) {

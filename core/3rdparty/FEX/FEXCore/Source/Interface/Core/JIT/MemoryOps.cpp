@@ -5,6 +5,7 @@ tags: backend|arm64
 $end_info$
 */
 
+#include <FEXCore/Utils/AddressFold.h>
 #include "FEXCore/Core/X86Enums.h"
 #include "FEXCore/Utils/LogManager.h"
 #include "Interface/Context/Context.h"
@@ -1895,6 +1896,10 @@ DEF_OP(MemSet) {
     const auto Prefix = GetReg(Op->Prefix);
     add(TMP2, Prefix.X(), MemReg.X());
   }
+  // CapyPS5: fold the working pointer only; the result is the unfolded guest pointer.
+  if (const auto FoldMask = FEXCore::GuestAddressFoldMask.load(std::memory_order_relaxed); FoldMask != 0) {
+    and_(ARMEmitter::Size::i64Bit, TMP2, TMP2, FoldMask);
+  }
 
   if (!DirectionIsInline) {
     // Backward or forwards implementation depends on flag
@@ -2129,6 +2134,11 @@ DEF_OP(MemCpy) {
   mov(TMP1, Length.X());
   mov(TMP2, MemRegDest.X());
   mov(TMP3, MemRegSrc.X());
+  // CapyPS5: fold the working pointers only; the results are the unfolded guest pointers.
+  if (const auto FoldMask = FEXCore::GuestAddressFoldMask.load(std::memory_order_relaxed); FoldMask != 0) {
+    and_(ARMEmitter::Size::i64Bit, TMP2, TMP2, FoldMask);
+    and_(ARMEmitter::Size::i64Bit, TMP3, TMP3, FoldMask);
+  }
 
   // TMP1 = Length
   // TMP2 = Dest

@@ -583,6 +583,7 @@ void PrepareCallTarget(ShaderSource& source, const CompileOptions& options) {
 
 ShaderSource PrepareShaderSource(std::span<const uint32_t> code, const CompileOptions& options) {
 	EXIT_IF(code.empty());
+	Decoder::SetDecodingStage(static_cast<int>(options.stage));
 	ShaderSource source;
 	if (!options.back_code.empty()) {
 		source.decoded = DecodeFusedProgram(code, options.back_code, source.code);

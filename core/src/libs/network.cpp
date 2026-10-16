@@ -3945,7 +3945,14 @@ int KYTY_SYSV_ABI NpCheckCallback() {
 		}
 	}
 	for (const auto& entry: pending) {
-		entry.callback(Config::GetUserId(), np_state_signed_out, entry.userdata);
+		// Guest code: run it through the JIT on ARM64 hosts (Unbound: Worlds Apart).
+		if (Cpu::CpuBackend::Instance()->GetType() != Cpu::BackendType::Native) {
+			Cpu::CpuBackend::Instance()->CallGuestCallback(
+			    reinterpret_cast<uint64_t>(entry.callback), static_cast<uint64_t>(Config::GetUserId()),
+			    static_cast<uint64_t>(np_state_signed_out), reinterpret_cast<uint64_t>(entry.userdata));
+		} else {
+			entry.callback(Config::GetUserId(), np_state_signed_out, entry.userdata);
+		}
 	}
 
 	return OK;

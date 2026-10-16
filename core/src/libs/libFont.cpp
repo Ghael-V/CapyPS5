@@ -1,4 +1,5 @@
 #include "common/abi.h"
+#include "cpu/cpuBackend.h"
 #include "common/assert.h"
 #include "common/common.h"
 #include "common/logging/log.h"
@@ -505,7 +506,7 @@ static int parse_text_with_callback(FontTextSource* source, FontHandle default_f
 	for (uint32_t i = 0; i < max_font_string_characters; i++) {
 		FontTextParseResult result {};
 		void*               order = nullptr;
-		const int           ret   = source->text_parser(source, &order, &result);
+		const int           ret   = Cpu::CallGuest<int>(source->text_parser, source, &order, &result);
 
 		if (ret == SCE_FONT_TEXT_PARSER_RESULT_FONT_CODE) {
 			auto font = result.font_code.font != nullptr ? result.font_code.font : default_font;

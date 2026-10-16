@@ -175,6 +175,26 @@ static callback_func_t g_test_backing_read                         = nullptr;
 #endif
 
 static void NotifyGuestProtection(uint64_t vaddr, uint64_t size, VirtualMemory::Mode mode);
+
+// Guest address folding: a 48-bit guest layout (Unreal Engine 4 reserves 512 GiB and uses its last
+// GiB) on a 39-bit host. While enabled, the JIT masks every guest data address with this mask and
+// the memory calls below fold their addresses the same way; the guest keeps its unfolded pointers.
+static std::atomic<uint64_t> g_address_fold_mask {0};
+static AddressFoldHook       g_address_fold_hook = nullptr;
+
+uint64_t FoldGuestAddress(uint64_t vaddr) {
+	const auto mask = g_address_fold_mask.load(std::memory_order_relaxed);
+	return (mask != 0 && vaddr > mask) ? (vaddr & mask) : vaddr;
+}
+
+void SetAddressFoldHook(AddressFoldHook hook) {
+	g_address_fold_hook = hook;
+}
+
+void SetAddressFoldMask(uint64_t mask) {
+	g_address_fold_mask.store(mask, std::memory_order_relaxed);
+}
+
 #include "memoryAddressSpace.inc"
 
 enum class VirtualRangeType {
@@ -2330,7 +2350,27 @@ static bool UnmapPooledBackingTransactional(const std::vector<PooledMemory::Mapp
 }
 
 // The ABI entry points and batch operations hold g_memory_operation_mutex.
+static int MapFlexibleMemoryUnfolded(void** addr_in_out, size_t len, int prot, int flags,
+                                     const char* name);
+
 static int MapFlexibleMemory(void** addr_in_out, size_t len, int prot, int flags,
+                             const char* name) {
+	if (addr_in_out == nullptr) {
+		return MapFlexibleMemoryUnfolded(addr_in_out, len, prot, flags, name);
+	}
+	const auto original = reinterpret_cast<uint64_t>(*addr_in_out);
+	const auto folded   = FoldGuestAddress(original);
+	*addr_in_out        = reinterpret_cast<void*>(folded);
+	const int result    = MapFlexibleMemoryUnfolded(addr_in_out, len, prot, flags, name);
+	if (folded != original && reinterpret_cast<uint64_t>(*addr_in_out) == folded) {
+		*addr_in_out = reinterpret_cast<void*>(original);
+	} else if (folded != original && result != OK) {
+		*addr_in_out = reinterpret_cast<void*>(original);
+	}
+	return result;
+}
+
+static int MapFlexibleMemoryUnfolded(void** addr_in_out, size_t len, int prot, int flags,
                              const char* name) {
 	EXIT_NOT_IMPLEMENTED(addr_in_out == nullptr);
 
@@ -2675,7 +2715,13 @@ static int UnmapMemoryRange(uint64_t vaddr, size_t len) {
 }
 
 // The ABI entry point and batch operations hold g_memory_operation_mutex.
+static int UnmapMemoryUnfolded(uint64_t vaddr, size_t len);
+
 static int UnmapMemory(uint64_t vaddr, size_t len) {
+	return UnmapMemoryUnfolded(FoldGuestAddress(vaddr), len);
+}
+
+static int UnmapMemoryUnfolded(uint64_t vaddr, size_t len) {
 	LOGF("\t start = 0x%016" PRIx64 "\n"
 	     "\t len   = 0x%016" PRIx64 "\n",
 	     vaddr, len);
@@ -3052,9 +3098,30 @@ int KYTY_SYSV_ABI KernelCheckedReleaseDirectMemory(int64_t start, size_t len) {
 }
 
 // The ABI entry points and batch operations hold g_memory_operation_mutex.
+static int MapDirectMemoryUnfolded(void** addr, size_t len, int prot, int flags,
+                                   int64_t direct_memory_start, size_t alignment, const char* name,
+                                   int type);
+
 static int MapDirectMemory(void** addr, size_t len, int prot, int flags,
                            int64_t direct_memory_start, size_t alignment, const char* name,
                            int type = -1) {
+	if (addr == nullptr) {
+		return MapDirectMemoryUnfolded(addr, len, prot, flags, direct_memory_start, alignment, name, type);
+	}
+	const auto original = reinterpret_cast<uint64_t>(*addr);
+	const auto folded   = FoldGuestAddress(original);
+	*addr               = reinterpret_cast<void*>(folded);
+	const int result =
+	    MapDirectMemoryUnfolded(addr, len, prot, flags, direct_memory_start, alignment, name, type);
+	if (folded != original && (result != OK || reinterpret_cast<uint64_t>(*addr) == folded)) {
+		*addr = reinterpret_cast<void*>(original);
+	}
+	return result;
+}
+
+static int MapDirectMemoryUnfolded(void** addr, size_t len, int prot, int flags,
+                                   int64_t direct_memory_start, size_t alignment, const char* name,
+                                   int type) {
 	if (addr == nullptr) {
 		return KERNEL_ERROR_EFAULT;
 	}
@@ -3593,6 +3660,42 @@ static bool ReplaceFixedRangeWithReserved(uint64_t start, uint64_t size) {
 	return true;
 }
 
+// A clipped reservation still hands its owner the full logical range [base, base + requested_len).
+// Unreal Engine 4 uses the bottom (kept by the clipped reservation) and its last GiB, which lies
+// beyond a 39-bit host. Reserve where that GiB folds to (address & mask) and enable folding, so
+// the JIT and the memory calls redirect it there. `debug.capy.address_fold 0` disables this.
+static void ReserveFoldedTail(uint64_t base, uint64_t requested_len) {
+	constexpr uint64_t FOLD_MASK = (1ull << 39u) - 1u;
+	constexpr uint64_t TAIL_SIZE = 0x40000000ull; // 1 GiB
+	static Common::DebugFlags::CachedValue address_fold("debug.capy.address_fold", 1);
+	const uint64_t                         host_stack = reinterpret_cast<uintptr_t>(&base);
+	if (address_fold.Get() == 0 || host_stack > FOLD_MASK || requested_len < TAIL_SIZE) {
+		return; // the host is not 39-bit: it maps the range itself or not at all
+	}
+	const uint64_t tail = base + requested_len - TAIL_SIZE;
+	if (tail <= FOLD_MASK) {
+		return;
+	}
+	const uint64_t folded = tail & FOLD_MASK;
+	if (g_virtual_ranges->HasOverlap(folded, TAIL_SIZE) ||
+	    !g_virtual_ranges->Add(folded, TAIL_SIZE, 0, 0, 0, VirtualRangeType::Reserved, "fold")) {
+		Common::DebugFlags::NoteOnce("CapyPS5-Mem", folded ^ 0x464f4c44ull,
+		                             "address fold: window 0x%llx for 0x%llx is in use",
+		                             static_cast<unsigned long long>(folded),
+		                             static_cast<unsigned long long>(tail));
+		return;
+	}
+	UnmapGpuRange(folded, TAIL_SIZE);
+	if (g_address_fold_mask.exchange(FOLD_MASK) == 0 && g_address_fold_hook != nullptr) {
+		g_address_fold_hook(FOLD_MASK);
+	}
+	Common::DebugFlags::NoteOnce("CapyPS5-Mem", folded ^ 0x464f4c45ull,
+	                             "address fold enabled: 0x%llx..0x%llx -> 0x%llx",
+	                             static_cast<unsigned long long>(tail),
+	                             static_cast<unsigned long long>(tail + TAIL_SIZE),
+	                             static_cast<unsigned long long>(folded));
+}
+
 int KYTY_SYSV_ABI KernelReserveVirtualRange(void** addr, size_t len, int flags, size_t alignment) {
 	PRINT_NAME();
 
@@ -3641,12 +3744,20 @@ int KYTY_SYSV_ABI KernelReserveVirtualRange(void** addr, size_t len, int flags, 
 		static Common::DebugFlags::CachedValue clip_reserve("debug.capy.clip_reserve", 1);
 		constexpr size_t CLIP_MAX = 0x1000000000ull; // 64 GiB
 		constexpr size_t CLIP_MIN = 0x400000000ull;  // 16 GiB
+		const size_t requested_len = len;
 		if (out_addr == 0 && clip_reserve.Get() != 0 && len > CLIP_MAX) {
 			len      = CLIP_MAX * 2;
 		}
+		// With address folding the reservation's last GiB lands 1 GiB below its base (see
+		// ReserveFoldedTail), so look for room for both.
+		constexpr size_t FOLD_GAP = 0x40000000ull;
 		while (out_addr == 0 && clip_reserve.Get() != 0 && len > CLIP_MIN) {
 			len = std::max<size_t>(CLIP_MIN, (len / 2) & ~(PAGE_SIZE - 1));
-			out_addr = FindGuestFreeRange(in_addr, len, alignment);
+			if (const auto with_gap = FindGuestFreeRange(in_addr, len + FOLD_GAP, alignment); with_gap != 0) {
+				out_addr = with_gap + FOLD_GAP;
+			} else {
+				out_addr = FindGuestFreeRange(in_addr, len, alignment);
+			}
 			if (out_addr != 0) {
 				LOGF("\t reservation clipped to 0x%016" PRIx64 "\n", static_cast<uint64_t>(len));
 				Common::DebugFlags::NoteOnce("CapyPS5-Mem", out_addr,
@@ -3657,6 +3768,9 @@ int KYTY_SYSV_ABI KernelReserveVirtualRange(void** addr, size_t len, int flags, 
 		}
 		if (out_addr != 0) {
 			UnmapGpuRange(out_addr, len);
+			if (len < requested_len) {
+				ReserveFoldedTail(out_addr, requested_len);
+			}
 		}
 	}
 
@@ -4022,7 +4136,14 @@ bool FreeGuestMemory(uint64_t vaddr, uint64_t size) {
 }
 
 // The ABI entry points and batch operations hold g_memory_operation_mutex.
+static int ProtectMemoryUnfolded(const void* addr, size_t len, int prot);
+
 static int ProtectMemory(const void* addr, size_t len, int prot) {
+	return ProtectMemoryUnfolded(
+	    reinterpret_cast<const void*>(FoldGuestAddress(reinterpret_cast<uint64_t>(addr))), len, prot);
+}
+
+static int ProtectMemoryUnfolded(const void* addr, size_t len, int prot) {
 	auto vaddr = reinterpret_cast<uint64_t>(addr);
 
 	LOGF("\t addr = 0x%016" PRIx64 "\n"

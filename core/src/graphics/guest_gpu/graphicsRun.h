@@ -21,6 +21,9 @@
 
 namespace Libs::Graphics {
 
+// Adds an event to the GPU sync ring dumped on stalls (SuspendPoint stall dump).
+void GpuSyncRecord(const char* what, uint64_t a = 0, uint64_t b = 0, uint64_t c = 0);
+
 struct SuspendPointSync {
 	std::mutex              m_mutex;
 	std::condition_variable m_cv;

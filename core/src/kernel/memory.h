@@ -199,6 +199,14 @@ using GuestProtectionHook = void (*)(void* context, uint64_t vaddr, uint64_t siz
                                      Common::VirtualMemory::Mode guest_mode);
 void SetGuestProtectionHook(GuestProtectionHook hook, void* context);
 
+// Guest address folding (see memory.cpp): the address the host actually uses for a guest address.
+uint64_t FoldGuestAddress(uint64_t vaddr);
+using AddressFoldHook = void (*)(uint64_t mask);
+/** Called once when folding is enabled, so the JIT can start masking guest addresses. */
+void SetAddressFoldHook(AddressFoldHook hook);
+/** Enables folding up front (the JIT masks from its start). */
+void SetAddressFoldMask(uint64_t mask);
+
 #if defined(KYTY_VIRTUAL_MEMORY_ALLOCATION_TESTS)
 void     TestBeforeNextBackingMap(callback_func_t callback);
 void     TestSetBackingReadCallback(callback_func_t callback);

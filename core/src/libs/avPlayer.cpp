@@ -1,4 +1,5 @@
 #include "common/common.h"
+#include "cpu/cpuBackend.h"
 #include "common/file.h"
 #include "common/logging/log.h"
 #include "kernel/fileSystem.h"
@@ -122,7 +123,7 @@ struct AvPlayerEventReplacement {
 static void emit_event(AvPlayerEventReplacement event, int32_t id, void* data = nullptr) {
 	if (event.event_callback != nullptr) {
 		LOGF("\t event_id = %d\n", id);
-		event.event_callback(event.object_pointer, id, 0, data);
+		Cpu::CallGuest<void>(event.event_callback, event.object_pointer, id, 0, data);
 	}
 }
 
@@ -468,8 +469,8 @@ public:
 	GuestBuffer(AvPlayerMemAllocator mem, uint32_t align, uint32_t size, bool texture)
 	    : m_mem(mem), m_size(size), m_texture(texture) {
 		m_data =
-		    static_cast<uint8_t*>(texture ? mem.allocate_texture(mem.object_pointer, align, size)
-		                                  : mem.allocate(mem.object_pointer, align, size));
+		    texture ? Cpu::CallGuest<uint8_t*>(mem.allocate_texture, mem.object_pointer, align, size)
+		            : Cpu::CallGuest<uint8_t*>(mem.allocate, mem.object_pointer, align, size);
 	}
 	~GuestBuffer() { Reset(); }
 	GuestBuffer(const GuestBuffer&)            = delete;
@@ -498,9 +499,9 @@ private:
 	void Reset() {
 		if (m_data != nullptr) {
 			if (m_texture) {
-				m_mem.deallocate_texture(m_mem.object_pointer, m_data);
+				Cpu::CallGuest<void>(m_mem.deallocate_texture, m_mem.object_pointer, m_data);
 			} else {
-				m_mem.deallocate(m_mem.object_pointer, m_data);
+				Cpu::CallGuest<void>(m_mem.deallocate, m_mem.object_pointer, m_data);
 			}
 			m_data = nullptr;
 		}
@@ -583,17 +584,17 @@ public:
 			avio_context_free(&ctx);
 		}
 		if (opened) {
-			file.close(file.object_pointer);
+			Cpu::CallGuest<int>(file.close, file.object_pointer);
 		}
 	}
 	bool Init(const std::string& path) {
 		if (file.open != nullptr) {
 			if (file.close == nullptr || file.read_offset == nullptr || file.size == nullptr ||
-			    file.open(file.object_pointer, path.c_str()) < 0) {
+			    Cpu::CallGuest<int>(file.open, file.object_pointer, path.c_str()) < 0) {
 				return false;
 			}
 			opened = true;
-			size   = file.size(file.object_pointer);
+			size   = Cpu::CallGuest<uint64_t>(file.size, file.object_pointer);
 		} else {
 			if (!local_file.Open(LibKernel::FileSystem::GetRealFilename(path),
 			                     Common::File::Mode::Read)) {
@@ -626,7 +627,7 @@ private:
 		len      = static_cast<int>(std::min<uint64_t>(len, s->size - s->pos));
 		int read = 0;
 		if (s->opened) {
-			read = s->file.read_offset(s->file.object_pointer, buf, s->pos,
+			read = Cpu::CallGuest<int>(s->file.read_offset, s->file.object_pointer, buf, s->pos,
 			                           static_cast<uint32_t>(len));
 		} else {
 			uint32_t bytes = 0;

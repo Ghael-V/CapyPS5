@@ -7,6 +7,11 @@
 #include "graphics/shader/recompiler/frontend/decode/ScalarAluOps.h"
 #include "graphics/shader/recompiler/frontend/decode/VectorAluOps.h"
 
+#if defined(__ANDROID__)
+#include "android/capyps5_jni.h"
+#include <android/log.h>
+#endif
+#include <cstdio>
 #include <algorithm>
 #include <bit>
 #include <fmt/format.h>
@@ -218,6 +223,37 @@ const char* ImageDimensionToString(ImageDimension dimension) {
 	}
 }
 
+// Shader being decoded, so an unsupported encoding can be saved for analysis.
+static thread_local std::span<const uint32_t> g_decoding_code;
+static thread_local int                       g_decoding_stage = -1;
+
+void SetDecodingStage(int stage) {
+	g_decoding_stage = stage;
+}
+
+[[noreturn]] static void DecodeFailure(const char* what, uint32_t code, uint32_t pc) {
+#if defined(__ANDROID__)
+	const auto dir = AndroidGetFilesDir() + "/shaders";
+	char       name[96];
+	std::snprintf(name, sizeof(name), "/fail_%zu_%08x.bin", g_decoding_code.size(), pc);
+	if (auto* file = std::fopen((dir + name).c_str(), "wb"); file != nullptr) {
+		std::fwrite(g_decoding_code.data(), sizeof(uint32_t), g_decoding_code.size(), file);
+		std::fclose(file);
+	}
+	const auto at = pc / 4u;
+	__android_log_print(ANDROID_LOG_ERROR, "CapyPS5-Shader",
+	                    "%s 0x%x at pc 0x%x (stage %d): dwords %08x %08x [%08x %08x] %08x %08x saved %s", what, code, pc,
+	                    g_decoding_stage,
+	                    at >= 2 && at - 2 < g_decoding_code.size() ? g_decoding_code[at - 2] : 0,
+	                    at >= 1 && at - 1 < g_decoding_code.size() ? g_decoding_code[at - 1] : 0,
+	                    at < g_decoding_code.size() ? g_decoding_code[at] : 0,
+	                    at + 1 < g_decoding_code.size() ? g_decoding_code[at + 1] : 0,
+	                    at + 2 < g_decoding_code.size() ? g_decoding_code[at + 2] : 0,
+	                    at + 3 < g_decoding_code.size() ? g_decoding_code[at + 3] : 0, name);
+#endif
+	EXIT("%s 0x%08x at pc 0x%08x", what, code, pc);
+}
+
 void DecodeScalarSource(uint32_t code, uint32_t pc, Operand& operand) {
 	operand = {};
 
@@ -267,7 +303,7 @@ void DecodeScalarSource(uint32_t code, uint32_t pc, Operand& operand) {
 		case 252u: operand.kind = OperandKind::ExecZ; return;
 		case 253u: operand.kind = OperandKind::Scc; return;
 		case 255u: operand.kind = OperandKind::LiteralConstant; return;
-		default: EXIT("unsupported scalar source operand 0x%08x at pc 0x%08x", code, pc);
+		default: DecodeFailure("unsupported scalar source operand", code, pc);
 	}
 }
 
@@ -406,6 +442,7 @@ Program DecodeFrontProgram(std::span<const uint32_t> front) {
 }
 
 void DecodeProgram(std::span<const uint32_t> code, Program& program) {
+	g_decoding_code = code;
 	program.instructions.clear();
 	program.instructions.reserve(code.size());
 	program.code = code;

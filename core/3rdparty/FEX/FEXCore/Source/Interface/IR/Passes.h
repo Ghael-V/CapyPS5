@@ -14,6 +14,7 @@ class Pass;
 fextl::unique_ptr<Pass> CreateDeadFlagCalculationEliminination();
 fextl::unique_ptr<Pass> CreateRegisterAllocationPass(const CPUIDEmu* CPUID);
 fextl::unique_ptr<Pass> CreateX87StackOptimizationPass(const HostFeatures&, OpSize GPROpSize);
+fextl::unique_ptr<Pass> CreateGuestAddressFoldPass();
 
 namespace Validation {
   fextl::unique_ptr<Pass> CreateIRValidation();

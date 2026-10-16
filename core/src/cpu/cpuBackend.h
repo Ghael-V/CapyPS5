@@ -1,6 +1,7 @@
 #ifndef EMULATOR_SRC_CPU_CPUBACKEND_H_
 #define EMULATOR_SRC_CPU_CPUBACKEND_H_
 
+#include <type_traits>
 #include "common/abi.h"
 #include "common/common.h"
 
@@ -54,11 +55,43 @@ public:
 
 	// Execute guest callback on current JIT thread or dedicated stack
 	virtual uint64_t CallGuestCallback(uint64_t guest_func_ptr, uint64_t arg0 = 0,
-	                                   uint64_t arg1 = 0, uint64_t arg2 = 0) = 0;
+	                                   uint64_t arg1 = 0, uint64_t arg2 = 0, uint64_t arg3 = 0,
+	                                   uint64_t arg4 = 0, uint64_t arg5 = 0) = 0;
 
 	// Singleton instance
 	static CpuBackend* Instance();
 };
+
+namespace Detail {
+template <typename T>
+uint64_t ToGuestArg(T value) {
+	if constexpr (std::is_pointer_v<T> || std::is_null_pointer_v<T>) {
+		return reinterpret_cast<uint64_t>(value);
+	} else {
+		return static_cast<uint64_t>(value);
+	}
+}
+} // namespace Detail
+
+/**
+ * Calls a guest function pointer (a callback the game handed to an HLE function): through the JIT
+ * on ARM64 hosts, natively on x86-64. Calling one directly from host code jumps into x86 code and
+ * dies with SIGILL on ARM64, so every guest callback must go through here. Integer and pointer
+ * arguments only, up to six (RDI, RSI, RDX, RCX, R8, R9).
+ */
+template <typename Ret = uint64_t, typename Func, typename... Args>
+Ret CallGuest(Func func, Args... args) {
+	static_assert(sizeof...(Args) <= 6, "guest callbacks take at most six register arguments");
+	const auto result = CpuBackend::Instance()->CallGuestCallback(
+	    reinterpret_cast<uint64_t>(func), Detail::ToGuestArg(args)...);
+	if constexpr (std::is_void_v<Ret>) {
+		(void)result;
+	} else if constexpr (std::is_pointer_v<Ret>) {
+		return reinterpret_cast<Ret>(result);
+	} else {
+		return static_cast<Ret>(result);
+	}
+}
 
 // Create a guest-callable trampoline that forwards an x86_64 call to an ARM64 host function
 uint64_t GetOrCreateHleTrampoline(uint64_t host_func_ptr, const char* name = nullptr);

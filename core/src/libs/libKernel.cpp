@@ -1411,11 +1411,11 @@ static int KYTY_SYSV_ABI KernelStopUnloadModule(KernelModule handle, size_t args
 	}
 
 	if (g_get_thread_atexit_count_func != nullptr &&
-	    g_get_thread_atexit_count_func(program->unique_id) > 0) {
+	    Cpu::CallGuest<int>(g_get_thread_atexit_count_func, program->unique_id) > 0) {
 		LOGF("KernelStopUnloadModule: cannot unload %s\n",
 		     Common::PathToString(program->file_name).c_str());
 		if (g_thread_atexit_report_func != nullptr) {
-			g_thread_atexit_report_func(program->unique_id);
+			Cpu::CallGuest<void>(g_thread_atexit_report_func, program->unique_id);
 		}
 		return KERNEL_ERROR_EBUSY;
 	}

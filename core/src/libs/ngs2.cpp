@@ -1027,7 +1027,7 @@ int KYTY_SYSV_ABI Ngs2SystemCreateWithAllocator(const Ngs2SystemOption*    optio
 	buf.host_buffer_size = sizeof(Ngs2Internal);
 	buf.user_data        = allocator->user_data;
 
-	int result = allocator->alloc_handler(&buf);
+	int result = Cpu::CallGuest<int32_t>(allocator->alloc_handler, &buf);
 
 	EXIT_NOT_IMPLEMENTED(result != OK);
 	EXIT_NOT_IMPLEMENTED(buf.host_buffer == nullptr);
@@ -1134,7 +1134,7 @@ static void Ngs2InitModules(Ngs2RackInternal& rack) {
 				Ngs2UserFxContext context {
 				    rack.common[m].data(), module.param.data(),           module.work.data(),
 				    fx.user_data,          rack.option.common.max_voices, i};
-				EXIT_NOT_IMPLEMENTED(fx.setup(&context) != OK);
+				EXIT_NOT_IMPLEMENTED(Cpu::CallGuest<int>(fx.setup, &context) != OK);
 			}
 		}
 	}
@@ -1295,7 +1295,7 @@ int KYTY_SYSV_ABI Ngs2RackCreateWithAllocator(uintptr_t system_handle, uint32_t 
 
 	EXIT_NOT_IMPLEMENTED(buf.host_buffer_size == 0);
 
-	int result = allocator->alloc_handler(&buf);
+	int result = Cpu::CallGuest<int32_t>(allocator->alloc_handler, &buf);
 
 	EXIT_NOT_IMPLEMENTED(result != OK);
 	EXIT_NOT_IMPLEMENTED(buf.host_buffer == nullptr);
@@ -1364,7 +1364,7 @@ int KYTY_SYSV_ABI Ngs2RackDestroy(uintptr_t rack_handle, Ngs2ContextBufferInfo* 
 					                           fx.user_data,
 					                           rack->option.common.max_voices,
 					                           i};
-					EXIT_NOT_IMPLEMENTED(fx.cleanup(&context) != OK);
+					EXIT_NOT_IMPLEMENTED(Cpu::CallGuest<int>(fx.cleanup, &context) != OK);
 				}
 			}
 			std::destroy_at(voices + i);
@@ -1375,7 +1375,7 @@ int KYTY_SYSV_ABI Ngs2RackDestroy(uintptr_t rack_handle, Ngs2ContextBufferInfo* 
 	}
 
 	if (allocator.free_handler != nullptr) {
-		return allocator.free_handler(&context_buffer);
+		return Cpu::CallGuest<int32_t>(allocator.free_handler, &context_buffer);
 	}
 	if (buffer_info != nullptr) {
 		*buffer_info = context_buffer;
@@ -1761,7 +1761,7 @@ static void Ngs2RenderVoice(Ngs2VoiceInternal& voice, const std::vector<Ngs2Voic
 				                                  voice.channels,
 				                                  grain,
 				                                  voice.rack->ngs->option.sample_rate};
-				EXIT_NOT_IMPLEMENTED(fx.process(&context) != OK);
+				EXIT_NOT_IMPLEMENTED(Cpu::CallGuest<int>(fx.process, &context) != OK);
 				module.flags = 0;
 			}
 		}

@@ -1,6 +1,9 @@
 #include "kernel/pthread.h"
 
 #include "cpu/cpuBackend.h"
+#if !defined(_WIN32)
+#include <dlfcn.h>
+#endif
 #include "common/assert.h"
 #include "common/common.h"
 #include "common/dateTime.h"
@@ -3273,6 +3276,22 @@ int KYTY_SYSV_ABI PthreadCreate(Pthread* thread, const PthreadAttr* attr,
 	if (thread == nullptr) {
 		return KERNEL_ERROR_EINVAL;
 	}
+
+#if !defined(__x86_64__) && !defined(_M_X64)
+	// Emulator libraries (AvPlayer decoders, Ult) create guest-visible threads with host entry
+	// functions. The JIT would run that ARM64 code as x86; start the thread through an HLE
+	// trampoline instead, so the host function runs on a thread that can still call guest code.
+	if (entry != nullptr && Cpu::CpuBackend::Instance()->GetType() != Cpu::BackendType::Native) {
+		Dl_info entry_info {};
+		Dl_info self_info {};
+		if (dladdr(reinterpret_cast<void*>(entry), &entry_info) != 0 &&
+		    dladdr(reinterpret_cast<void*>(&PthreadCreate), &self_info) != 0 &&
+		    entry_info.dli_fbase == self_info.dli_fbase) {
+			entry = reinterpret_cast<pthread_entry_func_t>(
+			    Cpu::GetOrCreateHleTrampoline(reinterpret_cast<uint64_t>(entry), name));
+		}
+	}
+#endif
 
 	auto* pthread_pool = g_pthread_context->GetPthreadPool();
 

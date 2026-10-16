@@ -1,4 +1,8 @@
 #include "graphics/host_gpu/renderer/commandScheduler.h"
+#if defined(__ANDROID__) || defined(__linux__)
+#include <pthread.h>
+#endif
+#include "graphics/guest_gpu/graphicsRun.h"
 
 #include "common/assert.h"
 #include "common/logging/log.h"
@@ -260,6 +264,7 @@ void CommandScheduler::QueueOperation(Common::UniqueFunction<void>&& operation, 
 		return;
 	}
 	if (g_deferred_callback_scheduler != this) {
+		GpuSyncRecord("QueueOperation waits for close");
 		m_operation_available.wait(lock,
 		                           [this] { return m_operation_state == OperationState::Closed; });
 	}
@@ -273,6 +278,9 @@ bool CommandScheduler::HasPendingPriorityOperations() {
 }
 
 void CommandScheduler::PriorityOperationsThread(std::stop_token stop) {
+#if defined(__ANDROID__) || defined(__linux__)
+	pthread_setname_np(pthread_self(), "CapyGpuDeferred");
+#endif
 	while (!stop.stop_requested()) {
 		PendingOperation operation;
 		{
@@ -303,13 +311,16 @@ void CommandScheduler::PriorityOperationsThread(std::stop_token stop) {
 
 void CommandScheduler::DrainPriorityOperations() {
 	EXIT_IF(g_deferred_callback_scheduler == this);
+	GpuSyncRecord("DrainPriorityOperations begin");
 	std::unique_lock lock(m_operation_mutex);
 	m_operation_available.wait(
 	    lock, [this] { return m_priority_operations.empty() && !m_priority_active; });
+	GpuSyncRecord("DrainPriorityOperations end");
 }
 
 void CommandScheduler::WaitPriorityOperations(uint64_t tick) {
 	EXIT_IF(g_deferred_callback_scheduler == this);
+	GpuSyncRecord("WaitPriorityOperations begin", tick);
 	std::unique_lock lock(m_operation_mutex);
 	m_operation_available.wait(lock, [this, tick] {
 		const bool active_before_or_at = m_priority_active && m_priority_active_tick <= tick;
@@ -317,6 +328,7 @@ void CommandScheduler::WaitPriorityOperations(uint64_t tick) {
 		    !m_priority_operations.empty() && m_priority_operations.front().tick <= tick;
 		return !active_before_or_at && !queued_before_or_at;
 	});
+	GpuSyncRecord("WaitPriorityOperations end", tick);
 }
 
 void CommandScheduler::RunOperation(Common::UniqueFunction<void>&& operation) {

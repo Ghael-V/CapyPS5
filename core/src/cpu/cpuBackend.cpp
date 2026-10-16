@@ -2,6 +2,11 @@
 #include "common/debugFlags.h"
 #include "common/logging/log.h"
 #include "common/threads.h"
+#include "kernel/memory.h"
+#if defined(__ANDROID__)
+#include "android/capyps5_jni.h"
+#include <sys/stat.h>
+#endif
 #include "kernel/pthread.h"
 
 #include <vector>
@@ -19,6 +24,7 @@
 #include <FEXCore/Core/X86Enums.h>
 #include <FEXCore/Debug/InternalThreadState.h>
 #include <FEXCore/HLE/SyscallHandler.h>
+#include <FEXCore/Utils/AddressFold.h>
 #include <FEXCore/fextl/memory.h>
 #if defined(__aarch64__)
 #include <FEXCore/Utils/ArchHelpers/Arm64.h>
@@ -33,6 +39,9 @@
 #include <dlfcn.h>
 #include <mutex>
 #include <sys/mman.h>
+#include <sys/syscall.h>
+#include <signal.h>
+#include <dirent.h>
 #include <sys/uio.h>
 #include <thread>
 #include <unistd.h>
@@ -113,6 +122,74 @@ bool HleStatsEnabled() {
 
 void HleDumpInFlight();
 
+// `setprop debug.capy.dump_stacks N` (with hle_stats on): every time N changes, log a host
+// backtrace of every thread (tag CapyPS5-Stack). Walks the AArch64 frame-pointer chain from the
+// signal context; frames are read with process_vm_readv so a bogus x29 (JIT code keeps a guest
+// register there) cannot fault. Debugging aid for hangs.
+#if defined(__aarch64__) && defined(__ANDROID__)
+void StackDumpHandler(int /*signal*/, siginfo_t* /*info*/, void* context) {
+	const auto* uc = static_cast<const ucontext_t*>(context);
+	char        name[32] = {};
+	pthread_getname_np(pthread_self(), name, sizeof(name));
+	char line[1600];
+	int  used = std::snprintf(line, sizeof(line), "tid %d [%s]:", static_cast<int>(gettid()), name);
+	const auto add = [&](uint64_t address) {
+		if (used >= static_cast<int>(sizeof(line)) - 64) {
+			return;
+		}
+		Dl_info info {};
+		if (dladdr(reinterpret_cast<void*>(address), &info) != 0 && info.dli_fbase != nullptr) {
+			const char* file = info.dli_fname != nullptr ? std::strrchr(info.dli_fname, '/') : nullptr;
+			used += std::snprintf(line + used, sizeof(line) - used, " %s+0x%llx",
+			                      file != nullptr ? file + 1 : "?",
+			                      static_cast<unsigned long long>(address - reinterpret_cast<uint64_t>(info.dli_fbase)));
+		} else {
+			used += std::snprintf(line + used, sizeof(line) - used, " 0x%llx", static_cast<unsigned long long>(address));
+		}
+	};
+	add(uc->uc_mcontext.pc);
+	add(uc->uc_mcontext.regs[30]);
+	uint64_t fp = uc->uc_mcontext.regs[29];
+	for (int depth = 0; depth < 28 && fp != 0 && (fp & 7u) == 0; depth++) {
+		uint64_t frame[2] = {};
+		iovec    local {frame, sizeof(frame)};
+		iovec    remote {reinterpret_cast<void*>(fp), sizeof(frame)};
+		if (process_vm_readv(getpid(), &local, 1, &remote, 1, 0) != static_cast<ssize_t>(sizeof(frame)) ||
+		    frame[1] == 0) {
+			break;
+		}
+		add(frame[1]);
+		if (frame[0] <= fp) {
+			break;
+		}
+		fp = frame[0];
+	}
+	__android_log_write(ANDROID_LOG_WARN, "CapyPS5-Stack", line);
+}
+
+void DumpAllThreadStacks() {
+	const int signal_number = SIGRTMAX - 2;
+	static std::once_flag installed;
+	std::call_once(installed, [signal_number] {
+		struct sigaction action {};
+		action.sa_sigaction = &StackDumpHandler;
+		action.sa_flags     = SA_SIGINFO | SA_RESTART;
+		sigemptyset(&action.sa_mask);
+		sigaction(signal_number, &action, nullptr);
+	});
+	if (auto* dir = opendir("/proc/self/task"); dir != nullptr) {
+		while (auto* entry = readdir(dir)) {
+			const int tid = std::atoi(entry->d_name);
+			if (tid > 0 && tid != static_cast<int>(gettid())) {
+				syscall(SYS_tgkill, getpid(), tid, signal_number);
+				std::this_thread::sleep_for(std::chrono::milliseconds(2));
+			}
+		}
+		closedir(dir);
+	}
+}
+#endif
+
 // With hle_stats on, report in-flight calls every 3 s even when every guest thread is blocked
 // (a hang inside one HLE call makes no further calls that would print the stats).
 void HleStartWatchdog() {
@@ -123,6 +200,16 @@ void HleStartWatchdog() {
 				std::this_thread::sleep_for(std::chrono::seconds(3));
 				if (HleStatsEnabled()) {
 					HleDumpInFlight();
+#if defined(__aarch64__) && defined(__ANDROID__)
+					static Common::DebugFlags::CachedValue dump_stacks("debug.capy.dump_stacks", 0);
+					static int64_t                         dumped = 0;
+					if (dump_stacks.Get() != dumped) {
+						dumped = dump_stacks.Get();
+						if (dumped != 0) {
+							DumpAllThreadStacks();
+						}
+					}
+#endif
 				}
 			}
 		}).detach();
@@ -336,9 +423,11 @@ public:
 	}
 
 	uint64_t CallGuestCallback(uint64_t guest_func_ptr, uint64_t arg0 = 0,
-	                           uint64_t arg1 = 0, uint64_t arg2 = 0) override {
-		using callback_fn_t = KYTY_SYSV_ABI uint64_t (*)(uint64_t, uint64_t, uint64_t);
-		return reinterpret_cast<callback_fn_t>(guest_func_ptr)(arg0, arg1, arg2);
+	                           uint64_t arg1 = 0, uint64_t arg2 = 0, uint64_t arg3 = 0,
+	                           uint64_t arg4 = 0, uint64_t arg5 = 0) override {
+		using callback_fn_t =
+		    KYTY_SYSV_ABI uint64_t (*)(uint64_t, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t);
+		return reinterpret_cast<callback_fn_t>(guest_func_ptr)(arg0, arg1, arg2, arg3, arg4, arg5);
 	}
 };
 
@@ -348,6 +437,22 @@ namespace {
 
 #if defined(__aarch64__)
 thread_local FEXCore::Core::InternalThreadState* s_current_fex_thread = nullptr;
+
+// Guest address folding (kernel/memory.cpp): start masking guest addresses in translated code.
+FEXCore::Context::Context* s_fold_context = nullptr;
+
+void EnableGuestAddressFold(uint64_t mask) {
+	FEXCore::GuestAddressFoldMask.store(mask, std::memory_order_relaxed);
+	// Code translated so far does not mask; drop it so it is translated again. Unreal reserves its
+	// range during start-up, while only the main thread runs guest code.
+	auto* thread = s_current_fex_thread;
+	if (s_fold_context != nullptr && thread != nullptr) {
+		std::unique_lock lock(s_fold_context->GetCodeInvalidationMutex());
+		s_fold_context->InvalidateCodeBuffersCodeRange(0, 1ull << 47u);
+		s_fold_context->InvalidateThreadCachedCodeRange(thread, 0, 1ull << 47u);
+	}
+	ALOGW("Guest address folding enabled (mask 0x%llx)", static_cast<unsigned long long>(mask));
+}
 #endif
 // Counts ExecuteGuestCode runs on this host thread, so an HLE call can tell whether it ran
 // guest code nested inside it (e.g. sceKernelLoadStartModule running module_start).
@@ -602,6 +707,14 @@ public:
 		FEXCore::Config::Set(FEXCore::Config::CONFIG_TSOENABLED, "0");
 		FEXCore::Config::Set(FEXCore::Config::CONFIG_SILENTLOG, "1");
 		FEXCore::Config::Set(FEXCore::Config::CONFIG_SMCCHECKS, "0");
+		// `setprop debug.capy.dump_ir 1`: dump every block's final IR to <files>/ir (debugging only).
+		static Common::DebugFlags::CachedValue dump_ir("debug.capy.dump_ir", 0);
+		if (dump_ir.Get() != 0) {
+			const auto dir = AndroidGetFilesDir() + "/ir";
+			::mkdir(dir.c_str(), 0700);
+			FEXCore::Config::Set(FEXCore::Config::CONFIG_DUMPIR, dir.c_str());
+			FEXCore::Config::Set(FEXCore::Config::CONFIG_PASSMANAGERDUMPIR, "afteropt");
+		}
 
 		FEXCore::HostFeatures features {};
 		features.DCacheLineLog2 = 6;
@@ -627,6 +740,21 @@ public:
 		if (!m_fex_context->InitCore()) {
 			ALOGE("Arm64CpuBackend: Failed to initialize FEXCore core!");
 			return false;
+		}
+
+		s_fold_context = m_fex_context.get();
+		Libs::LibKernel::Memory::SetAddressFoldHook(&EnableGuestAddressFold);
+		// On a 39-bit host, mask guest addresses from the start: translated code cannot be safely
+		// invalidated later from inside an HLE call. Only addresses the host cannot map change.
+		{
+			constexpr uint64_t FOLD_MASK = (1ull << 39u) - 1u;
+			int                probe     = 0;
+			static Common::DebugFlags::CachedValue address_fold("debug.capy.address_fold", 1);
+			if (address_fold.Get() != 0 && reinterpret_cast<uintptr_t>(&probe) <= FOLD_MASK) {
+				FEXCore::GuestAddressFoldMask.store(FOLD_MASK, std::memory_order_relaxed);
+				Libs::LibKernel::Memory::SetAddressFoldMask(FOLD_MASK);
+				ALOGI("Arm64CpuBackend: 39-bit host, guest address folding on");
+			}
 		}
 
 		ALOGI("Arm64CpuBackend: Initialized FEXCore JIT (guest base=0x%016llx, size=0x%016llx)",
@@ -684,7 +812,8 @@ public:
 	}
 
 	uint64_t CallGuestCallback(uint64_t guest_func_ptr, uint64_t arg0 = 0,
-	                           uint64_t arg1 = 0, uint64_t arg2 = 0) override {
+	                           uint64_t arg1 = 0, uint64_t arg2 = 0, uint64_t arg3 = 0,
+	                           uint64_t arg4 = 0, uint64_t arg5 = 0) override {
 		if (guest_func_ptr == 0) {
 			return 0;
 		}
@@ -696,10 +825,16 @@ public:
 			uint64_t saved_rdi = frame->State.gregs[FEXCore::X86State::REG_RDI];
 			uint64_t saved_rsi = frame->State.gregs[FEXCore::X86State::REG_RSI];
 			uint64_t saved_rdx = frame->State.gregs[FEXCore::X86State::REG_RDX];
+			uint64_t saved_rcx = frame->State.gregs[FEXCore::X86State::REG_RCX];
+			uint64_t saved_r8  = frame->State.gregs[FEXCore::X86State::REG_R8];
+			uint64_t saved_r9  = frame->State.gregs[FEXCore::X86State::REG_R9];
 
 			frame->State.gregs[FEXCore::X86State::REG_RDI] = arg0;
 			frame->State.gregs[FEXCore::X86State::REG_RSI] = arg1;
 			frame->State.gregs[FEXCore::X86State::REG_RDX] = arg2;
+			frame->State.gregs[FEXCore::X86State::REG_RCX] = arg3;
+			frame->State.gregs[FEXCore::X86State::REG_R8]  = arg4;
+			frame->State.gregs[FEXCore::X86State::REG_R9]  = arg5;
 
 			EnsureTrampolinePool();
 			frame->Pointers.ThunkCallbackRet = reinterpret_cast<uint64_t>(s_trampoline_pool + 16);
@@ -719,6 +854,9 @@ public:
 			frame->State.gregs[FEXCore::X86State::REG_RDI] = saved_rdi;
 			frame->State.gregs[FEXCore::X86State::REG_RSI] = saved_rsi;
 			frame->State.gregs[FEXCore::X86State::REG_RDX] = saved_rdx;
+			frame->State.gregs[FEXCore::X86State::REG_RCX] = saved_rcx;
+			frame->State.gregs[FEXCore::X86State::REG_R8]  = saved_r8;
+			frame->State.gregs[FEXCore::X86State::REG_R9]  = saved_r9;
 
 			return ret;
 		}
@@ -726,7 +864,7 @@ public:
 
 		ALOGI("Arm64CpuBackend: Fallback ExecuteGuestCode callback at 0x%016llx",
 		      static_cast<unsigned long long>(guest_func_ptr));
-		return ExecuteGuestCode(guest_func_ptr, arg0, arg1, arg2, 0);
+		return ExecuteGuestCode(guest_func_ptr, arg0, arg1, arg2, 0, arg3, arg4, arg5);
 	}
 
 private:
@@ -736,7 +874,8 @@ private:
 	CapySignalDelegator m_signal_delegator;
 	fextl::unique_ptr<FEXCore::Context::Context> m_fex_context;
 
-	uint64_t ExecuteGuestCode(uint64_t entry_addr, uint64_t arg0, uint64_t arg1, uint64_t arg2, uint64_t stack_top) {
+	uint64_t ExecuteGuestCode(uint64_t entry_addr, uint64_t arg0, uint64_t arg1, uint64_t arg2, uint64_t stack_top,
+	                          uint64_t arg3 = 0, uint64_t arg4 = 0, uint64_t arg5 = 0) {
 		if (!m_fex_context) {
 			ALOGI("ExecuteGuestCode: Lazy initializing FEXCore context");
 			if (!Initialize(0, 0x0000800000000000ULL)) {
@@ -828,6 +967,9 @@ private:
 		initial_state.gregs[FEXCore::X86State::REG_RDI] = arg0;
 		initial_state.gregs[FEXCore::X86State::REG_RSI] = arg1;
 		initial_state.gregs[FEXCore::X86State::REG_RDX] = arg2;
+		initial_state.gregs[FEXCore::X86State::REG_RCX] = arg3;
+		initial_state.gregs[FEXCore::X86State::REG_R8]  = arg4;
+		initial_state.gregs[FEXCore::X86State::REG_R9]  = arg5;
 
 		// Setup TCB base for fs:[offset] TLS accesses
 		ALOGI("ExecuteGuestCode: 4. GetCurrentTcb");

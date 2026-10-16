@@ -77,6 +77,9 @@ void PassManager::AddDefaultPasses(Context::ContextImpl* ctx) {
     InsertPass(CreateDeadFlagCalculationEliminination());
   }
 
+  // CapyPS5: runs after x87 lowering (which emits memory ops) and always, as it checks its mask per block.
+  InsertPass(CreateGuestAddressFoldPass());
+
   InsertPass(IR::CreateRegisterAllocationPass(&ctx->CPUID), "RA");
 
 #if defined(ASSERTIONS_ENABLED) && ASSERTIONS_ENABLED
