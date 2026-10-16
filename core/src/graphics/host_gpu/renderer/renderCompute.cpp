@@ -194,7 +194,14 @@ bool RenderExecutor::TryConsumeComputeImageClear(const ShaderComputeInputInfo& i
 		return false;
 	}
 	if (!cache.ClearImageFromBuffer(command, descriptor.Base48(), size, packed_clear)) {
-		return false;
+		// A plain buffer fill (color metadata keys in UE4) is cheaper on the CPU: running it on
+		// the GPU made the next CPU read of those keys wait for the GPU to go idle.
+		constexpr uint64_t MaxCpuFill = 16ull << 20u;
+		if (size > MaxCpuFill || cache.HasImagesInRegion(descriptor.Base48(), size) ||
+		    !command.GetContext().GetBufferCache().FillMemory(descriptor.Base48(), size, packed_clear)) {
+			return false;
+		}
+		Common::DebugFlags::FrameTrace("    -> filled on the CPU");
 	}
 	static std::atomic<uint32_t> logged_clears {0};
 	if (logged_clears.fetch_add(1, std::memory_order_relaxed) < 32) {

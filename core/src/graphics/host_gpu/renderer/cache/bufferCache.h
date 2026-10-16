@@ -12,6 +12,7 @@
 #include "graphics/host_gpu/renderer/cache/streamBuffer.h"
 
 #include <map>
+#include <mutex>
 #include <span>
 #include <utility>
 #include <vector>
@@ -51,6 +52,9 @@ public:
 	KYTY_CLASS_NO_COPY(BufferCache);
 
 	void                   InvalidateMemory(uint64_t vaddr, uint64_t size);
+	// Overwrites whole tracker pages of guest memory with a dword pattern on the CPU, dropping
+	// the GPU copy instead of downloading it. False when the range is not page aligned.
+	[[nodiscard]] bool     FillMemory(uint64_t vaddr, uint64_t size, uint32_t value);
 	void                   ReadMemory(uint64_t vaddr, uint64_t size, bool is_write = false);
 	[[nodiscard]] Buffer&  GetBuffer(BufferId id) { return m_slot_buffers[id]; }
 	[[nodiscard]] BufferId FindBuffer(uint64_t vaddr, uint64_t size);
@@ -131,6 +135,10 @@ private:
 	BufferMap                                         m_buffers;
 	PageTable                                         m_page_table;
 	RangeSet                                          m_gpu_modified_ranges;
+	// GPU-written bytes whose download is in flight (a CPU fault elsewhere on their page did not
+	// wait for it). Their guest copy is stale until then, so uploads must not send it back.
+	RangeSet                                          m_async_download_ranges;
+	std::mutex                                        m_async_download_lock;
 	MemoryTracker                                     m_memory_tracker;
 	StreamBuffer                                      m_staging_buffer;
 	StreamBuffer                                      m_stream_buffer;

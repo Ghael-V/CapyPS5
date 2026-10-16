@@ -16,6 +16,9 @@
 #include "kernel/memory.h"
 
 #include <algorithm>
+#include <chrono>
+#include <dlfcn.h>
+#include <pthread.h>
 #include <cinttypes>
 #include <cstring>
 #include <memory>
@@ -216,6 +219,12 @@ bool BufferCache::DownloadBufferMemory(Buffer& buffer, uint64_t vaddr, uint64_t 
 			Libs::LibKernel::Memory::WriteBacking(buffer_address + copy.srcOffset,
 			                                      mapped + (copy.dstOffset - offset), copy.size);
 		}
+		if constexpr (async) {
+			std::scoped_lock lock {m_async_download_lock};
+			for (const auto& copy: copies) {
+				m_async_download_ranges.Subtract(buffer_address + copy.srcOffset, copy.size);
+			}
+		}
 	};
 	if constexpr (async) {
 		m_scheduler.DeferPriorityOperation(std::move(publish));
@@ -288,12 +297,34 @@ void BufferCache::InvalidateMemory(uint64_t vaddr, uint64_t size) {
 	                                  [this, vaddr, size] { ReadMemory(vaddr, size, true); });
 }
 
+bool BufferCache::FillMemory(uint64_t vaddr, uint64_t size, uint32_t value) {
+	if (!GuestGpu::IsGpuThread() || !GuestRange {vaddr, size}.Valid() ||
+	    vaddr % TRACKER_PAGE_SIZE != 0 || size % TRACKER_PAGE_SIZE != 0) {
+		return false;
+	}
+	std::vector<uint32_t> words(size / sizeof(uint32_t), value);
+	m_memory_tracker.UnmarkRegionAsGpuModified(vaddr, size);
+	if (!LibKernel::Memory::TryWriteBacking(vaddr, words.data(), size)) {
+		EXIT("BufferCache: failed to fill guest memory 0x%016" PRIx64 "\n", vaddr);
+	}
+	// The next GPU use uploads the new contents.
+	m_memory_tracker.MarkRegionAsCpuModified(vaddr, size);
+	return true;
+}
+
 void BufferCache::ReadMemory(uint64_t vaddr, uint64_t size, bool is_write) {
 	if (!GuestGpu::IsGpuThread() && CommandScheduler::InDeferredOperation()) {
 		EXIT("unsupported buffer readback from an asynchronous GPU completion, "
 		     "addr=0x%016" PRIx64 " size=0x%016" PRIx64 "\n",
 		     vaddr, size);
 	}
+#if defined(__ANDROID__)
+	// `setprop debug.capy.fault_log 1`: log every CPU access that forces a GPU readback (tag
+	// CapyPS5-Readback) with the accessing thread and how long it waited.
+	static Common::DebugFlags::CachedValue fault_log("debug.capy.fault_log", 0);
+	const bool log_fault = fault_log.Get() != 0 && !GuestGpu::IsGpuThread();
+	const auto fault_start = log_fault ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point {};
+#endif
 	m_scheduler.Context().GetGpu().SendCommandSync([this, vaddr, size, is_write] {
 		if (is_write && !IsRegionRegistered(vaddr, size)) {
 			return;
@@ -310,6 +341,31 @@ void BufferCache::ReadMemory(uint64_t vaddr, uint64_t size, bool is_write) {
 		// sprite batches rendered from stale CPU data. Clearing after an empty download (unlike
 		// upstream) avoids an endless fault loop on pages with no dirty bytes left.
 		auto& buffer = m_slot_buffers[FindBuffer(vaddr, size)];
+		// UE4 keeps small GPU-written buffers on pages full of CPU data; waiting for the GPU on
+		// every access to those pages serialized the CPU and the GPU. An access at least
+		// ReadGuard bytes away from every GPU-written byte proceeds at once, and those bytes reach
+		// guest memory when the GPU finishes. `setprop debug.capy.async_readback 0` disables it.
+		static Common::DebugFlags::CachedValue async_readback("debug.capy.async_readback", 1);
+		constexpr uint64_t ReadGuard = 64;
+		const uint64_t     guard_low = vaddr >= ReadGuard ? vaddr - ReadGuard : 0;
+		if (async_readback.Get() != 0 &&
+		    !m_gpu_modified_ranges.Intersects(guard_low, size + 2 * ReadGuard)) {
+			const auto page_low  = Common::AlignDown(vaddr, TRACKER_PAGE_SIZE);
+			const auto page_high = Common::AlignUp(vaddr + size, TRACKER_PAGE_SIZE);
+			{
+				std::scoped_lock lock {m_async_download_lock};
+				m_gpu_modified_ranges.ForEachInRange(page_low, page_high - page_low,
+				                                     [&](uint64_t start, uint64_t end) {
+					                                     m_async_download_ranges.Add(start, end - start);
+				                                     });
+			}
+			(void)DownloadBufferMemory<true>(buffer, vaddr, size);
+			m_memory_tracker.UnmarkRegionAsGpuModified(vaddr, size);
+			if (is_write) {
+				m_memory_tracker.MarkRegionAsCpuModified(vaddr, size);
+			}
+			return;
+		}
 		Common::DebugFlags::FrameTrace("  cpu fault download 0x%llx size=%llu write=%d buffer=0x%llx+%llu",
 		    static_cast<unsigned long long>(vaddr), static_cast<unsigned long long>(size), is_write ? 1 : 0,
 		    static_cast<unsigned long long>(buffer.CpuAddress()), static_cast<unsigned long long>(buffer.Size()));
@@ -319,6 +375,19 @@ void BufferCache::ReadMemory(uint64_t vaddr, uint64_t size, bool is_write) {
 			m_memory_tracker.MarkRegionAsCpuModified(vaddr, size);
 		}
 	});
+#if defined(__ANDROID__)
+	if (log_fault) {
+		char name[32] = {};
+		pthread_getname_np(pthread_self(), name, sizeof(name));
+		const auto waited = std::chrono::duration_cast<std::chrono::microseconds>(
+		                        std::chrono::steady_clock::now() - fault_start)
+		                        .count();
+		__android_log_print(ANDROID_LOG_WARN, "CapyPS5-Readback",
+		                    "%s %s 0x%llx size=%llu waited %lld us", name, is_write ? "write" : "read",
+		                    static_cast<unsigned long long>(vaddr),
+		                    static_cast<unsigned long long>(size), static_cast<long long>(waited));
+	}
+#endif
 }
 
 BufferId BufferCache::FindBuffer(uint64_t vaddr, uint64_t size) {
@@ -430,11 +499,30 @@ bool BufferCache::SynchronizeBuffer(Buffer& buffer, uint64_t vaddr, uint64_t siz
 	std::vector<vk::BufferCopy> copies;
 	uint64_t                    total_size = 0;
 	vk::Buffer                  source;
+	RangeSet                    pending;
+	{
+		// Copied so the lock is not held while staging memory may wait for the GPU.
+		std::scoped_lock lock {m_async_download_lock};
+		pending = m_async_download_ranges;
+	}
+	const auto add_copy = [&](uint64_t address, uint64_t bytes) {
+		copies.emplace_back(total_size, buffer.Offset(address), bytes);
+		total_size += bytes;
+	};
 	m_memory_tracker.ForEachUploadRange(
 	    vaddr, size, is_written,
 	    [&](uint64_t address, uint64_t bytes) noexcept {
-		    copies.emplace_back(total_size, buffer.Offset(address), bytes);
-		    total_size += bytes;
+		    // The GPU holds the current value of bytes still being downloaded.
+		    uint64_t cursor = address;
+		    pending.ForEachInRange(address, bytes, [&](uint64_t start, uint64_t end) {
+			    if (start > cursor) {
+				    add_copy(cursor, start - cursor);
+			    }
+			    cursor = std::max(cursor, end);
+		    });
+		    if (address + bytes > cursor) {
+			    add_copy(cursor, address + bytes - cursor);
+		    }
 	    },
 	    [&]() noexcept { source = UploadCopies(buffer, copies, total_size); });
 	if (source) {
@@ -505,6 +593,21 @@ vk::Buffer BufferCache::UploadCopies(Buffer& buffer, std::span<vk::BufferCopy> c
 std::pair<Buffer*, uint64_t> BufferCache::ObtainBuffer(uint64_t vaddr, uint64_t size,
                                                        bool is_written, bool is_texel_buffer,
                                                        BufferId id) {
+#if defined(__ANDROID__)
+	// `setprop debug.capy.watch_gpu_write <vaddr>`: log every GPU write binding that covers that
+	// address (tag CapyPS5-GpuWrite) with the caller, to find what makes CPU reads stall.
+	static Common::DebugFlags::CachedValue watch_gpu_write("debug.capy.watch_gpu_write", 0);
+	const auto watch_page = static_cast<uint64_t>(watch_gpu_write.Get()) & ~uint64_t {0xfff};
+	if (is_written && watch_page != 0 && vaddr < watch_page + 0x1000 && watch_page < vaddr + size) {
+		Dl_info info {};
+		const auto* caller = __builtin_return_address(0);
+		const auto  base   = dladdr(caller, &info) != 0 ? reinterpret_cast<uintptr_t>(info.dli_fbase) : 0;
+		__android_log_print(ANDROID_LOG_WARN, "CapyPS5-GpuWrite", "0x%llx size=%llu texel=%d caller=+0x%llx",
+		                    static_cast<unsigned long long>(vaddr), static_cast<unsigned long long>(size),
+		                    is_texel_buffer ? 1 : 0,
+		                    static_cast<unsigned long long>(reinterpret_cast<uintptr_t>(caller) - base));
+	}
+#endif
 	auto& command = m_scheduler.Current();
 	if (command.IsInvalid() || !GuestRange {vaddr, size}.Valid()) {
 		static std::atomic<uint32_t> invalid_buf_log{0};

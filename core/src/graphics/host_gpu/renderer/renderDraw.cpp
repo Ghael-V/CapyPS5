@@ -379,6 +379,24 @@ static void UpdateGraphicsDynamicState(const CommandBuffer& buffer, DynamicState
 			scissor.extent = {0, 0};
 		}
 	}
+	// Experiment (wrong image): `setprop debug.capy.res_test N` draws to targets of 3840 pixels
+	// or wider into the top-left N/1000 of them, to measure what a lower resolution would gain.
+	static Common::DebugFlags::CachedValue res_test("debug.capy.res_test", 0);
+	if (res_test.Get() > 0 && rendering.width >= 3840) {
+		const float scale = static_cast<float>(res_test.Get()) / 1000.0f;
+		for (uint32_t i = 0; i < viewport_count; i++) {
+			viewports[i].x *= scale;
+			viewports[i].y *= scale;
+			viewports[i].width *= scale;
+			viewports[i].height *= scale;
+			scissors[i].offset.x = static_cast<int32_t>(static_cast<float>(scissors[i].offset.x) * scale);
+			scissors[i].offset.y = static_cast<int32_t>(static_cast<float>(scissors[i].offset.y) * scale);
+			scissors[i].extent.width =
+			    static_cast<uint32_t>(static_cast<float>(scissors[i].extent.width) * scale);
+			scissors[i].extent.height =
+			    static_cast<uint32_t>(static_cast<float>(scissors[i].extent.height) * scale);
+		}
+	}
 	if (Common::DebugFlags::FrameTracing()) {
 		const auto& g = vp.viewports[0];
 		Common::DebugFlags::FrameTrace(
