@@ -33,6 +33,7 @@
 #include <dlfcn.h>
 #include <mutex>
 #include <sys/mman.h>
+#include <sys/uio.h>
 #include <thread>
 #include <unistd.h>
 #include <unordered_map>
@@ -76,6 +77,7 @@ struct HleStat {
 struct HleInFlight {
 	std::atomic<uint64_t> func {0};
 	std::atomic<int64_t>  start_ns {0};
+	std::atomic<uint64_t> guest_rsp {0};
 	int                   tid = 0;
 };
 std::mutex                g_hle_inflight_mutex;
@@ -107,6 +109,71 @@ int64_t              g_hle_stats_next_ms = 0;
 bool HleStatsEnabled() {
 	static Common::DebugFlags::CachedValue enabled("debug.capy.hle_stats", 0);
 	return enabled.Get() != 0;
+}
+
+void HleDumpInFlight();
+
+// With hle_stats on, report in-flight calls every 3 s even when every guest thread is blocked
+// (a hang inside one HLE call makes no further calls that would print the stats).
+void HleStartWatchdog() {
+	static std::once_flag once;
+	std::call_once(once, [] {
+		std::thread([] {
+			for (;;) {
+				std::this_thread::sleep_for(std::chrono::seconds(3));
+				if (HleStatsEnabled()) {
+					HleDumpInFlight();
+				}
+			}
+		}).detach();
+	});
+}
+
+void HleDumpInFlight() {
+	Dl_info info {};
+	const auto base = dladdr(reinterpret_cast<void*>(&HleDumpInFlight), &info) != 0
+	                      ? reinterpret_cast<uint64_t>(info.dli_fbase)
+	                      : 0;
+	{
+		const auto now_ns = HleNowNs();
+		std::lock_guard inflight_lock(g_hle_inflight_mutex);
+		for (const auto* slot: g_hle_inflight) {
+			const auto func  = slot->func.load(std::memory_order_relaxed);
+			const auto start = slot->start_ns.load(std::memory_order_relaxed);
+			if (func != 0 && now_ns - start > 100000000) {
+				__android_log_print(ANDROID_LOG_WARN, "CapyPS5-Hle", "in flight: tid %d fn +0x%llx for %.0f ms",
+				                    slot->tid, static_cast<unsigned long long>(func - base),
+				                    static_cast<double>(now_ns - start) / 1e6);
+				// Guest code addresses found on the guest stack (a rough backtrace).
+				const auto stack_addr = slot->guest_rsp.load(std::memory_order_relaxed);
+				// Copy with process_vm_readv so a short stack cannot fault the watchdog.
+				static uint64_t stack_copy[4096];
+				size_t          stack_words = 0;
+				if (stack_addr != 0) {
+					for (size_t chunk = 0; chunk < 4096; chunk += 512) {
+						iovec local {stack_copy + chunk, 512 * sizeof(uint64_t)};
+						iovec remote {reinterpret_cast<void*>(stack_addr + chunk * sizeof(uint64_t)), 512 * sizeof(uint64_t)};
+						if (process_vm_readv(getpid(), &local, 1, &remote, 1, 0) != static_cast<ssize_t>(local.iov_len)) {
+							break;
+						}
+						stack_words = chunk + 512;
+					}
+				}
+				const auto* stack = stack_copy;
+				if (stack_words != 0) {
+					char line[1024] = {};
+					int  used = 0;
+					for (size_t n = 0; n < stack_words && used < 1000; n++) {
+						const auto value = stack[n];
+						if (value >= 0x800000000ull && value < 0x980000000ull) {
+							used += std::snprintf(line + used, sizeof(line) - used, " %llx", static_cast<unsigned long long>(value));
+						}
+					}
+					__android_log_print(ANDROID_LOG_WARN, "CapyPS5-Hle", "  guest stack:%s", line);
+				}
+			}
+		}
+	}
 }
 
 void HleStatsRecord(uint64_t func, uint64_t ns) {
@@ -155,19 +222,7 @@ void HleStatsRecord(uint64_t func, uint64_t ns) {
 		                    stat.tid, name, static_cast<unsigned long long>(stat.func - base),
 		                    static_cast<unsigned long long>(stat.calls), static_cast<double>(stat.ns) / 1e6);
 	}
-	{
-		const auto now_ns = HleNowNs();
-		std::lock_guard inflight_lock(g_hle_inflight_mutex);
-		for (const auto* slot: g_hle_inflight) {
-			const auto func  = slot->func.load(std::memory_order_relaxed);
-			const auto start = slot->start_ns.load(std::memory_order_relaxed);
-			if (func != 0 && now_ns - start > 100000000) {
-				__android_log_print(ANDROID_LOG_WARN, "CapyPS5-Hle", "in flight: tid %d fn +0x%llx for %.0f ms",
-				                    slot->tid, static_cast<unsigned long long>(func - base),
-				                    static_cast<double>(now_ns - start) / 1e6);
-			}
-		}
-	}
+	HleDumpInFlight();
 	__android_log_print(ANDROID_LOG_WARN, "CapyPS5-Hle", "----");
 	g_hle_stats.clear();
 }
@@ -393,10 +448,14 @@ public:
 			saved.gs_cached = state.gs_cached;
 			saved.callret_sp = state.callret_sp;
 			const bool hle_stats = HleStatsEnabled();
+			if (hle_stats) {
+				HleStartWatchdog();
+			}
 			auto&      in_flight = CurrentHleInFlight();
 			const auto outer_func  = in_flight.func.load(std::memory_order_relaxed);
 			const auto outer_start = in_flight.start_ns.load(std::memory_order_relaxed);
 			in_flight.start_ns.store(HleNowNs(), std::memory_order_relaxed);
+			in_flight.guest_rsp.store(Frame->State.gregs[FEXCore::X86State::REG_RSP], std::memory_order_relaxed);
 			in_flight.func.store(host_func, std::memory_order_relaxed);
 			const auto hle_start = hle_stats ? std::chrono::steady_clock::now()
 			                                 : std::chrono::steady_clock::time_point {};

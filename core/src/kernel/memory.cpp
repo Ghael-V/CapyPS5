@@ -3285,14 +3285,30 @@ int KYTY_SYSV_ABI KernelMapDirectMemory(void** addr, size_t len, int prot, int f
                                         int64_t direct_memory_start, size_t alignment) {
 	PRINT_NAME();
 	std::lock_guard<std::recursive_mutex> memory_operation_lock(g_memory_operation_mutex);
-	return MapDirectMemory(addr, len, prot, flags, direct_memory_start, alignment, "");
+	const auto requested = (addr != nullptr ? reinterpret_cast<uint64_t>(*addr) : 0);
+	const int  result    = MapDirectMemory(addr, len, prot, flags, direct_memory_start, alignment, "");
+	if (result != OK) {
+		Common::DebugFlags::NoteOnce("CapyPS5-Mem", requested ^ 0x4d4150ull,
+		                             "MapDirectMemory 0x%llx len=0x%llx flags=0x%x failed: 0x%x",
+		                             static_cast<unsigned long long>(requested),
+		                             static_cast<unsigned long long>(len), flags, result);
+	}
+	return result;
 }
 
 int KYTY_SYSV_ABI KernelMapDirectMemory2(void** addr, size_t len, int type, int prot, int flags,
                                          int64_t direct_memory_start, size_t alignment) {
 	PRINT_NAME();
 	std::lock_guard<std::recursive_mutex> memory_operation_lock(g_memory_operation_mutex);
-	return MapDirectMemory(addr, len, prot, flags, direct_memory_start, alignment, "", type);
+	const auto requested = (addr != nullptr ? reinterpret_cast<uint64_t>(*addr) : 0);
+	const int  result    = MapDirectMemory(addr, len, prot, flags, direct_memory_start, alignment, "", type);
+	if (result != OK) {
+		Common::DebugFlags::NoteOnce("CapyPS5-Mem", requested ^ 0x4d4150ull,
+		                             "MapDirectMemory 0x%llx len=0x%llx flags=0x%x failed: 0x%x",
+		                             static_cast<unsigned long long>(requested),
+		                             static_cast<unsigned long long>(len), flags, result);
+	}
+	return result;
 }
 
 int MapAutomaticMemory(uint64_t vaddr, size_t size, int type, int prot) {
@@ -3618,6 +3634,27 @@ int KYTY_SYSV_ABI KernelReserveVirtualRange(void** addr, size_t len, int flags, 
 	} else {
 		alignment = (alignment != 0 ? alignment : PAGE_SIZE);
 		out_addr  = FindGuestFreeRange(in_addr, len, alignment);
+		// Unreal Engine 4 on PS5 reserves 512 GiB up front and fails to start (deadlocking in a
+		// recursive static init) without it. A 39-bit host address space cannot hold that, so
+		// hand out a smaller range (64 GiB at most, so later reservations still fit): its
+		// allocators fill from the bottom. `debug.capy.clip_reserve 0` disables this.
+		static Common::DebugFlags::CachedValue clip_reserve("debug.capy.clip_reserve", 1);
+		constexpr size_t CLIP_MAX = 0x1000000000ull; // 64 GiB
+		constexpr size_t CLIP_MIN = 0x400000000ull;  // 16 GiB
+		if (out_addr == 0 && clip_reserve.Get() != 0 && len > CLIP_MAX) {
+			len      = CLIP_MAX * 2;
+		}
+		while (out_addr == 0 && clip_reserve.Get() != 0 && len > CLIP_MIN) {
+			len = std::max<size_t>(CLIP_MIN, (len / 2) & ~(PAGE_SIZE - 1));
+			out_addr = FindGuestFreeRange(in_addr, len, alignment);
+			if (out_addr != 0) {
+				LOGF("\t reservation clipped to 0x%016" PRIx64 "\n", static_cast<uint64_t>(len));
+				Common::DebugFlags::NoteOnce("CapyPS5-Mem", out_addr,
+				                             "ReserveVirtualRange clipped to 0x%llx bytes at 0x%llx",
+				                             static_cast<unsigned long long>(len),
+				                             static_cast<unsigned long long>(out_addr));
+			}
+		}
 		if (out_addr != 0) {
 			UnmapGpuRange(out_addr, len);
 		}
