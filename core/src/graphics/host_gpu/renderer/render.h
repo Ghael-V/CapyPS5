@@ -115,6 +115,9 @@ public:
 	void BeginRendering(const RenderState& state) const;
 	void EndRendering() const;
 	[[nodiscard]] bool IsRendering() const noexcept { return m_rendering; }
+	// A global memory barrier to emit when the current render pass ends (barriers cannot be
+	// recorded inside one, and ending the pass early costs a tiled GPU a full load and store).
+	void DeferGlobalBarrier() const noexcept { m_deferred_barrier = true; }
 
 	[[nodiscard]] vk::CommandBuffer Handle() const;
 	[[nodiscard]] GraphicContext&   GetGraphics() const noexcept { return m_graphics; }
@@ -146,6 +149,7 @@ private:
 	uint64_t            m_debug_arg4      = 0;
 	mutable RenderState m_render_state;
 	mutable bool        m_rendering   = false;
+	mutable bool        m_deferred_barrier = false;
 	HW::Context*        m_registers   = nullptr;
 	HW::UserConfig*     m_user_config = nullptr;
 	HW::Shader*         m_shaders     = nullptr;

@@ -17,6 +17,7 @@
 #include "graphics/guest_gpu/command_processor/pm4Dispatch.h"
 #include "graphics/guest_gpu/hardwareContext.h"
 #include "graphics/guest_gpu/pm4.h"
+#include "graphics/host_gpu/renderer/gpuProfiler.h"
 #include "graphics/host_gpu/renderer/render.h"
 #include "graphics/host_gpu/renderer/renderContext.h"
 #include "graphics/host_gpu/renderer/sync.h"
@@ -1738,8 +1739,24 @@ void CommandProcessor::EmitGlobalBarrier() {
 	vk::DependencyInfo dependency {};
 	dependency.memoryBarrierCount = 1;
 	dependency.pMemoryBarriers    = &barrier;
+	if (GpuProfiler::Enabled() && CurrentBuffer().IsRendering()) {
+		GpuProfiler::SetEndCaller(__builtin_return_address(0));
+	}
 	GetScheduler().EndRendering();
 	CurrentBuffer().Handle().pipelineBarrier2(dependency);
+}
+
+void CommandProcessor::EmitReleaseBarrier() {
+	// Release labels are written when the packet is parsed, and later GPU work that depends on
+	// earlier writes is ordered by its own events or the texture cache. UE4 releases after every
+	// occlusion query, so ending the pass here split it at each 4800x2700 depth-only draw.
+	// `setprop debug.capy.defer_release_barrier 0` ends the pass as before.
+	static Common::DebugFlags::CachedValue defer("debug.capy.defer_release_barrier", 1);
+	if (defer.Get() != 0 && CurrentBuffer().IsRendering()) {
+		CurrentBuffer().DeferGlobalBarrier();
+		return;
+	}
+	EmitGlobalBarrier();
 }
 
 void CommandProcessor::TriggerEopEventAtEndOfPipe(uint32_t interrupt_context_id) {
@@ -1754,6 +1771,14 @@ void CommandProcessor::TriggerEvent(uint32_t event_type, uint32_t event_index,
 		     "\t event_index = 0x%08" PRIx32 "\n"
 		     "\t address     = 0x%016" PRIx64 "\n",
 		     event_type, event_index, event_address);
+	}
+	// `debug.capy.gpu_profile 2`: log each event and whether it is inside a render pass.
+	if (GpuProfiler::Enabled()) {
+		static Common::DebugFlags::CachedValue mode("debug.capy.gpu_profile", 0);
+		if (mode.Get() == 2) {
+			__android_log_print(ANDROID_LOG_WARN, "CapyPS5-GpuPass", "event 0x%x index %u rendering %d",
+			                    event_type, event_index, CurrentBuffer().IsRendering() ? 1 : 0);
+		}
 	}
 
 	switch (event_type) {

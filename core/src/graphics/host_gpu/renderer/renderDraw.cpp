@@ -24,6 +24,8 @@
 #include "graphics/guest_gpu/tile.h"
 #include "graphics/host_gpu/graphicContext.h"
 #include "graphics/host_gpu/renderer/colorRenderTarget.h"
+#include "graphics/host_gpu/renderer/commandScheduler.h"
+#include "graphics/host_gpu/renderer/gpuProfiler.h"
 #include "graphics/host_gpu/renderer/debug.h"
 #include "graphics/host_gpu/renderer/depthRenderTarget.h"
 #include "graphics/host_gpu/renderer/image/textureCommon.h"
@@ -1018,10 +1020,14 @@ bool RenderExecutor::PrepareDrawRenderState(CommandBuffer& buffer, const DrawCal
 			if (const auto now = std::chrono::steady_clock::now(); now >= next) {
 				next = now + std::chrono::seconds(2);
 #if defined(__ANDROID__)
-				__android_log_print(ANDROID_LOG_WARN, "CapyPS5-GpuStats", "draws %llu, ES+GS emulated %llu (stages 0x%x)",
+				static uint64_t last_submits = 0;
+				const auto      submits      = g_submit_count.load(std::memory_order_relaxed);
+				__android_log_print(ANDROID_LOG_WARN, "CapyPS5-GpuStats", "draws %llu, submits %llu, ES+GS emulated %llu (stages 0x%x)",
 				                    static_cast<unsigned long long>(total),
+				                    static_cast<unsigned long long>(submits - last_submits),
 				                    static_cast<unsigned long long>(emulated),
 				                    static_cast<unsigned>(buffer.GetRegisters().GetShaderStages()));
+				last_submits = submits;
 #endif
 				total = emulated = 0;
 			}
@@ -1638,7 +1644,11 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 			pass_depth_direction = direction;
 		}
 	}
+	if (GpuProfiler::Enabled() && !m_context.GetCommandScheduler().Current().IsRendering()) {
+		GpuProfiler::SetPassLabel(rt0_addr, rendering.width, rendering.height, split_addr);
+	}
 	m_context.GetCommandScheduler().BeginRendering(rendering);
+	GpuProfiler::NoteDraw();
 	vk_buffer.bindPipeline(vk::PipelineBindPoint::eGraphics, pipeline.pipeline);
 	if (!draw.IsIndexed()) {
 		SetDrawDebugPhase(buffer, submit_id, draw, 0x500u);

@@ -7,6 +7,7 @@
 #include "graphics/host_gpu/renderer/colorRenderTarget.h"
 #include "graphics/host_gpu/renderer/debug.h"
 #include "graphics/host_gpu/renderer/depthRenderTarget.h"
+#include "graphics/host_gpu/renderer/gpuProfiler.h"
 #include "graphics/host_gpu/renderer/image/imageView.h"
 #include "graphics/host_gpu/renderer/render.h"
 #include "graphics/host_gpu/renderer/renderContext.h"
@@ -180,6 +181,15 @@ void CommandBuffer::BeginRendering(const RenderState& state) const {
 
 	vk::RenderingInfo rendering {};
 	rendering.renderArea.extent    = {state.width, state.height};
+	// Experiment (see debug.capy.res_test in renderDraw.cpp): also shrink the render area, so a
+	// tiled GPU loads and stores only the drawn corner.
+	static Common::DebugFlags::CachedValue res_test("debug.capy.res_test", 0);
+	if (res_test.Get() > 0 && state.width >= 3840) {
+		const float scale = static_cast<float>(res_test.Get()) / 1000.0f;
+		rendering.renderArea.extent = vk::Extent2D {
+		    static_cast<uint32_t>(static_cast<float>(state.width) * scale) + 1u,
+		    static_cast<uint32_t>(static_cast<float>(state.height) * scale) + 1u};
+	}
 	rendering.layerCount           = state.num_layers;
 	rendering.colorAttachmentCount = state.num_color_attachments;
 	rendering.pColorAttachments    = colors.data();
@@ -190,6 +200,10 @@ void CommandBuffer::BeginRendering(const RenderState& state) const {
 		                               state.height, state.num_color_attachments,
 		                               state.depth_stencil_attachment.has_depth ? 1 : 0,
 		                               state.depth_stencil_attachment.depth_clear ? 1 : 0);
+	}
+	if (GpuProfiler::Enabled()) {
+		GpuProfiler::BeginPass(m_graphics, Handle(), state.width, state.height,
+		                       state.num_color_attachments, state.depth_stencil_attachment.has_depth);
 	}
 	Handle().beginRendering(rendering);
 	m_render_state = state;
@@ -204,6 +218,22 @@ void CommandBuffer::EndRendering() const {
 		Common::DebugFlags::FrameTrace("  rp end (caller %p)", __builtin_return_address(0));
 	}
 	Handle().endRendering();
+	if (GpuProfiler::Enabled()) {
+		GpuProfiler::SetEndCaller(__builtin_return_address(0));
+	}
+	GpuProfiler::EndScope(Handle());
+	if (m_deferred_barrier) {
+		m_deferred_barrier = false;
+		vk::MemoryBarrier2 barrier {};
+		barrier.srcStageMask  = vk::PipelineStageFlagBits2::eAllCommands;
+		barrier.srcAccessMask = vk::AccessFlagBits2::eMemoryWrite;
+		barrier.dstStageMask  = vk::PipelineStageFlagBits2::eAllCommands;
+		barrier.dstAccessMask = vk::AccessFlagBits2::eMemoryRead | vk::AccessFlagBits2::eMemoryWrite;
+		vk::DependencyInfo dependency {};
+		dependency.memoryBarrierCount = 1;
+		dependency.pMemoryBarriers    = &barrier;
+		Handle().pipelineBarrier2(dependency);
+	}
 	m_rendering    = false;
 	m_render_state = {};
 }

@@ -12,6 +12,7 @@
 #include "graphics/guest_gpu/hardwareContext.h"
 #include "graphics/guest_gpu/pm4.h"
 #include "graphics/host_gpu/graphicContext.h"
+#include "graphics/host_gpu/renderer/gpuProfiler.h"
 #include "graphics/host_gpu/renderer/image/imageInfo.h"
 #include "graphics/host_gpu/renderer/pipeline/descriptors.h"
 #include "graphics/host_gpu/renderer/pipeline/pipelineCache.h"
@@ -451,7 +452,15 @@ void RenderExecutor::DispatchDirect(uint64_t submit_id, CommandBuffer& buffer,
 	}
 
 	vk_buffer.bindPipeline(vk::PipelineBindPoint::eCompute, pipeline.pipeline);
+	const bool profile = GpuProfiler::Enabled();
+	if (profile) {
+		GpuProfiler::BeginDispatch(m_context.GetGraphics(), vk_buffer, sh_ctx.GetCs().cs_regs.data_addr,
+		                           thread_group_x * thread_group_y * thread_group_z);
+	}
 	vk_buffer.dispatch(thread_group_x, thread_group_y, thread_group_z);
+	if (profile) {
+		GpuProfiler::EndScope(vk_buffer);
+	}
 
 	// The removed host fence also ordered read-only dispatches before later writers.
 	ShaderAccessBarrier(vk_buffer, vk::PipelineStageFlagBits::eComputeShader);

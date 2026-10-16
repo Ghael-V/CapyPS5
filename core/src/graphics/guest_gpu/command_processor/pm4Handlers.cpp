@@ -2299,10 +2299,21 @@ KYTY_CP_OP_PARSER(CpOpReleaseMem) {
 				break;
 		}
 	};
+	// Labels are written when the packet is parsed, so a release needs a queue submission only
+	// when it raises an interrupt (the event fires once the GPU finishes). Submitting after every
+	// release cost a blocking vkQueueSubmit per UE4 fence on the Adreno. `setprop
+	// debug.capy.eop_flush 1` submits after every release again.
+	static Common::DebugFlags::CachedValue eop_flush("debug.capy.eop_flush", 0);
+	auto flush_release = [&]() {
+		if (eop_flush.Get() != 0 || interrupt_selector == 0x01 || interrupt_selector == 0x02 ||
+		    interrupt_selector == 0x04) {
+			cp.BufferFlush();
+		}
+	};
 
 	if (data_sel == 0) {
 		if (eop_event_type != 0x28 || gcr_cntl != 0) {
-			cp.EmitGlobalBarrier();
+			cp.EmitReleaseBarrier();
 		}
 
 		trigger_interrupt();
@@ -2312,7 +2323,7 @@ KYTY_CP_OP_PARSER(CpOpReleaseMem) {
 
 	if (release_dst == ReleaseMemDstMemory && dst_gpu_addr == nullptr) {
 		if (eop_event_type != 0x28 || gcr_cntl != 0) {
-			cp.EmitGlobalBarrier();
+			cp.EmitReleaseBarrier();
 		}
 
 		trigger_interrupt();
@@ -2321,7 +2332,7 @@ KYTY_CP_OP_PARSER(CpOpReleaseMem) {
 	}
 
 	if (ReleaseMemGcrNeedsBarrier(eop_event_type, gcr_cntl)) {
-		cp.EmitGlobalBarrier();
+		cp.EmitReleaseBarrier();
 	}
 
 	auto cache_action = ReleaseMemCacheActionFromGcr(gcr_cntl);
@@ -2335,7 +2346,7 @@ KYTY_CP_OP_PARSER(CpOpReleaseMem) {
 		cp.WriteAtEndOfPipe32(cache_policy, event_write_dest, eop_event_type, cache_action,
 		                      event_index, event_source, dst_gpu_addr, static_cast<uint32_t>(value),
 		                      interrupt_selector, interrupt_context_id);
-		cp.BufferFlush();
+		flush_release();
 
 		return payload_len;
 	}
@@ -2352,7 +2363,7 @@ KYTY_CP_OP_PARSER(CpOpReleaseMem) {
 		cp.WriteAtEndOfPipe32(cache_policy, event_write_dest, eop_event_type, cache_action,
 		                      event_index, event_source, dst_gpu_addr, static_cast<uint32_t>(value),
 		                      interrupt_selector, interrupt_context_id);
-		cp.BufferFlush();
+		flush_release();
 
 		return payload_len;
 	}
@@ -2374,7 +2385,7 @@ KYTY_CP_OP_PARSER(CpOpReleaseMem) {
 
 	cp.WriteAtEndOfPipe64(cache_policy, event_write_dest, eop_event_type, cache_action, event_index,
 	                      data_sel, dst_gpu_addr, value, interrupt_selector, interrupt_context_id);
-	cp.BufferFlush();
+	flush_release();
 
 	return payload_len;
 }

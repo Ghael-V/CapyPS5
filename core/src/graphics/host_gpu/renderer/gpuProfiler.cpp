@@ -1,0 +1,208 @@
+#include "graphics/host_gpu/renderer/gpuProfiler.h"
+
+#include "common/debugFlags.h"
+#include "graphics/host_gpu/graphicContext.h"
+
+#include <algorithm>
+#include <array>
+#include <chrono>
+#include <cstdio>
+#include <deque>
+#include <dlfcn.h>
+#include <string>
+#include <unordered_map>
+#include <vector>
+
+#if defined(__ANDROID__)
+#include <android/log.h>
+#endif
+
+namespace Libs::Graphics::GpuProfiler {
+
+namespace {
+
+constexpr uint32_t QueryCount = 8192;
+
+struct Scope {
+	uint32_t    query = 0;
+	uint32_t    draws = 0;
+	std::string label;
+};
+
+struct Stat {
+	uint64_t ns    = 0;
+	uint32_t count = 0;
+	uint32_t draws = 0;
+};
+
+struct State {
+	vk::QueryPool                         pool = nullptr;
+	uint32_t                              next = 0;
+	std::deque<Scope>                     pending;
+	bool                                  open = false;
+	char                                  pass_label[96] {};
+	std::unordered_map<std::string, Stat> stats;
+	uint64_t                              total_ns = 0;
+	std::chrono::steady_clock::time_point report = std::chrono::steady_clock::now();
+	uint64_t                              end_caller = 0;
+};
+
+State& GetState() {
+	static State state;
+	return state;
+}
+
+bool Begin(GraphicContext& graphics, vk::CommandBuffer command, std::string label) {
+	auto& state = GetState();
+	if (state.open) {
+		return false;
+	}
+	if (state.pool == nullptr) {
+		vk::QueryPoolCreateInfo info {};
+		info.queryType  = vk::QueryType::eTimestamp;
+		info.queryCount = QueryCount;
+		if (graphics.device.createQueryPool(&info, nullptr, &state.pool) != vk::Result::eSuccess) {
+			state.pool = nullptr;
+			return false;
+		}
+	}
+	if (state.pending.size() >= QueryCount / 2 - 1) {
+		// Results stopped arriving; drop the oldest rather than reuse queries still in flight.
+		state.pending.pop_front();
+	}
+	if (state.next + 2 > QueryCount) {
+		state.next = 0;
+	}
+	const auto query = state.next;
+	state.next += 2;
+	command.resetQueryPool(state.pool, query, 2);
+	// Bottom of pipe: written once earlier work finishes, so a scope does not absorb its tail.
+	command.writeTimestamp(vk::PipelineStageFlagBits::eBottomOfPipe, state.pool, query);
+	state.pending.push_back({query, 0, std::move(label)});
+	state.open = true;
+	return true;
+}
+
+} // namespace
+
+bool Enabled() {
+	static Common::DebugFlags::CachedValue enabled("debug.capy.gpu_profile", 0);
+	return enabled.Get() != 0;
+}
+
+void SetPassLabel(uint64_t target, uint32_t width, uint32_t height, uint64_t pixel_shader) {
+	std::snprintf(GetState().pass_label, sizeof(GetState().pass_label),
+	              "pass %ux%u rt=0x%llx ps=0x%llx", width, height,
+	              static_cast<unsigned long long>(target),
+	              static_cast<unsigned long long>(pixel_shader));
+}
+
+void NoteDraw() {
+	auto& state = GetState();
+	if (state.open && !state.pending.empty()) {
+		state.pending.back().draws++;
+	}
+}
+
+void BeginPass(GraphicContext& graphics, vk::CommandBuffer command, uint32_t width,
+               uint32_t height, uint32_t colors, bool depth) {
+	auto& state = GetState();
+	std::string label = state.pass_label[0] != 0 ? state.pass_label : "pass (unlabeled)";
+	char        shape[48];
+	std::snprintf(shape, sizeof(shape), " %ux%u c%u%s", width, height, colors, depth ? "+d" : "");
+	label += shape;
+	state.pass_label[0] = 0;
+	(void)Begin(graphics, command, std::move(label));
+}
+
+void BeginDispatch(GraphicContext& graphics, vk::CommandBuffer command, uint64_t compute_shader,
+                   uint32_t groups) {
+	char label[64];
+	std::snprintf(label, sizeof(label), "dispatch cs=0x%llx", static_cast<unsigned long long>(compute_shader));
+	(void)groups;
+	(void)Begin(graphics, command, label);
+}
+
+void SetEndCaller(const void* caller) {
+	auto& state = GetState();
+	if (state.end_caller == 0) {
+		Dl_info info {};
+		const auto base = dladdr(caller, &info) != 0 ? reinterpret_cast<uintptr_t>(info.dli_fbase) : 0;
+		state.end_caller = reinterpret_cast<uintptr_t>(caller) - base;
+	}
+}
+
+void EndScope(vk::CommandBuffer command) {
+	auto& state = GetState();
+	if (!state.open || state.pending.empty()) {
+		return;
+	}
+	command.writeTimestamp(vk::PipelineStageFlagBits::eBottomOfPipe, state.pool,
+	                       state.pending.back().query + 1);
+	state.open = false;
+#if defined(__ANDROID__)
+	static Common::DebugFlags::CachedValue mode("debug.capy.gpu_profile", 0);
+	if (mode.Get() == 2) {
+		__android_log_print(ANDROID_LOG_WARN, "CapyPS5-GpuPass", "draws %u %s ended by +0x%llx",
+		                    state.pending.back().draws, state.pending.back().label.c_str(),
+		                    static_cast<unsigned long long>(state.end_caller));
+	}
+#endif
+	state.end_caller = 0;
+}
+
+void Collect(GraphicContext& graphics) {
+	auto& state = GetState();
+	if (state.pool == nullptr) {
+		return;
+	}
+	const double period = graphics.GetPhysicalDeviceProperties().limits.timestampPeriod;
+	// The open scope is still being recorded; only closed ones can have results.
+	const size_t closed = state.pending.size() - (state.open ? 1u : 0u);
+	size_t       done   = 0;
+	for (; done < closed; done++) {
+		auto& scope = state.pending[done];
+		std::array<uint64_t, 4> values {};
+		const auto result = graphics.device.getQueryPoolResults(
+		    state.pool, scope.query, 2, sizeof(values), values.data(), 2 * sizeof(uint64_t),
+		    vk::QueryResultFlagBits::e64 | vk::QueryResultFlagBits::eWithAvailability);
+		if ((result != vk::Result::eSuccess && result != vk::Result::eNotReady) || values[1] == 0 ||
+		    values[3] == 0) {
+			break;
+		}
+		const auto ns = values[2] > values[0]
+		                    ? static_cast<uint64_t>(static_cast<double>(values[2] - values[0]) * period)
+		                    : 0;
+		auto& stat = state.stats[scope.label];
+		stat.ns += ns;
+		stat.count++;
+		stat.draws += scope.draws;
+		state.total_ns += ns;
+	}
+	state.pending.erase(state.pending.begin(), state.pending.begin() + static_cast<std::ptrdiff_t>(done));
+
+	const auto now = std::chrono::steady_clock::now();
+	if (now < state.report + std::chrono::seconds(2)) {
+		return;
+	}
+	const auto wall_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(now - state.report).count();
+	state.report       = now;
+	std::vector<std::pair<std::string, Stat>> sorted(state.stats.begin(), state.stats.end());
+	std::sort(sorted.begin(), sorted.end(),
+	          [](const auto& a, const auto& b) { return a.second.ns > b.second.ns; });
+#if defined(__ANDROID__)
+	__android_log_print(ANDROID_LOG_WARN, "CapyPS5-GpuProf",
+	                    "---- measured GPU %.1f ms of %.1f ms wall (%zu kinds)",
+	                    static_cast<double>(state.total_ns) / 1e6, static_cast<double>(wall_ns) / 1e6,
+	                    sorted.size());
+	for (size_t i = 0; i < sorted.size() && i < 16; i++) {
+		const auto& [label, stat] = sorted[i];
+		__android_log_print(ANDROID_LOG_WARN, "CapyPS5-GpuProf", "%7.1f ms x%-4u draws %-5u %s",
+		                    static_cast<double>(stat.ns) / 1e6, stat.count, stat.draws, label.c_str());
+	}
+#endif
+	state.stats.clear();
+	state.total_ns = 0;
+}
+
+} // namespace Libs::Graphics::GpuProfiler

@@ -14,7 +14,12 @@
 #include <thread>
 #include <vector>
 
+#include <atomic>
+
 namespace Libs::Graphics {
+
+// Queue submissions so far (gpu_stats diagnostics).
+extern std::atomic<uint64_t> g_submit_count;
 
 class CommandScheduler {
 public:

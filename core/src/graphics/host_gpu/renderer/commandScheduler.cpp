@@ -4,6 +4,7 @@
 #endif
 #include "graphics/guest_gpu/graphicsRun.h"
 
+#include "graphics/host_gpu/renderer/gpuProfiler.h"
 #include "common/assert.h"
 #include "common/logging/log.h"
 #include "graphics/host_gpu/graphicContext.h"
@@ -175,6 +176,9 @@ void CommandScheduler::BeginRendering(const RenderState& state) {
 }
 
 void CommandScheduler::EndRendering() {
+	if (GpuProfiler::Enabled() && Active() && !m_command.IsInvalid() && Current().IsRendering()) {
+		GpuProfiler::SetEndCaller(__builtin_return_address(0));
+	}
 	if (Active() && !m_command.IsInvalid()) {
 		Current().EndRendering();
 	}
@@ -371,8 +375,11 @@ CommandBuffer& CommandScheduler::BeginCommand() {
 	return m_command;
 }
 
+std::atomic<uint64_t> g_submit_count {0};
+
 uint64_t CommandScheduler::Submit(SubmitInfo submit) {
 	EXIT_IF(m_command.IsInvalid());
+	g_submit_count.fetch_add(1, std::memory_order_relaxed);
 	EXIT_IF(submit.num_wait_semaphores > SubmitInfo::MaxSemaphores ||
 	        submit.num_signal_semaphores >= SubmitInfo::MaxSemaphores);
 
@@ -416,6 +423,9 @@ uint64_t CommandScheduler::Submit(SubmitInfo submit) {
 	EXIT_NOT_IMPLEMENTED(result != vk::Result::eSuccess);
 
 	m_command.m_buffer = nullptr;
+	if (GpuProfiler::Enabled()) {
+		GpuProfiler::Collect(m_graphics);
+	}
 	return tick;
 }
 
