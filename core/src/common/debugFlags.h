@@ -67,6 +67,12 @@ public:
 	constexpr CachedValue(const char* name, int64_t fallback): m_name(name), m_value(fallback), m_fallback(fallback) {}
 
 	int64_t Get() {
+		// Hot paths (every HLE call) read flags; only look at the clock every 256th call.
+		static thread_local uint32_t calls = 0;
+		if ((++calls & 255u) != 0 &&
+		    m_next_refresh_ms.load(std::memory_order_relaxed) != 0) {
+			return m_value.load(std::memory_order_relaxed);
+		}
 		const auto now = std::chrono::duration_cast<std::chrono::milliseconds>(
 		                     std::chrono::steady_clock::now().time_since_epoch())
 		                     .count();
@@ -176,6 +182,28 @@ inline void FrameTraceOnFlip() {
 		FrameTrace("---- frame begin ----");
 	} else if (state == 1) {
 		FrameTrace("---- frame end ----");
+		g_trace_state.store(2, std::memory_order_relaxed);
+	}
+}
+
+// `setprop debug.capy.trace_now N`: trace the next N draws right away (no flip needed; for games
+// stuck before presenting). Change N to re-arm. Called once per draw.
+inline void FrameTraceDrawTick() {
+	static CachedValue trace_now("debug.capy.trace_now", 0);
+	static int64_t     armed = 0;
+	const auto         value = trace_now.Get();
+	if (value != armed) {
+		armed = value;
+		if (value > 0) {
+			g_trace_lines.store(0, std::memory_order_relaxed);
+			g_trace_draws.store(0, std::memory_order_relaxed);
+			g_trace_state.store(1, std::memory_order_relaxed);
+			FrameTrace("---- trace_now begin ----");
+		}
+	}
+	if (armed > 0 && g_trace_state.load(std::memory_order_relaxed) == 1 &&
+	    static_cast<int64_t>(g_trace_draws.load(std::memory_order_relaxed)) >= armed) {
+		FrameTrace("---- trace_now end ----");
 		g_trace_state.store(2, std::memory_order_relaxed);
 	}
 }

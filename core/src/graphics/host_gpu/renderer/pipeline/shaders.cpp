@@ -14,6 +14,7 @@
 #include "graphics/host_gpu/renderer/renderTarget.h"
 #include "graphics/host_gpu/vulkanCommon.h"
 #include "graphics/shader/recompiler/BufferFormat.h"
+#include "graphics/shader/recompiler/backend/spirv/SpirvEmitter.h"
 #include "graphics/shader/recompiler/ir/ShaderIR.h"
 #include "graphics/shader/rectListShader.h"
 #include "graphics/shader/shader.h"
@@ -232,10 +233,13 @@ void CreatePipelineInternal(GraphicContext& graphics, PipelineCache::Pipeline& p
 	const bool with_depth = rendering.depth_format != vk::Format::eUndefined ||
 	                        rendering.stencil_format != vk::Format::eUndefined;
 	EXIT_IF(!vs_input_info.stage);
-	const bool mesh = vs_input_info.stage.program->stage == ShaderType::Mesh;
+	// An emulated mesh program ran as a compute shader before the draw; its vertex records are
+	// drawn through a generated pass-through vertex shader instead.
+	const bool mesh_emulated = vs_input_info.stage.program->mesh_compute;
+	const bool mesh = vs_input_info.stage.program->stage == ShaderType::Mesh && !mesh_emulated;
 	EXIT_NOT_IMPLEMENTED(mesh && !graphics.mesh_shader_enabled);
-	const bool rect_list =
-	    !mesh && !tessellation && static_params.topology == vk::PrimitiveTopology::ePatchList;
+	const bool rect_list = !mesh && !mesh_emulated && !tessellation &&
+	                       static_params.topology == vk::PrimitiveTopology::ePatchList;
 
 	vk::ShaderModule tess_control_shader_module = nullptr;
 	vk::ShaderModule tess_eval_shader_module    = nullptr;
@@ -261,11 +265,22 @@ void CreatePipelineInternal(GraphicContext& graphics, PipelineCache::Pipeline& p
 
 	vk::PipelineShaderStageCreateInfo shader_stages[4] {};
 	uint32_t                          shader_stage_count = 0;
-	for (uint32_t i = 0; i < vertex_info.size(); i++) {
-		shader_stages[shader_stage_count++] = {.stage =
-		                                           NativeShaderStage(vertex_info[i].logical_stage),
-		                                       .module = programs.vertex[i].module,
+	vk::ShaderModule passthrough_module = nullptr;
+	if (mesh_emulated) {
+		passthrough_module = CompileSPV(
+		    ShaderRecompiler::Spirv::BuildMeshPassthroughVertexShader(vs_input_info.stage.program->info.outputs),
+		    graphics.device);
+		EXIT_NOT_IMPLEMENTED(passthrough_module == nullptr);
+		shader_stages[shader_stage_count++] = {.stage  = vk::ShaderStageFlagBits::eVertex,
+		                                       .module = passthrough_module,
 		                                       .pName  = "main"};
+	} else {
+		for (uint32_t i = 0; i < vertex_info.size(); i++) {
+			shader_stages[shader_stage_count++] = {.stage =
+			                                           NativeShaderStage(vertex_info[i].logical_stage),
+			                                       .module = programs.vertex[i].module,
+			                                       .pName  = "main"};
+		}
 	}
 	if (rect_list) {
 		shader_stages[shader_stage_count++] = {.stage =
@@ -349,6 +364,30 @@ void CreatePipelineInternal(GraphicContext& graphics, PipelineCache::Pipeline& p
 	input_assembly.topology = static_params.topology;
 	input_assembly.primitiveRestartEnable =
 	    static_params.primitive_restart_enable ? VK_TRUE : VK_FALSE;
+
+	std::vector<vk::VertexInputAttributeDescription> record_attributes;
+	vk::VertexInputBindingDescription                record_binding {};
+	if (mesh_emulated) {
+		// One record per vertex: binding 0, location N = the Nth mesh output.
+		const auto& outputs = vs_input_info.stage.program->info.outputs;
+		uint32_t    offset  = 0;
+		for (uint32_t location = 0; location < outputs.size(); location++) {
+			const auto dwords = ShaderRecompiler::IR::MeshRecordOutputDwords(outputs[location].kind);
+			const auto format = dwords == 4 ? vk::Format::eR32G32B32A32Sfloat
+			                    : outputs[location].kind == ShaderRecompiler::IR::StageOutputKind::Layer
+			                        ? vk::Format::eR32Uint
+			                        : vk::Format::eR32Sfloat;
+			record_attributes.push_back({location, 0, format, offset * 4u});
+			offset += dwords;
+		}
+		record_binding = {0, offset * 4u, vk::VertexInputRate::eVertex};
+		vertex_input_info.vertexBindingDescriptionCount   = 1;
+		vertex_input_info.pVertexBindingDescriptions      = &record_binding;
+		vertex_input_info.vertexAttributeDescriptionCount = static_cast<uint32_t>(record_attributes.size());
+		vertex_input_info.pVertexAttributeDescriptions    = record_attributes.data();
+		input_assembly.topology               = vk::PrimitiveTopology::eTriangleList;
+		input_assembly.primitiveRestartEnable = VK_FALSE;
+	}
 
 	vk::PipelineViewportDepthClipControlCreateInfoEXT depth_clip_control {};
 	depth_clip_control.negativeOneToOne = (static_params.negative_one_to_one ? VK_TRUE : VK_FALSE);
@@ -442,10 +481,14 @@ void CreatePipelineInternal(GraphicContext& graphics, PipelineCache::Pipeline& p
 
 	std::vector<vk::DescriptorSetLayoutBinding> descriptor_bindings;
 	vk::ShaderStageFlags graphics_stages = vk::ShaderStageFlagBits::eFragment;
-	for (const auto& stage: vertex_info) {
-		const auto native_stage = NativeShaderStage(stage.logical_stage);
-		AddLayoutBindings(descriptor_bindings, *stage.stage.program, native_stage);
-		graphics_stages |= native_stage;
+	if (!mesh_emulated) {
+		// An emulated mesh program binds its resources at its dispatch; the pass-through vertex
+		// shader uses no descriptors or push constants.
+		for (const auto& stage: vertex_info) {
+			const auto native_stage = NativeShaderStage(stage.logical_stage);
+			AddLayoutBindings(descriptor_bindings, *stage.stage.program, native_stage);
+			graphics_stages |= native_stage;
+		}
 	}
 	if (ps_active) {
 		EXIT_IF(!ps_input_info->stage);
@@ -560,6 +603,9 @@ void CreatePipelineInternal(GraphicContext& graphics, PipelineCache::Pipeline& p
 	if (tess_control_shader_module != nullptr) {
 		graphics.device.destroyShaderModule(tess_control_shader_module, nullptr);
 	}
+	if (passthrough_module != nullptr) {
+		graphics.device.destroyShaderModule(passthrough_module, nullptr);
+	}
 	if (tess_eval_shader_module != nullptr) {
 		graphics.device.destroyShaderModule(tess_eval_shader_module, nullptr);
 	}
@@ -567,8 +613,8 @@ void CreatePipelineInternal(GraphicContext& graphics, PipelineCache::Pipeline& p
 
 // NOLINTNEXTLINE(readability-function-cognitive-complexity)
 void CreatePipelineInternal(GraphicContext& graphics, PipelineCache::Pipeline& pipeline,
-                            const ShaderComputeInputInfo& input_info,
-                            vk::ShaderModule compute_module, vk::PipelineCache driver_cache) {
+                            const ShaderStageRuntime& stage, vk::ShaderModule compute_module,
+                            vk::PipelineCache driver_cache) {
 	EXIT_IF(compute_module == nullptr);
 
 	vk::PipelineShaderStageCreateInfo                     comp_shader_stage_info {};
@@ -576,8 +622,8 @@ void CreatePipelineInternal(GraphicContext& graphics, PipelineCache::Pipeline& p
 	comp_shader_stage_info.stage  = vk::ShaderStageFlagBits::eCompute;
 	comp_shader_stage_info.module = compute_module;
 	comp_shader_stage_info.pName  = "main";
-	EXIT_IF(!input_info.stage);
-	const auto wave_size = input_info.stage.program->wave_size;
+	EXIT_IF(!stage);
+	const auto wave_size = stage.program->wave_size;
 	if (graphics.compute_subgroup_size_control_enabled &&
 	    wave_size >= graphics.min_subgroup_size && wave_size <= graphics.max_subgroup_size) {
 		comp_subgroup_size.requiredSubgroupSize = wave_size;
@@ -585,8 +631,7 @@ void CreatePipelineInternal(GraphicContext& graphics, PipelineCache::Pipeline& p
 	}
 
 	std::vector<vk::DescriptorSetLayoutBinding> descriptor_bindings;
-	AddLayoutBindings(descriptor_bindings, *input_info.stage.program,
-	                  vk::ShaderStageFlagBits::eCompute);
+	AddLayoutBindings(descriptor_bindings, *stage.program, vk::ShaderStageFlagBits::eCompute);
 	CreateDescriptorLayout(graphics, pipeline, descriptor_bindings);
 	const vk::PushConstantRange push_constants {vk::ShaderStageFlagBits::eCompute, 0,
 	                                            ShaderRecompiler::IR::NativePushConstantSize};

@@ -89,6 +89,9 @@ struct ShaderMeshInputInfo: ShaderWorkgroupInputInfo {
 	uint32_t max_primitives       = 0;
 	uint32_t provoking_vertex     = 0;
 	bool     fast_launch          = false;
+	// No VK_EXT_mesh_shader: run as a compute shader that writes vertex records and triangle
+	// indices to a buffer, drawn afterwards by a pass-through vertex shader.
+	bool     emulate              = false;
 
 	[[nodiscard]] constexpr uint32_t InputPrimitiveSize() const {
 		switch (static_cast<Prospero::PrimitiveType>(input_primitive)) {

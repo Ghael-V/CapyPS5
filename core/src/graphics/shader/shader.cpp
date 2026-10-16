@@ -727,7 +727,8 @@ void BuildStageStaticKey(const ShaderVertexInputInfo& info, std::vector<uint32_t
 		                       mesh.scratch_size_dwords, mesh.input_primitive,
 		                       mesh.primitives_per_group, mesh.vertices_per_group,
 		                       mesh.max_vertices, mesh.max_primitives, mesh.provoking_vertex,
-		                       static_cast<uint32_t>(mesh.fast_launch)});
+		                       static_cast<uint32_t>(mesh.fast_launch),
+		                       static_cast<uint32_t>(mesh.emulate)});
 	}
 	key.push_back(info.tess.input_control_points);
 	if (info.tess.input_control_points != 0) {
@@ -804,14 +805,14 @@ void BuildStageStaticKey(const ShaderComputeInputInfo& info, std::vector<uint32_
 
 ShaderParams PrepareProgram(const HW::VertexShaderInfo& regs, const HW::Context& context,
                             const HW::UserConfig& user_config, ShaderVertexInputInfo& info,
-                            bool mesh_shader_enabled) {
+                            bool mesh_shader_enabled, bool emulate_merged_gs) {
 	const auto& sh     = context.GetShaderRegisters();
 	const auto [data, hash] = ShaderGetMappedData(regs.es_regs.data_addr, "ShaderGetInputInfoVS():");
 	const bool merged = (context.GetShaderStages() & 0x20u) != 0;
 	// GS_EN controls amplification, not whether an NGG shader uses a workgroup.
 	const bool native_ngg = mesh_shader_enabled && !merged && data.type == Prospero::ShaderBinaryType::kGs &&
 	                        regs.gs_regs.rsrc2.lds_size != 0;
-	const bool use_mesh = mesh_shader_enabled && (merged || native_ngg);
+	const bool use_mesh = (mesh_shader_enabled || emulate_merged_gs) && (merged || native_ngg);
 	auto        params = GetShaderParams(
 	    regs.es_regs.data_addr, hash,
 	    std::span<const uint32_t>(regs.gs_user_sgpr.value, regs.gs_regs.rsrc2.user_sgpr), data,
@@ -830,6 +831,7 @@ ShaderParams PrepareProgram(const HW::VertexShaderInfo& regs, const HW::Context&
 	info.logical_stage       = ShaderType::Mesh;
 	info.pa_cl_vs_out_cntl   = sh.m_paClVsOutCntl;
 	auto& mesh               = info.mesh;
+	mesh.emulate             = !mesh_shader_enabled;
 	mesh.input_primitive     = static_cast<uint32_t>(user_config.GetPrimType());
 	mesh.wave_size           = (context.GetShaderStages() & 0x00400000u) != 0 ? 32u : 64u;
 	mesh.max_vertices        = sh.m_geMaxOutputPerSubgroup;

@@ -1454,6 +1454,11 @@ KYTY_SYSV_ABI int VideoOutRegisterBuffers2(int handle, int set_index, int buffer
 	     buffer_index_start, buffer_num, set_index, attribute->pixel_format, attribute->tiling_mode,
 	     attribute->aspect_ratio, attribute->width, attribute->height, attribute->pitch_in_pixel,
 	     attribute->option, category);
+#if defined(__ANDROID__)
+	__android_log_print(ANDROID_LOG_WARN, "CapyPS5-VideoOut", "RegisterBuffers2 set=%d n=%d %ux%u fmt=0x%llx",
+	                    set_index, buffer_num, attribute->width, attribute->height,
+	                    static_cast<unsigned long long>(attribute->pixel_format));
+#endif
 
 	if (option != nullptr) {
 		return VIDEO_OUT_ERROR_INVALID_OPTION;
@@ -1801,6 +1806,23 @@ KYTY_SYSV_ABI int VideoOutGetOutputStatus(int handle, VideoOutOutputStatus* stat
 	// Primary output reports 4K unless param.json Video-out Info enables resolution detection.
 	status->resolution =
 	    ((attribute3 & 4) != 0 && ctx->width < 3840 && ctx->height < 2160 ? 1u : 2u);
+#if defined(__ANDROID__)
+	// Handhelds have 1080p screens: report a 1080p display, as a PS5 on a 1080p TV does. Games that
+	// size their rendering from the output (Unreal rendered 4800x2700 for a "4K" output) then do a
+	// quarter of the work. `setprop debug.capy.output_4k 1` restores the 4K report.
+	static Common::DebugFlags::CachedValue output_4k("debug.capy.output_4k", 0);
+	if (output_4k.Get() == 0) {
+		status->resolution = 1u;
+	}
+	// Experiment: `setprop debug.capy.output_res N` reports resolution value N (read at boot by
+	// games), to find the value that makes them register smaller display buffers.
+	static Common::DebugFlags::CachedValue output_res("debug.capy.output_res", -1);
+	if (output_res.Get() >= 0) {
+		status->resolution = static_cast<uint32_t>(output_res.Get());
+	}
+	Common::DebugFlags::NoteOnce("CapyPS5-VideoOut", 0x4f555453u, "GetOutputStatus called: reporting resolution %u",
+	                             status->resolution);
+#endif
 	status->dynamicRange = 1;
 	status->refreshRate =
 	    (ctx->output_mode == VIDEO_OUT_OUTPUT_MODE_119_88HZ || Config::GetVblankFrequency() >= 119

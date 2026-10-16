@@ -1,4 +1,6 @@
 #include "graphics/guest_gpu/graphicsRun.h"
+#include <fmt/format.h>
+#include <string>
 #if defined(__ANDROID__) || defined(__linux__)
 #include <pthread.h>
 #endif
@@ -590,7 +592,7 @@ void CommandProcessor::WriteReferenceClock(uint64_t dst_address, uint32_t num_by
 		     num_bytes);
 		return;
 	}
-	const auto value = Sync::ReadReferenceClock();
+	const auto value = Sync::ReadGpuTimestamp();
 	std::memcpy(reinterpret_cast<void*>(dst_address), &value, num_bytes);
 	static std::atomic<uint32_t> clock_log_count {0};
 	if (clock_log_count.fetch_add(1) < 64) {
@@ -1048,6 +1050,29 @@ void CommandProcessor::ProcessPm4(Pm4Execution& execution) {
 		static Common::DebugFlags::CachedValue sync_pm4("debug.capy.sync_pm4", 0);
 		if (sync_pm4.Get() != 0) {
 			SyncRecord("pm4", packet_header, reinterpret_cast<uint64_t>(packet), packet[1]);
+		}
+		// `debug.capy.gpu_stats 1`: every 2 s log how many packets of each opcode (and NOP
+		// sub-type) the GPU processed, to see what it is busy with when no frame is presented.
+		static Common::DebugFlags::CachedValue gpu_stats("debug.capy.gpu_stats", 0);
+		if (gpu_stats.Get() != 0) {
+			static uint32_t counts[512] = {};
+			static auto     next_dump   = std::chrono::steady_clock::now();
+			const auto      key = opcode == Pm4::IT_NOP ? 256u + KYTY_PM4_R(packet_header) : opcode;
+			counts[key & 511u]++;
+			const auto now = std::chrono::steady_clock::now();
+			if (now >= next_dump) {
+				next_dump = now + std::chrono::seconds(2);
+				std::string line;
+				for (uint32_t i = 0; i < 512; i++) {
+					if (counts[i] != 0) {
+						line += fmt::format(" {}{:02x}={}", i >= 256 ? "nop" : "op", i & 255u, counts[i]);
+						counts[i] = 0;
+					}
+				}
+#if defined(__ANDROID__)
+				__android_log_print(ANDROID_LOG_WARN, "CapyPS5-GpuStats", "%s", line.c_str());
+#endif
+			}
 		}
 
 		if ((packet_header & 1u) != 0 && ShouldSkipPredicatedPackets()) {
@@ -1544,7 +1569,7 @@ void CommandProcessor::WriteAtEndOfPipe(uint32_t cache_policy, uint32_t event_wr
 				}
 			} else {
 				if (event_write_source == 0x04) {
-					value = Sync::ReadReferenceClock();
+					value = Sync::ReadGpuTimestamp();
 				}
 				auto write64 = [&](bool with_writeback) {
 					auto* dst = static_cast<uint64_t*>(dst_gpu_addr);
@@ -1652,7 +1677,7 @@ void CommandProcessor::WriteAtEndOfPipe(uint32_t cache_policy, uint32_t event_wr
 		write32(cache_action != 0);
 	} else {
 		if (event_write_source == 0x04) {
-			value = Sync::ReadReferenceClock();
+			value = Sync::ReadGpuTimestamp();
 		}
 		auto* dst = static_cast<uint64_t*>(dst_gpu_addr);
 		if (dst != nullptr) {

@@ -479,6 +479,10 @@ struct PipelineCache::ProgramCache {
 		entry->second.permutations.push_back(CompilePermutation(
 		    stage_name, options, std::move(translated), entry->second.specialization, push_data_cursor,
 		    entry->second.FunctionCode()));
+		if constexpr (std::is_same_v<InputInfo, ShaderVertexInputInfo>) {
+			entry->second.permutations.back().program.mesh_compute =
+			    stage == ShaderType::Mesh && input_info.mesh.emulate;
+		}
 		const auto& permutation = entry->second.permutations.back();
 #if defined(__ANDROID__)
 		{
@@ -706,10 +710,24 @@ PipelineCache::GraphicsPrograms PipelineCache::GetGraphicsPrograms(
 		vertex_params = PrepareTessellationPrograms(vertex_regs, context, vertex_info);
 	} else {
 		vertex_params[0] =
-		    PrepareProgram(vertex_regs, context, user_config, vertex_info[0], m_graphics.mesh_shader_enabled);
+		    PrepareProgram(vertex_regs, context, user_config, vertex_info[0], m_graphics.mesh_shader_enabled,
+		                   true);
 	}
 	const bool mesh_active = vertex_info[0].logical_stage == ShaderType::Mesh;
-	if (mesh_active) {
+	if (mesh_active && vertex_info[0].mesh.emulate) {
+		// Same subgroup choice as guest compute shaders, which the dispatch also mirrors.
+		auto& mesh              = vertex_info[0].mesh;
+		mesh.host_subgroup_size = m_graphics.SupportsComputeWave64() ? 64u : 32u;
+		const auto& limits      = m_graphics.GetPhysicalDeviceProperties().limits;
+		const auto  host_threads = ((mesh.threads_num[0] + mesh.wave_size - 1u) / mesh.wave_size) *
+		                          std::min(mesh.host_subgroup_size, mesh.wave_size);
+		if (host_threads > limits.maxComputeWorkGroupInvocations ||
+		    host_threads > limits.maxComputeWorkGroupSize[0] ||
+		    mesh.lds_size_dwords * sizeof(uint32_t) > limits.maxComputeSharedMemorySize) {
+			EXIT("emulated mesh shader exceeds compute limits: threads=%u LDS=%u\n", host_threads,
+			     mesh.lds_size_dwords);
+		}
+	} else if (mesh_active) {
 		EXIT_NOT_IMPLEMENTED(!m_graphics.mesh_shader_enabled);
 		auto& mesh              = vertex_info[0].mesh;
 		mesh.host_subgroup_size = m_graphics.subgroup_size;
@@ -1034,7 +1052,8 @@ PipelineCache::GetComputePipeline(const ShaderComputeInputInfo& input_info,
 	}
 
 	auto cached = std::make_unique<Pipeline>();
-	CreatePipelineInternal(m_graphics, *cached, input_info, compute_program.module, m_driver_cache);
+	CreatePipelineInternal(m_graphics, *cached, input_info.stage, compute_program.module,
+	                       m_driver_cache);
 
 	EXIT_NOT_IMPLEMENTED(cached->pipeline == nullptr);
 	EXIT_NOT_IMPLEMENTED(cached->pipeline_layout == nullptr);
@@ -1042,6 +1061,22 @@ PipelineCache::GetComputePipeline(const ShaderComputeInputInfo& input_info,
 	auto [iter, inserted] = m_compute_pipelines.emplace(compute_program.id, std::move(cached));
 	EXIT_IF(!inserted);
 
+	return *iter->second;
+}
+
+PipelineCache::Pipeline&
+PipelineCache::GetMeshComputePipeline(const ShaderVertexInputInfo& input_info,
+                                      const ShaderProgram&         mesh_program) {
+	EXIT_IF(!mesh_program || !input_info.stage || !input_info.stage.program->mesh_compute);
+	// Program ids are unique across stages, so mesh programs share the compute pipeline map.
+	if (auto iter = m_compute_pipelines.find(mesh_program.id); iter != m_compute_pipelines.end()) {
+		return *iter->second;
+	}
+	auto cached = std::make_unique<Pipeline>();
+	CreatePipelineInternal(m_graphics, *cached, input_info.stage, mesh_program.module,
+	                       m_driver_cache);
+	auto [iter, inserted] = m_compute_pipelines.emplace(mesh_program.id, std::move(cached));
+	EXIT_IF(!inserted);
 	return *iter->second;
 }
 } // namespace Libs::Graphics

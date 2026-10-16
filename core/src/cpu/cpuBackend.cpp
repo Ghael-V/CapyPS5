@@ -309,6 +309,15 @@ void HleStatsRecord(uint64_t func, uint64_t ns) {
 		                    stat.tid, name, static_cast<unsigned long long>(stat.func - base),
 		                    static_cast<unsigned long long>(stat.calls), static_cast<double>(stat.ns) / 1e6);
 	}
+	// Spinning threads make many short calls and never reach the by-time list.
+	std::sort(g_hle_stats.begin(), g_hle_stats.end(),
+	          [](const HleStat& a, const HleStat& b) { return a.calls > b.calls; });
+	for (size_t n = 0; n < g_hle_stats.size() && n < 10; n++) {
+		const auto& stat = g_hle_stats[n];
+		__android_log_print(ANDROID_LOG_WARN, "CapyPS5-Hle", "by calls: tid %d fn +0x%llx calls %llu ms %.1f",
+		                    stat.tid, static_cast<unsigned long long>(stat.func - base),
+		                    static_cast<unsigned long long>(stat.calls), static_cast<double>(stat.ns) / 1e6);
+	}
 	HleDumpInFlight();
 	__android_log_print(ANDROID_LOG_WARN, "CapyPS5-Hle", "----");
 	g_hle_stats.clear();
@@ -458,6 +467,42 @@ void EnableGuestAddressFold(uint64_t mask) {
 // guest code nested inside it (e.g. sceKernelLoadStartModule running module_start).
 thread_local uint64_t s_nested_guest_runs = 0;
 
+// Caller state of the HLE call running on this thread, captured only when that call goes on to
+// run nested guest code (which reuses the frame). Copying ~1 KiB on every HLE call cost the
+// Unreal render thread ~10 %.
+struct HleSavedRegisters {
+	FEXCore::Core::CpuStateFrame* frame  = nullptr;
+	bool                          filled = false;
+	uint64_t                      gregs[16];
+	uint64_t                      avx_high[16][2];
+	decltype(FEXCore::Core::CPUState::xmm) xmm;
+	uint64_t                      mm[8][2];
+	uint8_t                       flags[48];
+	uint32_t                      pf_raw, af_raw, mxcsr;
+	uint64_t                      fs_cached, gs_cached, callret_sp;
+};
+thread_local HleSavedRegisters* t_hle_saved = nullptr;
+
+void CaptureHleCallerState() {
+	auto* saved = t_hle_saved;
+	if (saved == nullptr || saved->filled || saved->frame == nullptr) {
+		return;
+	}
+	const auto& state = saved->frame->State;
+	std::memcpy(saved->gregs, state.gregs, sizeof(saved->gregs));
+	std::memcpy(saved->avx_high, state.avx_high, sizeof(saved->avx_high));
+	std::memcpy(&saved->xmm, &state.xmm, sizeof(saved->xmm));
+	std::memcpy(saved->mm, state.mm, sizeof(saved->mm));
+	std::memcpy(saved->flags, state.flags, sizeof(saved->flags));
+	saved->pf_raw     = state.pf_raw;
+	saved->af_raw     = state.af_raw;
+	saved->mxcsr      = state.mxcsr;
+	saved->fs_cached  = state.fs_cached;
+	saved->gs_cached  = state.gs_cached;
+	saved->callret_sp = state.callret_sp;
+	saved->filled     = true;
+}
+
 std::mutex s_trampoline_mutex;
 std::unordered_map<uint64_t, uint64_t> s_trampoline_cache;
 std::unordered_map<uint64_t, std::string> s_trampoline_names;
@@ -530,51 +575,43 @@ public:
 			// Nested guest code run by the HLE function leaves its registers in this frame
 			// (Unity games crashed after sceKernelLoadStartModule with RBP = module_start's
 			// argc). Restore the caller's full CPU state when that happened.
-			const auto runs_before = s_nested_guest_runs;
-			struct SavedRegisters {
-				uint64_t gregs[16];
-				uint64_t avx_high[16][2];
-				decltype(FEXCore::Core::CPUState::xmm) xmm;
-				uint64_t mm[8][2];
-				uint8_t  flags[48];
-				uint32_t pf_raw, af_raw, mxcsr;
-				uint64_t fs_cached, gs_cached, callret_sp;
-			} saved;
-			auto& state = Frame->State;
-			std::memcpy(saved.gregs, state.gregs, sizeof(saved.gregs));
-			std::memcpy(saved.avx_high, state.avx_high, sizeof(saved.avx_high));
-			std::memcpy(&saved.xmm, &state.xmm, sizeof(saved.xmm));
-			std::memcpy(saved.mm, state.mm, sizeof(saved.mm));
-			std::memcpy(saved.flags, state.flags, sizeof(saved.flags));
-			saved.pf_raw = state.pf_raw;
-			saved.af_raw = state.af_raw;
-			saved.mxcsr = state.mxcsr;
-			saved.fs_cached = state.fs_cached;
-			saved.gs_cached = state.gs_cached;
-			saved.callret_sp = state.callret_sp;
+			HleSavedRegisters saved;
+			saved.frame               = Frame;
+			auto* const outer_saved   = t_hle_saved;
+			t_hle_saved               = &saved;
+			auto&       state         = Frame->State;
 			const bool hle_stats = HleStatsEnabled();
 			if (hle_stats) {
 				HleStartWatchdog();
 			}
-			auto&      in_flight = CurrentHleInFlight();
-			const auto outer_func  = in_flight.func.load(std::memory_order_relaxed);
-			const auto outer_start = in_flight.start_ns.load(std::memory_order_relaxed);
-			in_flight.start_ns.store(HleNowNs(), std::memory_order_relaxed);
-			in_flight.guest_rsp.store(Frame->State.gregs[FEXCore::X86State::REG_RSP], std::memory_order_relaxed);
-			in_flight.func.store(host_func, std::memory_order_relaxed);
+			// In-flight tracking for the hang watchdog: only while hle_stats is on (clock reads on
+			// every HLE call were measurable).
+			HleInFlight* in_flight   = hle_stats ? &CurrentHleInFlight() : nullptr;
+			uint64_t     outer_func  = 0;
+			int64_t      outer_start = 0;
+			if (in_flight != nullptr) {
+				outer_func  = in_flight->func.load(std::memory_order_relaxed);
+				outer_start = in_flight->start_ns.load(std::memory_order_relaxed);
+				in_flight->start_ns.store(HleNowNs(), std::memory_order_relaxed);
+				in_flight->guest_rsp.store(Frame->State.gregs[FEXCore::X86State::REG_RSP], std::memory_order_relaxed);
+				in_flight->func.store(host_func, std::memory_order_relaxed);
+			}
 			const auto hle_start = hle_stats ? std::chrono::steady_clock::now()
 			                                 : std::chrono::steady_clock::time_point {};
 			uint64_t ret = fn(a0, a1, a2, a3, a4, a5, a6, a7,
 			                  a8, a9, a10, a11, a12, a13, a14, a15);
 			t_last_hle_func = host_func;
-			in_flight.func.store(outer_func, std::memory_order_relaxed);
-			in_flight.start_ns.store(outer_start, std::memory_order_relaxed);
+			t_hle_saved     = outer_saved;
+			if (in_flight != nullptr) {
+				in_flight->func.store(outer_func, std::memory_order_relaxed);
+				in_flight->start_ns.store(outer_start, std::memory_order_relaxed);
+			}
 			if (hle_stats) {
 				HleStatsRecord(host_func, static_cast<uint64_t>(
 				    std::chrono::duration_cast<std::chrono::nanoseconds>(
 				        std::chrono::steady_clock::now() - hle_start).count()));
 			}
-			if (s_nested_guest_runs != runs_before) {
+			if (saved.filled) {
 				static std::atomic<uint32_t> restored_log {0};
 				if (restored_log.fetch_add(1) < 8) {
 					__android_log_print(ANDROID_LOG_WARN, "CapyPS5-Cpu",
@@ -1019,6 +1056,7 @@ private:
 		      static_cast<unsigned long long>(entry_addr), static_cast<unsigned long long>(rsp),
 		      static_cast<unsigned long long>(arg0), static_cast<unsigned long long>(arg1), static_cast<unsigned long long>(arg2));
 
+		CaptureHleCallerState();
 		s_nested_guest_runs++;
 #if defined(__aarch64__)
 		auto* const outer_fex_thread = s_current_fex_thread;

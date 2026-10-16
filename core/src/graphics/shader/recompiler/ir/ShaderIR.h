@@ -319,7 +319,9 @@ static_assert(static_cast<uint32_t>(DescriptorBindingKind::Count) == 56u);
 
 struct PushData {
 	static constexpr uint32_t DwordCount = 32;
-	static constexpr uint32_t MeshDrawDwordCount = 6;
+	// Mesh draws: count, base vertex, base instance, index size, index address lo/hi; emulated
+	// mesh shaders add workgroups per instance, index region offset, record address lo/hi.
+	static constexpr uint32_t MeshDrawDwordCount = 10;
 	static constexpr uint32_t NoStart    = UINT32_MAX;
 	std::array<uint32_t, DwordCount> dwords {};
 
@@ -332,6 +334,20 @@ struct PushData {
 };
 
 static_assert(sizeof(PushData) == 128);
+
+// Emulated mesh shaders store every output vertex as a record holding the stage outputs in
+// order: Position and Parameter take 4 dwords, Layer and each clip/cull distance one.
+[[nodiscard]] inline uint32_t MeshRecordOutputDwords(StageOutputKind kind) {
+	return kind == StageOutputKind::Position || kind == StageOutputKind::Parameter ? 4u : 1u;
+}
+
+[[nodiscard]] inline uint32_t MeshRecordDwords(const std::vector<StageOutput>& outputs) {
+	uint32_t dwords = 0;
+	for (const auto& output: outputs) {
+		dwords += MeshRecordOutputDwords(output.kind);
+	}
+	return dwords;
+}
 constexpr uint32_t NativePushConstantSize = sizeof(PushData);
 
 [[nodiscard]] constexpr uint32_t NativeBinding(ShaderType stage, DescriptorBindingKind kind) {
@@ -555,6 +571,8 @@ struct CompiledShaderInfo {
 	uint32_t                      scratch_dwords      = 0;
 	uint32_t                      param_export_mask   = 0;
 	bool                          has_address_writes  = false;
+	// A mesh program emulated as a compute shader (bound and dispatched on the compute point).
+	bool                          mesh_compute        = false;
 	ShaderInfo                    info;
 	Bindings                      bindings;
 };

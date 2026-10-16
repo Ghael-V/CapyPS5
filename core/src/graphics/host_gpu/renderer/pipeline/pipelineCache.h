@@ -140,6 +140,9 @@ public:
 	                              const GraphicsPrograms& programs);
 	Pipeline& GetComputePipeline(const ShaderComputeInputInfo& input_info,
 	                             const ShaderProgram&          compute_program);
+	// Compute pipeline of a mesh program emulated as a compute shader.
+	Pipeline& GetMeshComputePipeline(const ShaderVertexInputInfo& input_info,
+	                                 const ShaderProgram&         mesh_program);
 
 private:
 	struct ProgramCache;
@@ -190,8 +193,8 @@ void CreatePipelineInternal(GraphicContext& graphics, PipelineCache::Pipeline& p
                             const PipelineStaticParameters&        static_params,
                             vk::PipelineCache                      driver_cache);
 void CreatePipelineInternal(GraphicContext& graphics, PipelineCache::Pipeline& pipeline,
-                            const ShaderComputeInputInfo& input_info,
-                            vk::ShaderModule compute_module, vk::PipelineCache driver_cache);
+                            const ShaderStageRuntime& stage, vk::ShaderModule compute_module,
+                            vk::PipelineCache driver_cache);
 
 } // namespace Libs::Graphics
 

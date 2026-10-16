@@ -22,6 +22,10 @@ vk::ShaderStageFlagBits NativeShaderStage(ShaderType stage) {
 	}
 }
 
+vk::ShaderStageFlagBits ProgramShaderStage(const ShaderRecompiler::IR::CompiledShaderInfo& program) {
+	return program.mesh_compute ? vk::ShaderStageFlagBits::eCompute : NativeShaderStage(program.stage);
+}
+
 vk::PipelineStageFlags ShaderPipelineStages(vk::ShaderStageFlags stages) {
 	vk::PipelineStageFlags result = {};
 	if (stages & vk::ShaderStageFlagBits::eVertex) {

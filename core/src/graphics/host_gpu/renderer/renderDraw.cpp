@@ -46,6 +46,7 @@
 #include <array>
 #include <atomic>
 #include <bit>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -984,6 +985,30 @@ static void RefreshShaders(CommandBuffer& buffer, const DrawCallInfo& draw,
 bool RenderExecutor::PrepareDrawRenderState(CommandBuffer& buffer, const DrawCallInfo& draw,
                                             uint32_t            render_target_slice_offset,
 	                                        DrawRenderState& state) {
+	Common::DebugFlags::FrameTraceDrawTick();
+	// Merged ES+GS (geometry shader) draws: mesh shaders, or compute emulation without them.
+	const bool gs_emulated = (buffer.GetRegisters().GetShaderStages() & 0x20u) != 0 &&
+	                     !m_context.GetGraphics().mesh_shader_enabled;
+	{
+		// `debug.capy.gpu_stats 1`: how many draws run ES+GS through compute out of the total.
+		static Common::DebugFlags::CachedValue gpu_stats("debug.capy.gpu_stats", 0);
+		static uint64_t total = 0, emulated = 0;
+		static auto     next = std::chrono::steady_clock::now();
+		if (gpu_stats.Get() != 0) {
+			total++;
+			emulated += gs_emulated ? 1 : 0;
+			if (const auto now = std::chrono::steady_clock::now(); now >= next) {
+				next = now + std::chrono::seconds(2);
+#if defined(__ANDROID__)
+				__android_log_print(ANDROID_LOG_WARN, "CapyPS5-GpuStats", "draws %llu, ES+GS emulated %llu (stages 0x%x)",
+				                    static_cast<unsigned long long>(total),
+				                    static_cast<unsigned long long>(emulated),
+				                    static_cast<unsigned>(buffer.GetRegisters().GetShaderStages()));
+#endif
+				total = emulated = 0;
+			}
+		}
+	}
 	const auto& shader_regs       = buffer.GetRegisters().GetShaderRegisters();
 	const auto  color_output_mask = DrawColorOutputMask(buffer.GetRegisters());
 	state.ps_active = buffer.GetShaders().GetPs().ps_regs.data_addr != 0 &&
@@ -1222,6 +1247,7 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 	const auto vertex_stages =
 	    std::span {state.vertex_info.data(), state.programs.VertexStageCount()};
 	const bool mesh_active = state.vertex_info[0].stage.program->stage == ShaderType::Mesh;
+	const bool mesh_emulated = mesh_active && state.vertex_info[0].stage.program->mesh_compute;
 	uint32_t   mesh_groups = 0;
 	if (mesh_active) {
 		const auto& mesh = state.vertex_info[0].mesh;
@@ -1242,7 +1268,14 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 		}
 		mesh_groups        = (primitives - 1u) / mesh.primitives_per_group + 1u;
 		const auto& limits = m_context.GetGraphics().mesh_shader_properties;
-		if (mesh_groups > limits.maxMeshWorkGroupCount[0] ||
+		const auto& compute_limits = m_context.GetGraphics().GetPhysicalDeviceProperties().limits;
+		if (mesh_emulated) {
+			if (mesh_groups > compute_limits.maxComputeWorkGroupCount[0] ||
+			    draw.instance_count > compute_limits.maxComputeWorkGroupCount[1]) {
+				EXIT("emulated mesh draw exceeds compute workgroup limits: %ux%u\n", mesh_groups,
+				     draw.instance_count);
+			}
+		} else if (mesh_groups > limits.maxMeshWorkGroupCount[0] ||
 		    draw.instance_count > limits.maxMeshWorkGroupCount[1] ||
 		    static_cast<uint64_t>(mesh_groups) * draw.instance_count >
 		        limits.maxMeshWorkGroupTotalCount) {
@@ -1425,20 +1458,84 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 	if (state.ps_active && !draw.IsIndexed()) {
 		SetDrawDebugPhase(buffer, submit_id, draw, 0x300u);
 	}
-	CommitBindings(buffer, vk::PipelineBindPoint::eGraphics, pipeline, stages);
-	if (mesh_active) {
+	uint32_t   mesh_index_count = 0;
+	Buffer*    mesh_output      = nullptr;
+	uint64_t   mesh_index_offset = 0;
+	if (mesh_emulated) {
+		// Geometry shader without VK_EXT_mesh_shader: the mesh program runs as a compute shader
+		// that writes every workgroup's vertex records and triangles, drawn below as a list.
+		const auto& mesh          = state.vertex_info[0].mesh;
+		const auto  groups        = static_cast<uint64_t>(mesh_groups) * draw.instance_count;
+		const auto  record_bytes  = uint64_t {ShaderRecompiler::IR::MeshRecordDwords(
+		                                state.vertex_info[0].stage.program->info.outputs)} * 4u;
+		const auto  index_bytes   = groups * mesh.max_primitives * 3u * sizeof(uint32_t);
+		mesh_index_offset         = (groups * mesh.max_vertices * record_bytes + 255u) & ~uint64_t {255u};
+		EXIT_IF(mesh_index_offset > UINT32_MAX || groups * mesh.max_primitives * 3u > UINT32_MAX);
+		mesh_output               = &MeshOutputBuffer(mesh_index_offset + index_bytes);
+		mesh_index_count          = static_cast<uint32_t>(groups * mesh.max_primitives * 3u);
+		auto& compute_pipeline    = m_context.GetPipelineCache().GetMeshComputePipeline(
+		    state.vertex_info[0], state.programs.vertex[0]);
+		m_context.GetCommandScheduler().EndRendering();
+		vk::MemoryBarrier full {};
+		full.srcAccessMask = vk::AccessFlagBits::eMemoryRead | vk::AccessFlagBits::eMemoryWrite;
+		full.dstAccessMask = vk::AccessFlagBits::eMemoryRead | vk::AccessFlagBits::eMemoryWrite;
+		// Earlier draws may still read the previous contents of the output buffer.
+		vk_buffer.pipelineBarrier(vk::PipelineStageFlagBits::eAllCommands,
+		                          vk::PipelineStageFlagBits::eAllCommands, {}, 1, &full, 0, nullptr,
+		                          0, nullptr);
+		// Triangles a workgroup does not emit stay (0, 0, 0): degenerate, never rasterized.
+		vk_buffer.fillBuffer(mesh_output->Handle(), mesh_index_offset, index_bytes, 0);
+		vk::MemoryBarrier filled {};
+		filled.srcAccessMask = vk::AccessFlagBits::eTransferWrite;
+		filled.dstAccessMask = vk::AccessFlagBits::eShaderWrite | vk::AccessFlagBits::eShaderRead;
+		vk_buffer.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer,
+		                          vk::PipelineStageFlagBits::eComputeShader, {}, 1, &filled, 0,
+		                          nullptr, 0, nullptr);
+		PreparedBindings* mesh_stage = &bindings.vertex[0];
+		CommitBindings(buffer, vk::PipelineBindPoint::eCompute, compute_pipeline,
+		               std::span {&mesh_stage, 1u});
+		const auto records = mesh_output->BufferDeviceAddress();
 		const uint32_t draw_data[] {
 		    draw.index_count,
 		    draw.IsIndexed() ? static_cast<uint32_t>(emit.vertex_offset) : emit.first_vertex,
 		    emit.first_instance, index_source.guest_element_size,
 		    static_cast<uint32_t>(index_source.address),
-		    static_cast<uint32_t>(index_source.address >> 32u)};
+		    static_cast<uint32_t>(index_source.address >> 32u), mesh_groups,
+		    static_cast<uint32_t>(mesh_index_offset), static_cast<uint32_t>(records),
+		    static_cast<uint32_t>(records >> 32u)};
+		static_assert(std::size(draw_data) == ShaderRecompiler::IR::PushData::MeshDrawDwordCount);
+		vk_buffer.pushConstants(compute_pipeline.pipeline_layout, vk::ShaderStageFlagBits::eCompute,
+		                        0, sizeof(draw_data), draw_data);
+		vk_buffer.bindPipeline(vk::PipelineBindPoint::eCompute, compute_pipeline.pipeline);
+		vk_buffer.dispatch(mesh_groups, draw.instance_count, 1);
+		vk::MemoryBarrier written {};
+		written.srcAccessMask = vk::AccessFlagBits::eShaderWrite;
+		written.dstAccessMask = vk::AccessFlagBits::eVertexAttributeRead | vk::AccessFlagBits::eIndexRead;
+		vk_buffer.pipelineBarrier(vk::PipelineStageFlagBits::eComputeShader,
+		                          vk::PipelineStageFlagBits::eVertexInput, {}, 1, &written, 0,
+		                          nullptr, 0, nullptr);
+		const vk::DeviceSize zero          = 0;
+		const vk::Buffer     output_handle = mesh_output->Handle();
+		vk_buffer.bindVertexBuffers(0, 1, &output_handle, &zero);
+		vk_buffer.bindIndexBuffer(mesh_output->Handle(), mesh_index_offset, vk::IndexType::eUint32);
+		// The graphics pipeline has only the pixel shader's bindings.
+		CommitBindings(buffer, vk::PipelineBindPoint::eGraphics, pipeline, stages.subspan(1));
+	} else {
+		CommitBindings(buffer, vk::PipelineBindPoint::eGraphics, pipeline, stages);
+	}
+	if (mesh_active && !mesh_emulated) {
+		const uint32_t draw_data[] {
+		    draw.index_count,
+		    draw.IsIndexed() ? static_cast<uint32_t>(emit.vertex_offset) : emit.first_vertex,
+		    emit.first_instance, index_source.guest_element_size,
+		    static_cast<uint32_t>(index_source.address),
+		    static_cast<uint32_t>(index_source.address >> 32u), 0, 0, 0, 0};
 		static_assert(std::size(draw_data) == ShaderRecompiler::IR::PushData::MeshDrawDwordCount);
 		vk_buffer.pushConstants(pipeline.pipeline_layout,
 		                        vk::ShaderStageFlagBits::eMeshEXT |
 		                            vk::ShaderStageFlagBits::eFragment,
 		                        0, sizeof(draw_data), draw_data);
-	} else {
+	} else if (!mesh_active) {
 		CommitIndexBuffer(vk_buffer, index_binding);
 	}
 
@@ -1528,7 +1625,9 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 	if (!draw.IsIndexed()) {
 		SetDrawDebugPhase(buffer, submit_id, draw, 0x500u);
 	}
-	if (mesh_active) {
+	if (mesh_emulated) {
+		vk_buffer.drawIndexed(mesh_index_count, 1, 0, 0, 0);
+	} else if (mesh_active) {
 		vk_buffer.drawMeshTasksEXT(mesh_groups, draw.instance_count, 1);
 	} else {
 		EmitDrawPrimitives(ucfg, vk_buffer, draw, emit);
@@ -1540,7 +1639,7 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 	vk::PipelineStageFlags shader_write_stages = {};
 	for (const auto& stage: vertex_stages) {
 		if (HasShaderBufferWrites(stage.stage)) {
-			shader_write_stages |= ShaderPipelineStages(NativeShaderStage(stage.logical_stage));
+			shader_write_stages |= ShaderPipelineStages(ProgramShaderStage(*stage.stage.program));
 		}
 	}
 	if (state.ps_active && HasShaderBufferWrites(state.ps_input_info.stage)) {
@@ -1609,6 +1708,19 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 	if (!draw.IsIndexed()) {
 		SetDrawDebugPhase(buffer, submit_id, draw, 0x700u);
 	}
+}
+
+Buffer& RenderExecutor::MeshOutputBuffer(uint64_t size) {
+	if (m_mesh_output == nullptr || m_mesh_output->Size() < size) {
+		if (m_mesh_output != nullptr) {
+			m_retired_mesh_outputs.push_back(std::move(m_mesh_output));
+		}
+		const auto capacity = std::max<uint64_t>(std::bit_ceil(size), 4ull << 20u);
+		m_mesh_output = std::make_unique<Buffer>(
+		    m_context.GetGraphics(), m_context.GetCommandScheduler(), MemoryUsage::DeviceLocal, 0,
+		    AllFlags | vk::BufferUsageFlagBits::eShaderDeviceAddress, capacity);
+	}
+	return *m_mesh_output;
 }
 
 void RenderExecutor::DrawIndex(uint64_t submit_id, CommandBuffer& buffer,

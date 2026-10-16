@@ -59,8 +59,10 @@ void DbgExit(int status) {
 	Subsystems::EmergencyShutdownActive();
 	std::fflush(nullptr);
 #ifdef __ANDROID__
-	Log::WriteFatal(fmt::format("DbgExit: Emulator thread safely terminating (status {})", status));
-	pthread_exit(nullptr);
+	// Ending only the failing thread left the game frozen with no sign of the error (a shader
+	// decode failure on the GPU thread looked like a hang). Close the app; the log has the report.
+	Log::WriteFatal(fmt::format("DbgExit: closing the emulator (status {})", status));
+	std::_Exit(status);
 #else
 	std::_Exit(status);
 #endif

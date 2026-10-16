@@ -1,5 +1,6 @@
 #include "graphics/host_gpu/renderer/sync.h"
 
+#include "common/debugFlags.h"
 #include "common/assert.h"
 #include "common/common.h"
 #include "common/logging/log.h"
@@ -51,6 +52,16 @@ uint64_t ReadReferenceClock() {
 		     host_frequency);
 	}
 	return value;
+}
+
+uint64_t ReadGpuTimestamp() {
+	// Experiment: `setprop debug.capy.ts_scale N` makes GPU timestamps advance N times faster, so
+	// games that size their rendering from measured GPU time see a slower GPU.
+	static Common::DebugFlags::CachedValue scale("debug.capy.ts_scale", 1);
+	const auto     now    = ReadReferenceClock();
+	const auto     factor = scale.Get();
+	static const uint64_t base = now;
+	return factor <= 1 ? now : base + (now - base) * static_cast<uint64_t>(factor);
 }
 
 enum class EndOfPipeWriteSize : uint32_t { Dword = 4, Qword = 8 };

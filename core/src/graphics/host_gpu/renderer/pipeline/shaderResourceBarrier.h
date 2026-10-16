@@ -9,6 +9,8 @@ namespace Libs::Graphics {
 struct ShaderStageRuntime;
 
 vk::ShaderStageFlagBits NativeShaderStage(ShaderType stage);
+// Like NativeShaderStage, but an emulated mesh program runs on the compute stage.
+vk::ShaderStageFlagBits ProgramShaderStage(const ShaderRecompiler::IR::CompiledShaderInfo& program);
 vk::PipelineStageFlags  ShaderPipelineStages(vk::ShaderStageFlags stages);
 vk::MemoryBarrier       MakeShaderAccessDependency();
 vk::MemoryBarrier       MakeShaderWriteHazardDependency();

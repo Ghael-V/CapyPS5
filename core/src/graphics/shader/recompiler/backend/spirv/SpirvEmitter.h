@@ -13,6 +13,10 @@ namespace Libs::Graphics::ShaderRecompiler::Spirv {
 std::vector<uint32_t> EmitProgram(IR::Program& program, ShaderStageInputInfo input_info,
                                   uint32_t push_data_start_dword = 0);
 
+// Vertex shader that draws the records an emulated mesh shader wrote: input location N is the
+// Nth stage output of the mesh program (see IR::MeshRecordDwords), forwarded unchanged.
+std::vector<uint32_t> BuildMeshPassthroughVertexShader(const std::vector<IR::StageOutput>& outputs);
+
 } // namespace Libs::Graphics::ShaderRecompiler::Spirv
 
 #endif /* EMULATOR_INCLUDE_EMULATOR_GRAPHICS_SHADER_RECOMPILER_SPIRVEMITTER_H_ */
