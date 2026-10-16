@@ -171,6 +171,25 @@ void EmitEmulatedMeshEntryPoint(EmitterState& state) {
 
 } // namespace
 
+uint32_t ResolutionScale(EmitterState& state) {
+	if (state.resolution_scale == 0) {
+		state.resolution_scale = state.builder.Constant(spv::OpSpecConstant, TypeF32(state),
+		                                                std::bit_cast<uint32_t>(1.0f));
+		state.builder.AddAnnotation(spv::OpDecorate, state.resolution_scale, spv::DecorationSpecId,
+		                            IR::ResolutionScaleSpecId);
+	}
+	return state.resolution_scale;
+}
+
+uint32_t ScaledImageMask(EmitterState& state) {
+	if (state.scaled_image_mask == 0) {
+		state.scaled_image_mask = state.builder.Constant(spv::OpSpecConstant, TypeU32(state), 0u);
+		state.builder.AddAnnotation(spv::OpDecorate, state.scaled_image_mask, spv::DecorationSpecId,
+		                            IR::ScaledImageMaskSpecId);
+	}
+	return state.scaled_image_mask;
+}
+
 bool MeshEmulated(const EmitterState& state) {
 	return state.program.stage == ShaderType::Mesh && state.input_info.vertex != nullptr &&
 	       state.input_info.vertex->mesh.emulate;

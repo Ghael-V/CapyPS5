@@ -181,15 +181,6 @@ void CommandBuffer::BeginRendering(const RenderState& state) const {
 
 	vk::RenderingInfo rendering {};
 	rendering.renderArea.extent    = {state.width, state.height};
-	// Experiment (see debug.capy.res_test in renderDraw.cpp): also shrink the render area, so a
-	// tiled GPU loads and stores only the drawn corner.
-	static Common::DebugFlags::CachedValue res_test("debug.capy.res_test", 0);
-	if (res_test.Get() > 0 && state.width >= 3840) {
-		const float scale = static_cast<float>(res_test.Get()) / 1000.0f;
-		rendering.renderArea.extent = vk::Extent2D {
-		    static_cast<uint32_t>(static_cast<float>(state.width) * scale) + 1u,
-		    static_cast<uint32_t>(static_cast<float>(state.height) * scale) + 1u};
-	}
 	rendering.layerCount           = state.num_layers;
 	rendering.colorAttachmentCount = state.num_color_attachments;
 	rendering.pColorAttachments    = colors.data();

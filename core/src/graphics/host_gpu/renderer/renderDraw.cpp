@@ -333,7 +333,7 @@ static void UpdateGraphicsDynamicState(const CommandBuffer& buffer, DynamicState
 
 	const auto& ctx = buffer.GetRegisters();
 	const auto&        vp  = ctx.GetScreenViewport();
-	const vk::Extent2D framebuffer_extent {rendering.width, rendering.height};
+	const vk::Extent2D framebuffer_extent {rendering.guest_width, rendering.guest_height};
 	const auto& outputs = vs_input_info.stage.program->info.outputs;
 	const bool  indexed_viewports =
 	    std::any_of(outputs.begin(), outputs.end(), [](const auto& output) {
@@ -381,22 +381,28 @@ static void UpdateGraphicsDynamicState(const CommandBuffer& buffer, DynamicState
 			scissor.extent = {0, 0};
 		}
 	}
-	// Experiment (wrong image): `setprop debug.capy.res_test N` draws to targets of 3840 pixels
-	// or wider into the top-left N/1000 of them, to measure what a lower resolution would gain.
-	static Common::DebugFlags::CachedValue res_test("debug.capy.res_test", 0);
-	if (res_test.Get() > 0 && rendering.width >= 3840) {
-		const float scale = static_cast<float>(res_test.Get()) / 1000.0f;
+	if (rendering.scale != 1.0f) {
+		// Downscaled attachments (debug.capy.res_scale): map guest pixels onto host pixels.
+		const float scale = rendering.scale;
 		for (uint32_t i = 0; i < viewport_count; i++) {
 			viewports[i].x *= scale;
 			viewports[i].y *= scale;
 			viewports[i].width *= scale;
 			viewports[i].height *= scale;
-			scissors[i].offset.x = static_cast<int32_t>(static_cast<float>(scissors[i].offset.x) * scale);
-			scissors[i].offset.y = static_cast<int32_t>(static_cast<float>(scissors[i].offset.y) * scale);
-			scissors[i].extent.width =
-			    static_cast<uint32_t>(static_cast<float>(scissors[i].extent.width) * scale);
-			scissors[i].extent.height =
-			    static_cast<uint32_t>(static_cast<float>(scissors[i].extent.height) * scale);
+			const auto x0 = static_cast<int32_t>(static_cast<float>(scissors[i].offset.x) * scale);
+			const auto y0 = static_cast<int32_t>(static_cast<float>(scissors[i].offset.y) * scale);
+			const auto x1 = static_cast<int32_t>(std::ceil(
+			    static_cast<float>(scissors[i].offset.x + static_cast<int32_t>(scissors[i].extent.width)) *
+			    scale));
+			const auto y1 = static_cast<int32_t>(std::ceil(
+			    static_cast<float>(scissors[i].offset.y + static_cast<int32_t>(scissors[i].extent.height)) *
+			    scale));
+			scissors[i].offset = vk::Offset2D {x0, y0};
+			scissors[i].extent = vk::Extent2D {
+			    static_cast<uint32_t>(std::min<int32_t>(x1, static_cast<int32_t>(rendering.width)) -
+			                          std::min(x0, static_cast<int32_t>(rendering.width))),
+			    static_cast<uint32_t>(std::min<int32_t>(y1, static_cast<int32_t>(rendering.height)) -
+			                          std::min(y0, static_cast<int32_t>(rendering.height)))};
 		}
 	}
 	if (Common::DebugFlags::FrameTracing()) {
@@ -534,6 +540,9 @@ RenderState RenderExecutor::AcquireRenderTargets(CommandBuffer& buffer, RenderCo
 	RenderState state {};
 	state.width                 = std::numeric_limits<uint32_t>::max();
 	state.height                = std::numeric_limits<uint32_t>::max();
+	state.guest_width           = std::numeric_limits<uint32_t>::max();
+	state.guest_height          = std::numeric_limits<uint32_t>::max();
+	bool scale_known            = false;
 	state.num_layers            = std::numeric_limits<uint32_t>::max();
 	state.num_color_attachments = 0;
 	for (uint32_t i = 0; i < color_count; i++) {
@@ -558,8 +567,17 @@ RenderState RenderExecutor::AcquireRenderTargets(CommandBuffer& buffer, RenderCo
 		                                     view.layer_count},
 		              buffer.Handle());
 		const auto extent       = target.Extent();
-		state.width             = std::min(state.width, extent.width);
-		state.height            = std::min(state.height, extent.height);
+		const auto host_level   = view.base_level;
+		state.width  = std::min(state.width, std::max(image.backing.extent.width >> host_level, 1u));
+		state.height = std::min(state.height, std::max(image.backing.extent.height >> host_level, 1u));
+		state.guest_width  = std::min(state.guest_width, extent.width);
+		state.guest_height = std::min(state.guest_height, extent.height);
+		if (scale_known && image.scale != state.scale) {
+			Common::DebugFlags::NoteOnce("CapyPS5-Scale", 0x534d495845ull,
+			                             "render pass mixes differently scaled attachments");
+		}
+		state.scale = std::min(state.scale, image.scale);
+		scale_known = true;
 		state.num_layers        = std::min(state.num_layers, view.layer_count);
 		state.num_color_attachments = std::max(state.num_color_attachments, target.target_slot + 1);
 		auto& attachment            = state.color_attachments[target.target_slot];
@@ -620,8 +638,16 @@ RenderState RenderExecutor::AcquireRenderTargets(CommandBuffer& buffer, RenderCo
 		              ImageSubresourceRange {view.base_level, view.level_count, view.base_layer,
 		                                     view.layer_count},
 		              buffer.Handle());
-		state.width               = std::min(state.width, depth.desc.info.extent.width);
-		state.height              = std::min(state.height, depth.desc.info.extent.height);
+		state.width        = std::min(state.width, image.backing.extent.width);
+		state.height       = std::min(state.height, image.backing.extent.height);
+		state.guest_width  = std::min(state.guest_width, depth.desc.info.extent.width);
+		state.guest_height = std::min(state.guest_height, depth.desc.info.extent.height);
+		if (scale_known && image.scale != state.scale) {
+			Common::DebugFlags::NoteOnce("CapyPS5-Scale", 0x534d495845ull,
+			                             "render pass mixes differently scaled attachments");
+		}
+		state.scale = std::min(state.scale, image.scale);
+		scale_known = true;
 		state.num_layers          = std::min(state.num_layers, view.layer_count);
 		const auto aspects        = ImageViewOps::DepthAspectMask(depth.desc.view_info.format);
 		auto&      attachment     = state.depth_stencil_attachment;
@@ -638,6 +664,8 @@ RenderState RenderExecutor::AcquireRenderTargets(CommandBuffer& buffer, RenderCo
 		const auto& limits = buffer.GetGraphics().GetPhysicalDeviceProperties().limits;
 		state.width        = limits.maxFramebufferWidth;
 		state.height       = limits.maxFramebufferHeight;
+		state.guest_width  = state.width;
+		state.guest_height = state.height;
 	}
 	if (state.num_layers == std::numeric_limits<uint32_t>::max()) {
 		state.num_layers = 1;
@@ -1209,8 +1237,18 @@ bool RenderExecutor::CopyDepthToColor(CommandBuffer& buffer, const DrawCallInfo&
 	EXIT_NOT_IMPLEMENTED((source.backing.format != vk::Format::eD32Sfloat &&
 	                      source.backing.format != vk::Format::eD32SfloatS8Uint) ||
 	                     destination.backing.format != vk::Format::eR32Sfloat);
-	const auto rect = calc_final_scissor(hw.GetScreenViewport(), hw.GetScanModeControl(),
-	                                    {rendering.width, rendering.height}, 0);
+	auto rect = calc_final_scissor(hw.GetScreenViewport(), hw.GetScanModeControl(),
+	                               {rendering.guest_width, rendering.guest_height}, 0);
+	if (rendering.scale != 1.0f) {
+		const auto host = [&](int32_t value, uint32_t limit) {
+			return std::min(static_cast<int32_t>(std::lround(static_cast<float>(value) * rendering.scale)),
+			                static_cast<int32_t>(limit));
+		};
+		rect.left   = host(rect.left, rendering.width);
+		rect.right  = host(rect.right, rendering.width);
+		rect.top    = host(rect.top, rendering.height);
+		rect.bottom = host(rect.bottom, rendering.height);
+	}
 	if (rect.right > rect.left && rect.bottom > rect.top) {
 		const vk::ImageCopy region {
 		    {vk::ImageAspectFlagBits::eDepth, depth.desc.view_info.base_level,
@@ -1421,10 +1459,26 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 	if (draw.IsIndexed()) {
 		LogDrawPhase(draw.Name(), "CreatePipeline");
 	}
+	const uint32_t vs_scaled_images = mesh_emulated ? 0u : ScaledImageMask(bindings.vertex[0]);
+	uint32_t       ps_scaled_images = state.ps_active ? ScaledImageMask(*bindings.pixel) : 0u;
+	{
+		auto&      cache        = m_context.GetTextureCache();
+		const auto target_scale = [&](ImageId id) {
+			const auto* image = id ? cache.m_slot_images.try_get(id) : nullptr;
+			return image != nullptr && image->IsScaled();
+		};
+		bool scaled_target = target_scale(state.depth_info.image_id);
+		for (uint32_t i = 0; i < state.color_count; i++) {
+			scaled_target |= target_scale(state.color_info[i].image_id);
+		}
+		if (scaled_target) {
+			ps_scaled_images |= ShaderRecompiler::IR::ScaledRenderTargetBit;
+		}
+	}
 	auto& pipeline = m_context.GetPipelineCache().GetGraphicsPipeline(
 	    std::span {state.color_info, state.color_count}, state.depth_info, vertex_stages, buffer,
 	    state.ps_active ? &state.ps_input_info : nullptr, topology, primitive_restart_enable,
-	    state.programs);
+	    state.programs, vs_scaled_images, ps_scaled_images);
 	vk::ImageAspectFlags feedback_aspects;
 	const auto rendering =
 	    AcquireRenderTargets(buffer, state.color_info, state.color_count, state.depth_info,
@@ -1498,7 +1552,7 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 		mesh_output               = &MeshOutputBuffer(mesh_index_offset + index_bytes);
 		mesh_index_count          = static_cast<uint32_t>(groups * mesh.max_primitives * 3u);
 		auto& compute_pipeline    = m_context.GetPipelineCache().GetMeshComputePipeline(
-		    state.vertex_info[0], state.programs.vertex[0]);
+		    state.vertex_info[0], state.programs.vertex[0], ScaledImageMask(bindings.vertex[0]));
 		m_context.GetCommandScheduler().EndRendering();
 		vk::MemoryBarrier full {};
 		full.srcAccessMask = vk::AccessFlagBits::eMemoryRead | vk::AccessFlagBits::eMemoryWrite;
@@ -1736,6 +1790,18 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 	if (!draw.IsIndexed()) {
 		SetDrawDebugPhase(buffer, submit_id, draw, 0x700u);
 	}
+}
+
+uint32_t RenderExecutor::ScaledImageMask(const PreparedBindings& bindings) {
+	auto&    cache = m_context.GetTextureCache();
+	uint32_t mask  = 0;
+	for (uint32_t i = 0; i < bindings.images.size() && i < 31u; i++) {
+		const auto* image = cache.m_slot_images.try_get(bindings.images[i].image_id);
+		if (image != nullptr && image->IsScaled()) {
+			mask |= 1u << i;
+		}
+	}
+	return mask;
 }
 
 Buffer& RenderExecutor::MeshOutputBuffer(uint64_t size) {

@@ -218,6 +218,8 @@ private:
 	                                              CommandBuffer& command, uint32_t group_x,
 	                                              uint32_t group_y, uint32_t group_z, uint32_t mode);
 	[[nodiscard]] Buffer& MeshOutputBuffer(uint64_t size);
+	// IR::ScaledImageMaskSpecId bits for the downscaled images a stage binds.
+	[[nodiscard]] uint32_t ScaledImageMask(const PreparedBindings& bindings);
 
 	RenderContext&                        m_context;
 	GraphicsBindings                     m_graphics_bindings;

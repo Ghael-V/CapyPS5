@@ -52,6 +52,8 @@ public:
 	KYTY_CLASS_NO_COPY(BufferCache);
 
 	void                   InvalidateMemory(uint64_t vaddr, uint64_t size);
+	// Ranges the CPU modified since the last call (new buffers count as modified).
+	[[nodiscard]] RangeSet TakeCpuModifiedRanges() { return m_memory_tracker.TakeCpuModifiedLog(); }
 	// Overwrites whole tracker pages of guest memory with a dword pattern on the CPU, dropping
 	// the GPU copy instead of downloading it. False when the range is not page aligned.
 	[[nodiscard]] bool     FillMemory(uint64_t vaddr, uint64_t size, uint32_t value);

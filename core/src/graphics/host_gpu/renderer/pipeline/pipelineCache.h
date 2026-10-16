@@ -9,6 +9,7 @@
 #include "graphics/shader/shader.h"
 
 #include <cstddef>
+#include <array>
 #include <filesystem>
 #include <memory>
 #include <span>
@@ -52,6 +53,9 @@ struct PipelineStaticParameters {
 	uint8_t                    alpha_destblend[RENDER_COLOR_ATTACHMENTS_MAX]      = {};
 	bool                       separate_alpha_blend[RENDER_COLOR_ATTACHMENTS_MAX] = {};
 	bool                       blend_enable[RENDER_COLOR_ATTACHMENTS_MAX]         = {};
+	// Scaled-image specialization masks (IR::ScaledImageMaskSpecId), little endian.
+	uint8_t                    vs_scaled_images[4]                                = {};
+	uint8_t                    ps_scaled_images[4]                                = {};
 
 	bool operator==(const PipelineStaticParameters& other) const noexcept;
 };
@@ -61,7 +65,7 @@ struct PipelineStaticParameters {
 static_assert(std::is_trivially_copyable_v<PipelineStaticParameters>);
 static_assert(std::is_standard_layout_v<PipelineStaticParameters>);
 static_assert(alignof(PipelineStaticParameters) == 1);
-static_assert(sizeof(PipelineStaticParameters) == 116);
+static_assert(sizeof(PipelineStaticParameters) == 124);
 
 struct PipelineRenderingState {
 	std::array<vk::Format, RENDER_COLOR_ATTACHMENTS_MAX> color_formats {};
@@ -137,12 +141,15 @@ public:
 	                              std::span<const ShaderVertexInputInfo> vertex_info,
 	                              CommandBuffer& command, const ShaderPixelInputInfo* ps_input_info,
 	                              vk::PrimitiveTopology topology, bool primitive_restart_enable,
-	                              const GraphicsPrograms& programs);
+	                              const GraphicsPrograms& programs, uint32_t vs_scaled_images = 0,
+	                              uint32_t ps_scaled_images = 0);
 	Pipeline& GetComputePipeline(const ShaderComputeInputInfo& input_info,
-	                             const ShaderProgram&          compute_program);
+	                             const ShaderProgram&          compute_program,
+	                             uint32_t                      scaled_images = 0);
 	// Compute pipeline of a mesh program emulated as a compute shader.
 	Pipeline& GetMeshComputePipeline(const ShaderVertexInputInfo& input_info,
-	                                 const ShaderProgram&         mesh_program);
+	                                 const ShaderProgram&         mesh_program,
+	                                 uint32_t                     scaled_images = 0);
 
 private:
 	struct ProgramCache;
@@ -194,7 +201,22 @@ void CreatePipelineInternal(GraphicContext& graphics, PipelineCache::Pipeline& p
                             vk::PipelineCache                      driver_cache);
 void CreatePipelineInternal(GraphicContext& graphics, PipelineCache::Pipeline& pipeline,
                             const ShaderStageRuntime& stage, vk::ShaderModule compute_module,
-                            vk::PipelineCache driver_cache);
+                            vk::PipelineCache driver_cache, uint32_t scaled_images = 0);
+
+// Specialization data for the scaled-image constants of a shader stage.
+struct ScaledImageSpecialization {
+	struct Data {
+		float    scale = 1.0f;
+		uint32_t mask  = 0;
+	};
+	Data                                  data;
+	std::array<vk::SpecializationMapEntry, 2> entries {};
+	vk::SpecializationInfo                info {};
+
+	explicit ScaledImageSpecialization(uint32_t mask);
+	ScaledImageSpecialization(const ScaledImageSpecialization&)            = delete;
+	ScaledImageSpecialization& operator=(const ScaledImageSpecialization&) = delete;
+};
 
 } // namespace Libs::Graphics
 

@@ -5,6 +5,7 @@
 #include "common/profiler.h"
 #include "graphics/guest_gpu/gpu_defs.h"
 #include "graphics/host_gpu/graphicContext.h"
+#include "graphics/host_gpu/renderer/cache/textureCache.h"
 #include "graphics/host_gpu/renderer/debug.h"
 #include "graphics/host_gpu/renderer/pipeline/descriptors.h"
 #include "graphics/host_gpu/renderer/pipeline/pipelineCache.h"
@@ -21,6 +22,8 @@
 
 #include <algorithm>
 #include <bit>
+#include <cstddef>
+#include <cstring>
 #include <limits>
 #include <span>
 #include <vector>
@@ -215,6 +218,17 @@ static void CreateDescriptorLayout(GraphicContext& graphics, PipelineCache::Pipe
 	            &create, nullptr, &pipeline.descriptor_set_layout) != vk::Result::eSuccess);
 }
 
+ScaledImageSpecialization::ScaledImageSpecialization(uint32_t mask) {
+	data.scale = TextureCache::ResolutionScale();
+	data.mask  = mask;
+	entries[0] = {ShaderRecompiler::IR::ResolutionScaleSpecId, offsetof(Data, scale), sizeof(float)};
+	entries[1] = {ShaderRecompiler::IR::ScaledImageMaskSpecId, offsetof(Data, mask), sizeof(uint32_t)};
+	info.mapEntryCount = static_cast<uint32_t>(entries.size());
+	info.pMapEntries   = entries.data();
+	info.dataSize      = sizeof(data);
+	info.pData         = &data;
+}
+
 // NOLINTNEXTLINE(readability-function-cognitive-complexity)
 void CreatePipelineInternal(GraphicContext& graphics, PipelineCache::Pipeline& pipeline,
                             const PipelineRenderingState&          rendering,
@@ -265,6 +279,12 @@ void CreatePipelineInternal(GraphicContext& graphics, PipelineCache::Pipeline& p
 
 	vk::PipelineShaderStageCreateInfo shader_stages[4] {};
 	uint32_t                          shader_stage_count = 0;
+	uint32_t                          vs_mask            = 0;
+	uint32_t                          ps_mask            = 0;
+	std::memcpy(&vs_mask, static_params.vs_scaled_images, sizeof(vs_mask));
+	std::memcpy(&ps_mask, static_params.ps_scaled_images, sizeof(ps_mask));
+	const ScaledImageSpecialization vs_specialization(vs_mask);
+	const ScaledImageSpecialization ps_specialization(ps_mask);
 	vk::ShaderModule passthrough_module = nullptr;
 	if (mesh_emulated) {
 		passthrough_module = CompileSPV(
@@ -279,7 +299,8 @@ void CreatePipelineInternal(GraphicContext& graphics, PipelineCache::Pipeline& p
 			shader_stages[shader_stage_count++] = {.stage =
 			                                           NativeShaderStage(vertex_info[i].logical_stage),
 			                                       .module = programs.vertex[i].module,
-			                                       .pName  = "main"};
+			                                       .pName  = "main",
+			                                       .pSpecializationInfo = &vs_specialization.info};
 		}
 	}
 	if (rect_list) {
@@ -295,7 +316,8 @@ void CreatePipelineInternal(GraphicContext& graphics, PipelineCache::Pipeline& p
 	if (ps_active) {
 		shader_stages[shader_stage_count++] = {.stage  = vk::ShaderStageFlagBits::eFragment,
 		                                       .module = pixel_program.module,
-		                                       .pName  = "main"};
+		                                       .pName  = "main",
+		                                       .pSpecializationInfo = &ps_specialization.info};
 	}
 
 	vk::VertexInputAttributeDescription input_attr[ShaderVertexInputInfo::RES_MAX] {};
@@ -614,14 +636,16 @@ void CreatePipelineInternal(GraphicContext& graphics, PipelineCache::Pipeline& p
 // NOLINTNEXTLINE(readability-function-cognitive-complexity)
 void CreatePipelineInternal(GraphicContext& graphics, PipelineCache::Pipeline& pipeline,
                             const ShaderStageRuntime& stage, vk::ShaderModule compute_module,
-                            vk::PipelineCache driver_cache) {
+                            vk::PipelineCache driver_cache, uint32_t scaled_images) {
 	EXIT_IF(compute_module == nullptr);
 
 	vk::PipelineShaderStageCreateInfo                     comp_shader_stage_info {};
 	vk::PipelineShaderStageRequiredSubgroupSizeCreateInfo comp_subgroup_size {};
+	const ScaledImageSpecialization specialization(scaled_images);
 	comp_shader_stage_info.stage  = vk::ShaderStageFlagBits::eCompute;
 	comp_shader_stage_info.module = compute_module;
 	comp_shader_stage_info.pName  = "main";
+	comp_shader_stage_info.pSpecializationInfo = &specialization.info;
 	EXIT_IF(!stage);
 	const auto wave_size = stage.program->wave_size;
 	if (graphics.compute_subgroup_size_control_enabled &&

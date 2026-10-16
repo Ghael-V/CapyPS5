@@ -335,6 +335,14 @@ struct PushData {
 
 static_assert(sizeof(PushData) == 128);
 
+// Specialization constants of every shader for downscaled images (debug.capy.res_scale): the
+// host/guest size ratio (float, default 1) and a mask with one bit per image resource (index
+// in ShaderInfo::images, first 31) whose host image is scaled, plus ScaledRenderTargetBit
+// when a pixel shader's render targets are scaled (FragCoord is then divided by the scale).
+inline constexpr uint32_t ResolutionScaleSpecId = 100;
+inline constexpr uint32_t ScaledImageMaskSpecId = 101;
+inline constexpr uint32_t ScaledRenderTargetBit = 1u << 31u;
+
 // Emulated mesh shaders store every output vertex as a record holding the stage outputs in
 // order: Position and Parameter take 4 dwords, Layer and each clip/cull distance one.
 [[nodiscard]] inline uint32_t MeshRecordOutputDwords(StageOutputKind kind) {

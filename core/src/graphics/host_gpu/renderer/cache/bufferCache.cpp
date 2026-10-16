@@ -84,6 +84,9 @@ void BufferCache::WriteDataBuffer(Buffer& buffer, uint64_t address, const void* 
 
 void BufferCache::Register(BufferId id) {
 	ChangeRegister<true>(id);
+	// A buffer that BDA shaders can now reach must be synchronized at the next PrepareBda.
+	const auto& buffer = m_slot_buffers[id];
+	m_memory_tracker.LogCpuModified(buffer.CpuAddress(), buffer.Size());
 }
 
 void BufferCache::Unregister(BufferId id) {

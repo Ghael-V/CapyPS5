@@ -115,7 +115,16 @@ private:
 		}
 	}
 
-	[[nodiscard]] ImageId     InsertImage(const ImageInfo& info);
+	[[nodiscard]] ImageId     InsertImage(const ImageInfo& info, float scale = 1.0f);
+	// Host resolution scale for a new image (debug.capy.res_scale): only large 2D render and
+	// depth targets are rendered smaller.
+	[[nodiscard]] static float ChooseScale(const ImageDesc& desc);
+
+public:
+	// Scale of every downscaled image (debug.capy.res_scale), 1 when scaling is off.
+	[[nodiscard]] static float ResolutionScale();
+
+private:
 	[[nodiscard]] ImageId     GetNullImage(const ImageDesc& desc);
 	void                      RegisterImage(ImageId id);
 	void                      UnregisterImage(ImageId id);

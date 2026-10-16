@@ -816,6 +816,7 @@ bool GuestGpu::Process(Submission& submission) {
 	}
 
 	cp.BufferInit();
+	m_renderer.RequestBdaSync();
 	bool complete = true;
 
 	switch (submission.type) {

@@ -113,6 +113,8 @@ struct EmitterState {
 	uint32_t                                         bda_pagetable_variable  = 0;
 	uint32_t                                         fault_buffer_variable   = 0;
 	uint32_t                                         bda_pointer_function    = 0;
+	uint32_t                                         resolution_scale        = 0;
+	uint32_t                                         scaled_image_mask       = 0;
 	uint32_t                                         bvh_intersect_function  = 0;
 	uint32_t                                         gds_variable            = 0;
 	uint32_t                                         gds_length              = 0;
@@ -355,6 +357,11 @@ void     DefineTessellationExecutionModes(EmitterState& state);
 void     DefineMeshOutputs(EmitterState& state, uint32_t clip_distance_count,
                            uint32_t cull_distance_count);
 void     EmitMeshEntryPoint(EmitterState& state);
+// Specialization constants for downscaled images (debug.capy.res_scale): the host/guest scale
+// (IR::ResolutionScaleSpecId) and the mask of image resources that are scaled
+// (IR::ScaledImageMaskSpecId).
+uint32_t ResolutionScale(EmitterState& state);
+uint32_t ScaledImageMask(EmitterState& state);
 // True for a mesh program compiled as a compute shader (no VK_EXT_mesh_shader on the host).
 bool     MeshEmulated(const EmitterState& state);
 void     EmitMeshAllocate(ValueEmitContext& ctx, const IR::Inst& inst);

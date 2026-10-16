@@ -206,8 +206,34 @@ TextureCache::BindingType TextureCache::UploadBinding(const Image& image) {
 	return image.usage.storage ? BindingType::Storage : BindingType::Texture;
 }
 
-ImageId TextureCache::InsertImage(const ImageInfo& info) {
-	const auto id = m_slot_images.insert(m_graphics, m_scheduler, info);
+float TextureCache::ResolutionScale() {
+	// `setprop debug.capy.res_scale N` (per mille, read once): render large targets at N/1000
+	// of their guest size. 1000 or 0 keeps native resolution.
+	static const float scale = [] {
+		Common::DebugFlags::CachedValue value("debug.capy.res_scale", 1000);
+		const auto permille = value.Get();
+		return permille <= 0 || permille >= 1000 ? 1.0f : static_cast<float>(permille) / 1000.0f;
+	}();
+	return scale;
+}
+
+float TextureCache::ChooseScale(const ImageDesc& desc) {
+	const float scale = ResolutionScale();
+	if (scale == 1.0f) {
+		return 1.0f;
+	}
+	const auto& info = desc.info;
+	if ((desc.type != BindingType::RenderTarget && desc.type != BindingType::DepthTarget) ||
+	    info.type != Prospero::ImageType::kColor2D || info.samples != 1 ||
+	    info.resources.levels != 1 || info.IsBlock() || info.extent.width < 1280 ||
+	    info.extent.height < 720) {
+		return 1.0f;
+	}
+	return scale;
+}
+
+ImageId TextureCache::InsertImage(const ImageInfo& info, float scale) {
+	const auto id = m_slot_images.insert(m_graphics, m_scheduler, info, scale);
 	if (!info.data.Empty()) {
 		RegisterImage(id);
 	}
@@ -733,7 +759,7 @@ ImageId TextureCache::ResolveDepthOverlap(const ImageInfo& requested, BindingTyp
 		info.first_tail_level    = cached.info.first_tail_level;
 	}
 	info.htile_clear_mask     = 0;
-	const auto replacement_id = InsertImage(info);
+	const auto replacement_id = InsertImage(info, cached.scale);
 	auto&      replacement    = m_slot_images[replacement_id];
 	replacement.usage         = cached.usage;
 	if (cached.binding.is_bound || cached.binding.is_target) {
@@ -892,7 +918,7 @@ TextureCache::OverlapResult TextureCache::ResolveOverlap(const ImageInfo& reques
 
 ImageId TextureCache::ExpandImage(const ImageInfo& info, ImageId source_id) {
 	RefreshCopySource(source_id);
-	const auto expanded_id = InsertImage(info);
+	const auto expanded_id = InsertImage(info, m_slot_images[source_id].scale);
 	auto&      source      = m_slot_images[source_id];
 	if (source.binding.is_bound || source.binding.is_target) {
 		source.binding.needs_rebind = true;
@@ -1236,7 +1262,7 @@ ImageId TextureCache::FindImage(ImageDesc& desc, bool exact_format) {
 			}
 		}
 		if (!result) {
-			result         = InsertImage(desc.info);
+			result         = InsertImage(desc.info, ChooseScale(desc));
 			auto& inserted = m_slot_images[result];
 			if (m_buffer_cache.HasGpuDirtyBytes(inserted.info.data.address,
 			                                    inserted.info.data.size)) {
@@ -1584,8 +1610,8 @@ void TextureCache::ClearImage(CommandBuffer& command, ImageId id, vk::Format for
 		attachment.clearValue  = clear;
 		vk::RenderingInfo rendering {};
 		rendering.renderArea.extent = {
-		    std::max(image.info.extent.width >> range.baseMipLevel, 1u),
-		    std::max(image.info.extent.height >> range.baseMipLevel, 1u)};
+		    std::max(image.backing.extent.width >> range.baseMipLevel, 1u),
+		    std::max(image.backing.extent.height >> range.baseMipLevel, 1u)};
 		rendering.layerCount           = range.layerCount;
 		rendering.colorAttachmentCount = 1;
 		rendering.pColorAttachments    = &attachment;

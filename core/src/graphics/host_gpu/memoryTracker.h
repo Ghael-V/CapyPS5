@@ -29,6 +29,10 @@ public:
 	void               MarkRegionAsGpuModified(uint64_t vaddr, uint64_t size);
 	void               UnmarkRegionAsGpuModified(uint64_t vaddr, uint64_t size);
 	void               UntrackMemory(uint64_t vaddr, uint64_t size);
+	// Ranges marked CPU-modified since the last call, so callers can resynchronize only what
+	// the CPU wrote instead of every buffer.
+	[[nodiscard]] RangeSet TakeCpuModifiedLog();
+	void                   LogCpuModified(uint64_t vaddr, uint64_t size);
 	// Removes protection from a range and flushes GPU-owned data when required.
 	template <typename Flush>
 	void InvalidateRegion(uint64_t vaddr, uint64_t size, Flush&& on_flush) noexcept {
@@ -45,6 +49,7 @@ public:
 					return true;
 				}
 				manager->ChangeState<DirtySource::Cpu, true>(manager->GetCpuAddr() + offset, bytes);
+				LogCpuModified(manager->GetCpuAddr() + offset, bytes);
 				return false;
 			}();
 			if (should_flush) {
@@ -154,6 +159,8 @@ private:
 	std::vector<std::unique_ptr<RegionManager>>    m_region_storage;
 	std::mutex                                     m_region_mutex;
 	PageManager&                                   m_page_manager;
+	std::mutex                                     m_cpu_log_mutex;
+	RangeSet                                       m_cpu_log;
 };
 
 } // namespace Libs::Graphics

@@ -74,7 +74,20 @@ uint32_t EmitBuiltinU32(EmitterState& state, IR::StageInputKind kind, uint32_t c
 		                          TypePointer(state, spv::StorageClassInput, TypeF32(state)),
 		                          pointer, variable, ConstantU32(state, component));
 		state.builder.AddFunction(spv::OpLoad, TypeF32(state), value, pointer);
-		state.builder.AddFunction(spv::OpBitcast, TypeU32(state), bits, value);
+		auto guest = value;
+		if (kind == IR::StageInputKind::FragCoord && component < 2u &&
+		    state.program.stage == ShaderType::Pixel) {
+			// Host pixels of a downscaled render target map back to guest pixels.
+			const auto divided = Binary(state, spv::OpFDiv, TypeF32(state), value, ResolutionScale(state));
+			const auto target_bit =
+			    Binary(state, spv::OpBitwiseAnd, TypeU32(state), ScaledImageMask(state),
+			           ConstantU32(state, IR::ScaledRenderTargetBit));
+			const auto scaled = Binary(state, spv::OpINotEqual, TypeBool(state), target_bit,
+			                           ConstantU32(state, 0));
+			guest = state.builder.AllocateId();
+			state.builder.AddFunction(spv::OpSelect, TypeF32(state), guest, scaled, divided, value);
+		}
+		state.builder.AddFunction(spv::OpBitcast, TypeU32(state), bits, guest);
 		return bits;
 	}
 	if (centroid || sample || kind == IR::StageInputKind::BaryCoordSmooth ||

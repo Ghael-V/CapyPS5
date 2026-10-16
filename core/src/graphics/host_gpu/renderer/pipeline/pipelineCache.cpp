@@ -835,7 +835,8 @@ PipelineCache::Pipeline& PipelineCache::GetGraphicsPipeline(
     std::span<const RenderColorInfo> colors, const RenderDepthInfo& depth,
     std::span<const ShaderVertexInputInfo> vertex_info, CommandBuffer& command,
     const ShaderPixelInputInfo* ps_input_info, vk::PrimitiveTopology topology,
-    bool primitive_restart_enable, const GraphicsPrograms& programs) {
+    bool primitive_restart_enable, const GraphicsPrograms& programs, uint32_t vs_scaled_images,
+    uint32_t ps_scaled_images) {
 	const auto& vs_input_info  = vertex_info.front();
 	const auto& vertex_program = programs.vertex[0];
 	const auto& pixel_program  = programs.pixel;
@@ -980,6 +981,8 @@ PipelineCache::Pipeline& PipelineCache::GetGraphicsPipeline(
 	static_params.cull_front = !rect_list && mc.cull_front;
 	static_params.face       = mc.face;
 	static_params.provoking_vtx_last = mc.provoking_vtx_last;
+	std::memcpy(static_params.vs_scaled_images, &vs_scaled_images, sizeof(vs_scaled_images));
+	std::memcpy(static_params.ps_scaled_images, &ps_scaled_images, sizeof(ps_scaled_images));
 	static_params.polygon_mode =
 	    ResolvePolygonMode(mc, static_params.cull_front, static_params.cull_back);
 
@@ -1037,12 +1040,14 @@ PipelineCache::Pipeline& PipelineCache::GetGraphicsPipeline(
 
 PipelineCache::Pipeline&
 PipelineCache::GetComputePipeline(const ShaderComputeInputInfo& input_info,
-                                  const ShaderProgram&          compute_program) {
+                                  const ShaderProgram&          compute_program,
+                                  uint32_t                      scaled_images) {
 	KYTY_PROFILER_BLOCK("PipelineCache::CreatePipeline(Compute)", profiler::colors::RedA100);
 
-	EXIT_IF(!compute_program);
+	EXIT_IF(!compute_program || compute_program.id >= (1ull << 32u));
+	const auto key = compute_program.id << 32u | scaled_images;
 
-	if (auto iter = m_compute_pipelines.find(compute_program.id);
+	if (auto iter = m_compute_pipelines.find(key);
 	    iter != m_compute_pipelines.end()) {
 		return *iter->second;
 	}
@@ -1053,12 +1058,12 @@ PipelineCache::GetComputePipeline(const ShaderComputeInputInfo& input_info,
 
 	auto cached = std::make_unique<Pipeline>();
 	CreatePipelineInternal(m_graphics, *cached, input_info.stage, compute_program.module,
-	                       m_driver_cache);
+	                       m_driver_cache, scaled_images);
 
 	EXIT_NOT_IMPLEMENTED(cached->pipeline == nullptr);
 	EXIT_NOT_IMPLEMENTED(cached->pipeline_layout == nullptr);
 
-	auto [iter, inserted] = m_compute_pipelines.emplace(compute_program.id, std::move(cached));
+	auto [iter, inserted] = m_compute_pipelines.emplace(key, std::move(cached));
 	EXIT_IF(!inserted);
 
 	return *iter->second;
@@ -1066,16 +1071,19 @@ PipelineCache::GetComputePipeline(const ShaderComputeInputInfo& input_info,
 
 PipelineCache::Pipeline&
 PipelineCache::GetMeshComputePipeline(const ShaderVertexInputInfo& input_info,
-                                      const ShaderProgram&         mesh_program) {
-	EXIT_IF(!mesh_program || !input_info.stage || !input_info.stage.program->mesh_compute);
+                                      const ShaderProgram&         mesh_program,
+                                      uint32_t                     scaled_images) {
+	EXIT_IF(!mesh_program || !input_info.stage || !input_info.stage.program->mesh_compute ||
+	        mesh_program.id >= (1ull << 32u));
 	// Program ids are unique across stages, so mesh programs share the compute pipeline map.
-	if (auto iter = m_compute_pipelines.find(mesh_program.id); iter != m_compute_pipelines.end()) {
+	const auto key = mesh_program.id << 32u | scaled_images;
+	if (auto iter = m_compute_pipelines.find(key); iter != m_compute_pipelines.end()) {
 		return *iter->second;
 	}
 	auto cached = std::make_unique<Pipeline>();
 	CreatePipelineInternal(m_graphics, *cached, input_info.stage, mesh_program.module,
-	                       m_driver_cache);
-	auto [iter, inserted] = m_compute_pipelines.emplace(mesh_program.id, std::move(cached));
+	                       m_driver_cache, scaled_images);
+	auto [iter, inserted] = m_compute_pipelines.emplace(key, std::move(cached));
 	EXIT_IF(!inserted);
 	return *iter->second;
 }

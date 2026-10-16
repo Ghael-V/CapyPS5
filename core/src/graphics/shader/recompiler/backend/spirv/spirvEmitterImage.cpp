@@ -166,13 +166,50 @@ uint32_t CoordF32(ValueEmitContext& ctx, const IR::MemoryInfo& mem, const IR::In
 	return result;
 }
 
+// Whether image resource `resource` is downscaled, from the specialization mask.
+uint32_t ImageScaled(EmitterState& state, uint32_t resource) {
+	const auto bit = Binary(state, spv::OpBitwiseAnd, TypeU32(state), ScaledImageMask(state),
+	                        ConstantU32(state, resource < 31u ? 1u << resource : 0u));
+	return Binary(state, spv::OpINotEqual, TypeBool(state), bit, ConstantU32(state, 0));
+}
+
+// Guest texel coordinate -> host texel of a downscaled image.
+uint32_t ScaleTexelCoord(EmitterState& state, uint32_t resource, uint32_t coord) {
+	if (resource >= 31u) return coord;
+	const auto scaled = Unary(
+	    state, spv::OpConvertFToU, TypeU32(state),
+	    Binary(state, spv::OpFMul, TypeF32(state),
+	           Unary(state, spv::OpConvertUToF, TypeF32(state), coord), ResolutionScale(state)));
+	const auto result = state.builder.AllocateId();
+	state.builder.AddFunction(spv::OpSelect, TypeU32(state), result, ImageScaled(state, resource),
+	                          scaled, coord);
+	return result;
+}
+
+// Host size of a downscaled image -> the guest size the shader expects.
+uint32_t UnscaleImageSize(EmitterState& state, uint32_t resource, uint32_t size) {
+	if (resource >= 31u) return size;
+	const auto guest_float = Binary(state, spv::OpFDiv, TypeF32(state),
+	                                Unary(state, spv::OpConvertUToF, TypeF32(state), size),
+	                                ResolutionScale(state));
+	const auto rounded = state.builder.AllocateId();
+	state.builder.AddFunction(spv::OpExtInst, TypeF32(state), rounded, GlslStd450(state),
+	                          GLSLstd450Round, guest_float);
+	const auto guest  = Unary(state, spv::OpConvertFToU, TypeU32(state), rounded);
+	const auto result = state.builder.AllocateId();
+	state.builder.AddFunction(spv::OpSelect, TypeU32(state), result, ImageScaled(state, resource),
+	                          guest, size);
+	return result;
+}
+
 uint32_t CoordU32(ValueEmitContext& ctx, const IR::MemoryInfo& mem, const IR::Inst& address,
                   ImageDimension dimension) {
 	const auto components = ImageDimensionInfoFor(dimension).coordinate_components;
-	const auto x          = AddressU32(ctx, mem, address, 0);
+	const auto x = ScaleTexelCoord(ctx.state, mem.resource, AddressU32(ctx, mem, address, 0));
 	if (components == 1u) return x;
-	const auto y      = mem.image_address_components > 1u ? AddressU32(ctx, mem, address, 1)
-	                                                      : ConstantU32(ctx.state, 0);
+	const auto y      = mem.image_address_components > 1u
+	                        ? ScaleTexelCoord(ctx.state, mem.resource, AddressU32(ctx, mem, address, 1))
+	                        : ConstantU32(ctx.state, 0);
 	const auto result = ctx.state.builder.AllocateId();
 	if (components == 3u) {
 		const auto z = mem.image_address_components > 2u ? AddressU32(ctx, mem, address, 2)
@@ -304,12 +341,15 @@ uint32_t QueryDimensions(ValueEmitContext& ctx, const IR::MemoryInfo& mem,
 	uint32_t   result[4]  = {ConstantU32(ctx.state, 0), ConstantU32(ctx.state, 0),
 	                         ConstantU32(ctx.state, 0), ConstantU32(ctx.state, 0)};
 	if (components == 1u) {
-		result[0] = size;
+		result[0] = UnscaleImageSize(ctx.state, mem.resource, size);
 	} else {
 		for (uint32_t index = 0; index < components; index++) {
 			result[index] = ctx.state.builder.AllocateId();
 			ctx.state.builder.AddFunction(spv::OpCompositeExtract, TypeU32(ctx.state),
 			                              result[index], size, index);
+			if (index < 2u) {
+				result[index] = UnscaleImageSize(ctx.state, mem.resource, result[index]);
+			}
 		}
 	}
 	if (info.multisampled == 0u) {

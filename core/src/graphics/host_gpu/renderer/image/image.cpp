@@ -16,6 +16,7 @@
 #include <atomic>
 #include <cstdint>
 #include <fmt/format.h>
+#include <memory>
 #include <xxhash.h>
 
 namespace Libs::Graphics {
@@ -103,7 +104,88 @@ void ValidateOptionalRange(GuestRange range, const char* name) {
 	}
 }
 
+[[nodiscard]] std::unique_ptr<VulkanImage> CreateTransferImage(GraphicContext& graphics,
+                                                               const VulkanImage& like,
+                                                               vk::Extent3D       extent) {
+	vk::ImageCreateInfo create {};
+	create.imageType     = like.image_type;
+	create.extent        = extent;
+	create.mipLevels     = like.mip_levels;
+	create.arrayLayers   = like.layers;
+	create.format        = like.format;
+	create.tiling        = vk::ImageTiling::eOptimal;
+	create.initialLayout = vk::ImageLayout::eUndefined;
+	create.usage = vk::ImageUsageFlagBits::eTransferSrc | vk::ImageUsageFlagBits::eTransferDst;
+	create.samples       = vk::SampleCountFlagBits::e1;
+	auto image           = std::make_unique<VulkanImage>();
+	if (!graphics.CreateImage(create, *image)) {
+		EXIT("failed to create a resampling image %ux%u format=%d\n", extent.width, extent.height,
+		     static_cast<int>(like.format));
+	}
+	return image;
+}
+
+void TransferImageBarrier(vk::CommandBuffer command, vk::Image image, vk::ImageAspectFlags aspect,
+                          vk::ImageLayout from, vk::ImageLayout to, vk::AccessFlags2 src_access,
+                          vk::AccessFlags2 dst_access) {
+	vk::ImageMemoryBarrier2 barrier {};
+	barrier.srcStageMask        = vk::PipelineStageFlagBits2::eAllCommands;
+	barrier.srcAccessMask       = src_access;
+	barrier.dstStageMask        = vk::PipelineStageFlagBits2::eAllTransfer;
+	barrier.dstAccessMask       = dst_access;
+	barrier.oldLayout           = from;
+	barrier.newLayout           = to;
+	barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+	barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+	barrier.image               = image;
+	barrier.subresourceRange    = {aspect, 0, VK_REMAINING_MIP_LEVELS, 0, VK_REMAINING_ARRAY_LAYERS};
+	vk::DependencyInfo dependency {};
+	dependency.imageMemoryBarrierCount = 1;
+	dependency.pImageMemoryBarriers    = &barrier;
+	command.pipelineBarrier2(dependency);
+}
+
+// Resamples every level/layer of `source` (TransferSrcOptimal) into `destination`
+// (TransferDstOptimal).
+void BlitLevels(GraphicContext& graphics, vk::CommandBuffer command, vk::Image source,
+                vk::Extent3D source_extent, vk::Image destination, vk::Extent3D destination_extent,
+                vk::Format format, vk::ImageAspectFlags aspect, uint32_t levels, uint32_t layers) {
+	const auto features = graphics.GetFormatProperties(format).optimalTilingFeatures;
+	const auto filter   = aspect == vk::ImageAspectFlagBits::eColor &&
+	                            (features & vk::FormatFeatureFlagBits::eSampledImageFilterLinear)
+	                          ? vk::Filter::eLinear
+	                          : vk::Filter::eNearest;
+	std::vector<vk::ImageBlit> regions;
+	regions.reserve(levels);
+	for (uint32_t level = 0; level < levels; level++) {
+		vk::ImageBlit region {};
+		region.srcSubresource = {aspect, level, 0, layers};
+		region.dstSubresource = {aspect, level, 0, layers};
+		region.srcOffsets[1]  = vk::Offset3D {
+		     static_cast<int32_t>(std::max(source_extent.width >> level, 1u)),
+		     static_cast<int32_t>(std::max(source_extent.height >> level, 1u)),
+		     static_cast<int32_t>(std::max(source_extent.depth >> level, 1u))};
+		region.dstOffsets[1] = vk::Offset3D {
+		    static_cast<int32_t>(std::max(destination_extent.width >> level, 1u)),
+		    static_cast<int32_t>(std::max(destination_extent.height >> level, 1u)),
+		    static_cast<int32_t>(std::max(destination_extent.depth >> level, 1u))};
+		regions.push_back(region);
+	}
+	command.blitImage(source, vk::ImageLayout::eTransferSrcOptimal, destination,
+	                  vk::ImageLayout::eTransferDstOptimal, static_cast<uint32_t>(regions.size()),
+	                  regions.data(), filter);
+}
+
 } // namespace
+
+vk::Extent3D Image::ScaledExtent(vk::Extent3D extent, float scale) noexcept {
+	if (scale >= 1.0f) {
+		return extent;
+	}
+	return {std::max(1u, static_cast<uint32_t>(static_cast<float>(extent.width) * scale + 0.5f)),
+	        std::max(1u, static_cast<uint32_t>(static_cast<float>(extent.height) * scale + 0.5f)),
+	        extent.depth};
+}
 
 vk::ImageAspectFlags Image::FullAspectMask(vk::Format format) noexcept {
 	switch (format) {
@@ -246,6 +328,10 @@ void Image::Upload(std::span<const vk::BufferImageCopy> copies, vk::Buffer buffe
 		Common::DebugFlags::LogDepthWrite("Upload", track_addr);
 	}
 	m_scheduler.EndRendering();
+	if (IsScaled()) {
+		UploadScaled(copies, buffer, offset, size);
+		return;
+	}
 	vk::BufferMemoryBarrier2 buffer_barrier {};
 	buffer_barrier.srcStageMask        = vk::PipelineStageFlagBits2::eAllCommands;
 	buffer_barrier.srcAccessMask       = vk::AccessFlagBits2::eMemoryWrite;
@@ -285,6 +371,10 @@ void Image::Download(std::span<const vk::BufferImageCopy> copies, vk::Buffer buf
                      uint64_t offset, uint64_t size) {
 	EXIT_IF(copies.empty() || buffer == nullptr || size == 0);
 	m_scheduler.EndRendering();
+	if (IsScaled()) {
+		DownloadScaled(copies, buffer, offset, size);
+		return;
+	}
 	vk::BufferMemoryBarrier2 buffer_barrier {};
 	buffer_barrier.srcStageMask = vk::PipelineStageFlagBits2::eAllCommands;
 	buffer_barrier.srcAccessMask =
@@ -343,6 +433,10 @@ std::pair<uint32_t, uint32_t> Image::SanitizeCopyLayers(const Image& source,
 
 void Image::CopyImage(Image& source) {
 	EXIT_IF(source.backing.samples != backing.samples);
+	if (source.scale != scale) {
+		BlitImage(source);
+		return;
+	}
 	if (static_cast<bool>(FullAspectMask(backing.format) & vk::ImageAspectFlagBits::eDepth)) {
 		Common::DebugFlags::LogDepthWrite("CopyImage", track_addr);
 	}
@@ -418,15 +512,17 @@ void Image::Resolve(Image& source, const ImageSubresourceRange& source_range,
 	const auto destination_height =
 	    std::max(backing.extent.height >> destination_range.base_level, 1u);
 	const bool copy = source.backing.samples == 1;
-	EXIT_IF(layers == 0 || info.extent.width > source_width || info.extent.height > source_height ||
-	        info.extent.width > destination_width || info.extent.height > destination_height ||
+	EXIT_IF(source.scale != scale);
+	const auto host_extent = ScaledExtent(info.extent, scale);
+	EXIT_IF(layers == 0 || host_extent.width > source_width || host_extent.height > source_height ||
+	        host_extent.width > destination_width || host_extent.height > destination_height ||
 	        (copy ? !ImageViewOps::FormatsCompatible(source.backing.format, backing.format)
 	              : source.backing.format != backing.format));
 	auto resolved_source_range             = source_range;
 	auto resolved_destination_range        = destination_range;
 	resolved_source_range.layer_count      = layers;
 	resolved_destination_range.layer_count = layers;
-	const vk::Extent3D resolve_extent {info.extent.width, info.extent.height, 1};
+	const vk::Extent3D resolve_extent {host_extent.width, host_extent.height, 1};
 
 	m_scheduler.EndRendering();
 	auto command = m_scheduler.Current().Handle();
@@ -580,6 +676,10 @@ void Image::CopyMip(Image& source, uint32_t mip, uint32_t layer) {
 	const auto width  = std::max(backing.extent.width >> mip, 1u);
 	const auto height = std::max(backing.extent.height >> mip, 1u);
 	const auto depth  = std::max(backing.extent.depth >> mip, 1u);
+	if (source.scale != scale) {
+		BlitMip(source, mip, layer);
+		return;
+	}
 	EXIT_IF(width != source.backing.extent.width || height != source.backing.extent.height);
 	const auto [source_layers, destination_layers] = SanitizeCopyLayers(source, *this, depth);
 	const auto aspects                             = FullAspectMask(source.backing.format);
@@ -602,6 +702,146 @@ void Image::CopyMip(Image& source, uint32_t mip, uint32_t layer) {
 	               command);
 	command.copyImage(source.backing.image, vk::ImageLayout::eTransferSrcOptimal, backing.image,
 	                  vk::ImageLayout::eTransferDstOptimal, copy_count, copies.data());
+	Transit(vk::ImageLayout::eGeneral,
+	        vk::AccessFlagBits2::eShaderRead | vk::AccessFlagBits2::eTransferRead, {}, command);
+}
+
+void Image::UploadScaled(std::span<const vk::BufferImageCopy> copies, vk::Buffer buffer,
+                         uint64_t offset, uint64_t size) {
+	const auto aspect  = FullAspectMask(backing.format);
+	auto       command = m_scheduler.Current().Handle();
+	if (aspect != vk::ImageAspectFlagBits::eColor) {
+		// Depth cannot be resampled by a blit on every host; a scaled depth target starts
+		// from undefined contents, which games clear before use.
+		Common::DebugFlags::NoteOnce("CapyPS5-Scale", 0x5344555055ull,
+		                             "scaled depth image: guest contents not uploaded");
+		Transit(vk::ImageLayout::eGeneral,
+		        vk::AccessFlagBits2::eShaderRead | vk::AccessFlagBits2::eTransferRead, {}, command);
+		return;
+	}
+	vk::BufferMemoryBarrier2 buffer_barrier {};
+	buffer_barrier.srcStageMask        = vk::PipelineStageFlagBits2::eAllCommands;
+	buffer_barrier.srcAccessMask       = vk::AccessFlagBits2::eMemoryWrite;
+	buffer_barrier.dstStageMask        = vk::PipelineStageFlagBits2::eTransfer;
+	buffer_barrier.dstAccessMask       = vk::AccessFlagBits2::eTransferRead;
+	buffer_barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+	buffer_barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+	buffer_barrier.buffer              = buffer;
+	buffer_barrier.offset              = offset;
+	buffer_barrier.size                = size;
+	vk::DependencyInfo dependency {};
+	dependency.bufferMemoryBarrierCount = 1;
+	dependency.pBufferMemoryBarriers    = &buffer_barrier;
+	command.pipelineBarrier2(dependency);
+	auto full = CreateTransferImage(m_graphics, backing, info.extent);
+	TransferImageBarrier(command, full->image, aspect, vk::ImageLayout::eUndefined,
+	                     vk::ImageLayout::eTransferDstOptimal, {}, vk::AccessFlagBits2::eTransferWrite);
+	command.copyBufferToImage(buffer, full->image, vk::ImageLayout::eTransferDstOptimal,
+	                          static_cast<uint32_t>(copies.size()), copies.data());
+	TransferImageBarrier(command, full->image, aspect, vk::ImageLayout::eTransferDstOptimal,
+	                     vk::ImageLayout::eTransferSrcOptimal, vk::AccessFlagBits2::eTransferWrite,
+	                     vk::AccessFlagBits2::eTransferRead);
+	Transit(vk::ImageLayout::eTransferDstOptimal, vk::AccessFlagBits2::eTransferWrite, {}, command);
+	BlitLevels(m_graphics, command, full->image, info.extent, backing.image, backing.extent,
+	           backing.format, aspect, backing.mip_levels, backing.layers);
+	Transit(vk::ImageLayout::eGeneral,
+	        vk::AccessFlagBits2::eShaderRead | vk::AccessFlagBits2::eTransferRead, {}, command);
+	m_scheduler.DeferOperation([graphics = &m_graphics, full = std::move(full)]() mutable {
+		graphics->DeleteImage(*full);
+	});
+}
+
+void Image::DownloadScaled(std::span<const vk::BufferImageCopy> copies, vk::Buffer buffer,
+                           uint64_t offset, uint64_t size) {
+	const auto aspect  = FullAspectMask(backing.format);
+	auto       command = m_scheduler.Current().Handle();
+	if (aspect != vk::ImageAspectFlagBits::eColor) {
+		Common::DebugFlags::NoteOnce("CapyPS5-Scale", 0x5344444f574eull,
+		                             "scaled depth image: contents not written back to the guest");
+		return;
+	}
+	auto full = CreateTransferImage(m_graphics, backing, info.extent);
+	TransferImageBarrier(command, full->image, aspect, vk::ImageLayout::eUndefined,
+	                     vk::ImageLayout::eTransferDstOptimal, {}, vk::AccessFlagBits2::eTransferWrite);
+	Transit(vk::ImageLayout::eTransferSrcOptimal, vk::AccessFlagBits2::eTransferRead, {}, command);
+	BlitLevels(m_graphics, command, backing.image, backing.extent, full->image, info.extent,
+	           backing.format, aspect, backing.mip_levels, backing.layers);
+	TransferImageBarrier(command, full->image, aspect, vk::ImageLayout::eTransferDstOptimal,
+	                     vk::ImageLayout::eTransferSrcOptimal, vk::AccessFlagBits2::eTransferWrite,
+	                     vk::AccessFlagBits2::eTransferRead);
+	vk::BufferMemoryBarrier2 buffer_barrier {};
+	buffer_barrier.srcStageMask        = vk::PipelineStageFlagBits2::eAllCommands;
+	buffer_barrier.srcAccessMask =
+	    vk::AccessFlagBits2::eMemoryRead | vk::AccessFlagBits2::eMemoryWrite;
+	buffer_barrier.dstStageMask        = vk::PipelineStageFlagBits2::eCopy;
+	buffer_barrier.dstAccessMask       = vk::AccessFlagBits2::eTransferWrite;
+	buffer_barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+	buffer_barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+	buffer_barrier.buffer              = buffer;
+	buffer_barrier.offset              = offset;
+	buffer_barrier.size                = size;
+	vk::DependencyInfo dependency {};
+	dependency.bufferMemoryBarrierCount = 1;
+	dependency.pBufferMemoryBarriers    = &buffer_barrier;
+	command.pipelineBarrier2(dependency);
+	command.copyImageToBuffer(full->image, vk::ImageLayout::eTransferSrcOptimal, buffer,
+	                          static_cast<uint32_t>(copies.size()), copies.data());
+	buffer_barrier.srcStageMask  = vk::PipelineStageFlagBits2::eCopy;
+	buffer_barrier.srcAccessMask = vk::AccessFlagBits2::eTransferWrite;
+	buffer_barrier.dstStageMask  = vk::PipelineStageFlagBits2::eAllCommands;
+	buffer_barrier.dstAccessMask =
+	    vk::AccessFlagBits2::eMemoryRead | vk::AccessFlagBits2::eMemoryWrite;
+	command.pipelineBarrier2(dependency);
+	m_scheduler.DeferOperation([graphics = &m_graphics, full = std::move(full)]() mutable {
+		graphics->DeleteImage(*full);
+	});
+}
+
+void Image::BlitImage(Image& source) {
+	const auto aspect = FullAspectMask(backing.format);
+	if (aspect != vk::ImageAspectFlagBits::eColor ||
+	    FullAspectMask(source.backing.format) != vk::ImageAspectFlagBits::eColor ||
+	    source.backing.image_type != backing.image_type) {
+		Common::DebugFlags::NoteOnce("CapyPS5-Scale", 0x5342434f5059ull,
+		                             "copy between differently scaled depth images skipped");
+		return;
+	}
+	m_scheduler.EndRendering();
+	auto command = m_scheduler.Current().Handle();
+	source.Transit(vk::ImageLayout::eTransferSrcOptimal, vk::AccessFlagBits2::eTransferRead, {},
+	               command);
+	Transit(vk::ImageLayout::eTransferDstOptimal, vk::AccessFlagBits2::eTransferWrite, {}, command);
+	BlitLevels(m_graphics, command, source.backing.image, source.backing.extent, backing.image,
+	           backing.extent, backing.format, aspect,
+	           std::min(source.backing.mip_levels, backing.mip_levels),
+	           std::min(source.backing.layers, backing.layers));
+	Transit(vk::ImageLayout::eGeneral,
+	        vk::AccessFlagBits2::eShaderRead | vk::AccessFlagBits2::eTransferRead, {}, command);
+}
+
+void Image::BlitMip(Image& source, uint32_t mip, uint32_t layer) {
+	const auto aspect = FullAspectMask(backing.format);
+	if (aspect != vk::ImageAspectFlagBits::eColor ||
+	    FullAspectMask(source.backing.format) != vk::ImageAspectFlagBits::eColor) {
+		Common::DebugFlags::NoteOnce("CapyPS5-Scale", 0x53424d4950ull,
+		                             "mip copy between differently scaled depth images skipped");
+		return;
+	}
+	auto command = m_scheduler.Current().Handle();
+	Transit(vk::ImageLayout::eTransferDstOptimal, vk::AccessFlagBits2::eTransferWrite, {}, command);
+	source.Transit(vk::ImageLayout::eTransferSrcOptimal, vk::AccessFlagBits2::eTransferRead, {},
+	               command);
+	const auto  layers = std::min(source.backing.layers, backing.layers - layer);
+	vk::ImageBlit region {};
+	region.srcSubresource = {aspect, 0, 0, layers};
+	region.dstSubresource = {aspect, mip, layer, layers};
+	region.srcOffsets[1]  = vk::Offset3D {static_cast<int32_t>(source.backing.extent.width),
+	                                      static_cast<int32_t>(source.backing.extent.height), 1};
+	region.dstOffsets[1]  = vk::Offset3D {
+	     static_cast<int32_t>(std::max(backing.extent.width >> mip, 1u)),
+	     static_cast<int32_t>(std::max(backing.extent.height >> mip, 1u)), 1};
+	command.blitImage(source.backing.image, vk::ImageLayout::eTransferSrcOptimal, backing.image,
+	                  vk::ImageLayout::eTransferDstOptimal, region, vk::Filter::eNearest);
 	Transit(vk::ImageLayout::eGeneral,
 	        vk::AccessFlagBits2::eShaderRead | vk::AccessFlagBits2::eTransferRead, {}, command);
 }
@@ -698,8 +938,9 @@ Prospero::BufferFormat RenderTargetTransferFormat(uint32_t bytes_per_element) {
 
 } // namespace ImageOps
 
-Image::Image(GraphicContext& graphics, CommandScheduler& scheduler, const ImageInfo& image_info)
-    : info(image_info),
+Image::Image(GraphicContext& graphics, CommandScheduler& scheduler, const ImageInfo& image_info,
+             float image_scale)
+    : info(image_info), scale(image_info.type == Prospero::ImageType::kColor2D ? image_scale : 1.0f),
       stencil_subresources {0, image_info.resources.levels, 0, image_info.resources.layers},
       m_graphics(graphics), m_scheduler(scheduler) {
 	KYTY_PROFILER_FUNCTION();
@@ -713,7 +954,7 @@ Image::Image(GraphicContext& graphics, CommandScheduler& scheduler, const ImageI
 	vk::ImageCreateInfo create {};
 	create.flags         = ImageCreateFlags(graphics, info);
 	create.imageType     = HostImageType(info.type);
-	create.extent        = info.extent;
+	create.extent        = ScaledExtent(info.extent, scale);
 	create.mipLevels     = info.resources.levels;
 	create.arrayLayers   = info.IsVolume() ? 1u : info.resources.layers;
 	create.format        = info.pixel_format;

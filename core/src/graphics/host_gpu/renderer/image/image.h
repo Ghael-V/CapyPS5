@@ -48,7 +48,10 @@ struct ImageBinding {
 
 class Image final {
 public:
-	Image(GraphicContext& graphics, CommandScheduler& scheduler, const ImageInfo& info);
+	// `scale` < 1 renders the image at a lower host resolution (debug.capy.res_scale): the host
+	// image is scale * info.extent; uploads, downloads and copies resample between the two.
+	Image(GraphicContext& graphics, CommandScheduler& scheduler, const ImageInfo& info,
+	      float scale = 1.0f);
 	~Image();
 	KYTY_CLASS_NO_COPY(Image);
 
@@ -139,7 +142,11 @@ public:
 	}
 	[[nodiscard]] uint64_t HashGuestEdges() const;
 
+	[[nodiscard]] bool IsScaled() const noexcept { return scale != 1.0f; }
+	[[nodiscard]] static vk::Extent3D ScaledExtent(vk::Extent3D extent, float scale) noexcept;
+
 	ImageInfo        info;
+	float            scale = 1.0f;
 	VulkanImage      backing;
 	std::vector<CachedImageView> views;
 	ImageUsage       usage;
@@ -162,6 +169,13 @@ private:
 	                                                   uint64_t capacity) noexcept;
 	[[nodiscard]] static std::pair<uint32_t, uint32_t>
 	SanitizeCopyLayers(const Image& source, const Image& destination, uint32_t depth);
+	// Resampling paths for images whose host size differs from the guest size (`scale`).
+	void UploadScaled(std::span<const vk::BufferImageCopy> copies, vk::Buffer buffer,
+	                  uint64_t offset, uint64_t size);
+	void DownloadScaled(std::span<const vk::BufferImageCopy> copies, vk::Buffer buffer,
+	                    uint64_t offset, uint64_t size);
+	void BlitImage(Image& source);
+	void BlitMip(Image& source, uint32_t mip, uint32_t layer);
 
 	GraphicContext&   m_graphics;
 	CommandScheduler& m_scheduler;

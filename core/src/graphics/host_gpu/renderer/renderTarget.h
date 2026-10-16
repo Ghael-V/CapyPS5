@@ -26,8 +26,13 @@ struct RenderAttachment {
 struct RenderState {
 	std::array<RenderAttachment, RENDER_COLOR_ATTACHMENTS_MAX> color_attachments;
 	RenderAttachment                                           depth_stencil_attachment;
+	// Host attachment size; guest_width/height is the size the game addresses, and scale the
+	// host/guest ratio of the attachments (debug.capy.res_scale).
 	uint32_t                                                   width                 = 0;
 	uint32_t                                                   height                = 0;
+	uint32_t                                                   guest_width           = 0;
+	uint32_t                                                   guest_height          = 0;
+	float                                                      scale                 = 1.0f;
 	uint32_t                                                   num_layers            = 1;
 	uint32_t                                                   num_color_attachments = 0;
 

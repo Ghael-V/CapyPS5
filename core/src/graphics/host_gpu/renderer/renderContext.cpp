@@ -1,5 +1,6 @@
 #include "graphics/host_gpu/renderer/renderContext.h"
 
+#include "common/debugFlags.h"
 #include "common/assert.h"
 #include "common/logging/log.h"
 #include "graphics/guest_gpu/graphicsRun.h"
@@ -156,10 +157,31 @@ void RenderContext::PrepareBda() {
 		Log::WriteToConsoleAndLog("GPU: using buffer device address (BDA) shader memory access.\n");
 		m_bda_logged = true;
 	}
-	std::shared_lock lock(m_mapped_ranges_mutex);
-	m_mapped_ranges.ForEach([this](uint64_t start, uint64_t end) {
-		m_buffer_cache.SynchronizeBuffersInRange(start, end - start);
-	});
+	// Only memory the CPU wrote since the previous call can need an upload; walking every
+	// buffer of every mapping per draw took a fifth of the GPU thread in UE4 games.
+	// `setprop debug.capy.bda_full_sync 1` walks everything as before.
+	static Common::DebugFlags::CachedValue full_sync("debug.capy.bda_full_sync", 0);
+	// The guest CPU writes what a submission reads before submitting it, so one synchronization
+	// per submission slice suffices; per draw it re-protected pages the game kept writing, and
+	// every write faulted again. `setprop debug.capy.bda_sync_per_draw 1` syncs on every call.
+	static Common::DebugFlags::CachedValue per_draw("debug.capy.bda_sync_per_draw", 0);
+	if (!m_bda_sync_requested && per_draw.Get() == 0 && full_sync.Get() == 0) {
+		m_fault_process_pending = true;
+		return;
+	}
+	m_bda_sync_requested = false;
+	auto modified = m_buffer_cache.TakeCpuModifiedRanges();
+	if (full_sync.Get() != 0 || !m_bda_synced_once) {
+		m_bda_synced_once = true;
+		std::shared_lock lock(m_mapped_ranges_mutex);
+		m_mapped_ranges.ForEach([this](uint64_t start, uint64_t end) {
+			m_buffer_cache.SynchronizeBuffersInRange(start, end - start);
+		});
+	} else {
+		modified.ForEach([this](uint64_t start, uint64_t end) {
+			m_buffer_cache.SynchronizeBuffersInRange(start, end - start);
+		});
+	}
 	m_fault_process_pending = true;
 }
 
