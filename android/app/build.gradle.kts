@@ -13,11 +13,17 @@ android {
         minSdk = 31
         targetSdk = 34
         versionCode = 1
-        versionName = "0.1.0-alpha"
+        versionName = "0.0.1"
 
         ndk {
             abiFilters.add("arm64-v8a")
         }
+    }
+
+    lint {
+        // MainActivity and GameActivity extend the abstract CapyActivity (a ComponentActivity);
+        // lint does not follow it and reports them as not being activities.
+        disable += "Instantiatable"
     }
 
     buildTypes {

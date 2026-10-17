@@ -148,6 +148,11 @@ fun SettingsScreen(
                 listOf(
                     SettingItem("CapyPS5", versionText),
                     SettingItem(
+                        "Licencia",
+                        "Software libre bajo GPL v2. Incluye Kyty (GPL-2.0), FEX (MIT), SDL (zlib), FFmpeg " +
+                            "(LGPL-2.1) y otros componentes de código abierto. No incluye software ni claves de Sony.",
+                    ),
+                    SettingItem(
                         "Dispositivo",
                         "${android.os.Build.MANUFACTURER} ${android.os.Build.MODEL} · ${android.os.Build.SOC_MODEL} · " +
                             "Android ${android.os.Build.VERSION.RELEASE}",

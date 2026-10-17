@@ -39,3 +39,4 @@ Thumbs.db
 
 # Native libs are copied in from build-android-arm64
 android/app/src/main/jniLibs/
+dist/
