@@ -142,7 +142,7 @@ fun HomeScreen(
             } else {
                 Image(
                     painterResource(R.drawable.capy_bg), null, Modifier.fillMaxSize(),
-                    contentScale = ContentScale.Crop, alpha = 0.18f,
+                    contentScale = ContentScale.Crop, alpha = 0.35f,
                 )
             }
         }
