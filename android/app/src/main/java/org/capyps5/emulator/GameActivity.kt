@@ -6,6 +6,7 @@ import android.os.Bundle
 import android.os.Process
 import androidx.activity.compose.setContent
 import org.capyps5.emulator.model.GameItem
+import org.libsdl.app.SDL
 import org.capyps5.emulator.ui.screens.EmulationScreen
 import org.capyps5.emulator.ui.theme.CapyPS5Theme
 import java.io.File
@@ -53,6 +54,13 @@ class GameActivity : CapyActivity() {
         // A report left by an earlier session must not be shown for this one.
         errorFile(this).delete()
         NativeBridge.nativeInit(filesDir = filesDir.absolutePath, cacheDir = cacheDir.absolutePath)
+        // SDL (statically linked in the core) needs its Java side for audio output on Android; the
+        // frontend is not an SDLActivity, so set it up by hand before the game opens any device.
+        runCatching {
+            SDL.setupJNI()
+            SDL.initialize()
+            SDL.setContext(this)
+        }.onFailure { android.util.Log.e("CapyPS5-Audio", "SDL Java setup failed", it) }
         InputRouter.onRouteChanged = { toUi -> if (toUi) releaseEmulatedPad() }
 
         val settings = Settings(this)

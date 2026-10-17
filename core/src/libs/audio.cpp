@@ -13,6 +13,9 @@
 
 #include <SDL3/SDL.h>
 #include <algorithm>
+#if defined(__ANDROID__)
+#include <android/log.h>
+#endif
 #include <array>
 #include <cstring>
 #include <magic_enum.hpp>
@@ -265,6 +268,9 @@ bool Audio::OpenSdlDevice(PortOut* port) {
 
 	if (!SDL_InitSubSystem(SDL_INIT_AUDIO)) {
 		LOGF("AudioOut: SDL audio init failed: %s\n", SDL_GetError());
+#if defined(__ANDROID__)
+		__android_log_print(ANDROID_LOG_ERROR, "CapyPS5-Audio", "SDL audio init failed: %s", SDL_GetError());
+#endif
 		return false;
 	}
 
@@ -277,6 +283,9 @@ bool Audio::OpenSdlDevice(PortOut* port) {
 	                                         nullptr);
 	if (port->stream == nullptr) {
 		LOGF("AudioOut: SDL_OpenAudioDeviceStream failed: %s\n", SDL_GetError());
+#if defined(__ANDROID__)
+		__android_log_print(ANDROID_LOG_ERROR, "CapyPS5-Audio", "SDL_OpenAudioDeviceStream failed: %s", SDL_GetError());
+#endif
 		SDL_QuitSubSystem(SDL_INIT_AUDIO);
 		return false;
 	}
@@ -286,6 +295,10 @@ bool Audio::OpenSdlDevice(PortOut* port) {
 		return false;
 	}
 
+#if defined(__ANDROID__)
+	__android_log_print(ANDROID_LOG_INFO, "CapyPS5-Audio", "opened SDL stream (%d Hz, %d ch) on %s", desired.freq,
+	                    desired.channels, SDL_GetCurrentAudioDriver() ? SDL_GetCurrentAudioDriver() : "?");
+#endif
 	LOGF("AudioOut: opened SDL stream (%d Hz, %d ch, format 0x%04x)\n", desired.freq,
 	     desired.channels, static_cast<unsigned>(desired.format));
 	return true;
