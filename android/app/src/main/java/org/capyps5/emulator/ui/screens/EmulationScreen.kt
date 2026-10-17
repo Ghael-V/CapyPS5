@@ -14,6 +14,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
@@ -36,6 +37,10 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.boundsInWindow
+import androidx.compose.ui.layout.onGloballyPositioned
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
@@ -144,6 +149,38 @@ fun EmulationScreen(
                     })
                 }
             },
+        )
+
+        // Swiping in from the left edge opens the pause menu (as in other Android emulators). The
+        // strip is excluded from the system back gesture so Android does not take the swipe.
+        val density = androidx.compose.ui.platform.LocalDensity.current
+        val view = androidx.compose.ui.platform.LocalView.current
+        Box(
+            Modifier
+                .align(Alignment.CenterStart)
+                .width(28.dp)
+                .fillMaxHeight()
+                .onGloballyPositioned { coordinates ->
+                    val bounds = coordinates.boundsInWindow()
+                    view.systemGestureExclusionRects = listOf(
+                        android.graphics.Rect(
+                            bounds.left.toInt(), bounds.top.toInt(), bounds.right.toInt(), bounds.bottom.toInt()
+                        )
+                    )
+                }
+                .pointerInput(Unit) {
+                    var dragged = 0f
+                    detectHorizontalDragGestures(
+                        onDragStart = { dragged = 0f },
+                        onHorizontalDrag = { change, amount ->
+                            dragged += amount
+                            if (dragged > with(density) { 72.dp.toPx() }) {
+                                change.consume()
+                                showPauseMenu = true
+                            }
+                        },
+                    )
+                },
         )
 
         if (showTouch) {

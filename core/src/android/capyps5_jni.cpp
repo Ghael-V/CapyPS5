@@ -60,6 +60,7 @@ JNIEXPORT void JNICALL Java_org_capyps5_emulator_NativeBridge_nativeInit(
 	Common::VirtualMemory::Init();
 	Common::InitializeThreads();
 
+	Log::SetFatalReportPath(g_files_dir + "/last_error.txt");
 	ALOGI("nativeInit complete. FilesDir: %s, CacheDir: %s",
 	      g_files_dir.c_str(), g_cache_dir.c_str());
 }

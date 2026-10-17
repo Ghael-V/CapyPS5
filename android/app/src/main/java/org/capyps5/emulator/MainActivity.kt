@@ -3,11 +3,23 @@ package org.capyps5.emulator
 import android.content.Intent
 import android.os.Bundle
 import android.os.Environment
-import android.view.InputDevice
-import android.view.KeyEvent
-import android.view.MotionEvent
-import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
@@ -15,49 +27,35 @@ import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
-import androidx.core.view.WindowCompat
-import androidx.core.view.WindowInsetsCompat
-import androidx.core.view.WindowInsetsControllerCompat
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.unit.dp
 import org.capyps5.emulator.model.GameItem
-import org.capyps5.emulator.ui.UiInput
-import org.capyps5.emulator.ui.screens.EmulationScreen
+import org.capyps5.emulator.ui.NavKey
+import org.capyps5.emulator.ui.OnNavKey
 import org.capyps5.emulator.ui.screens.HomeScreen
+import org.capyps5.emulator.ui.theme.Capy
 import org.capyps5.emulator.ui.theme.CapyPS5Theme
 import java.io.File
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
-/** Decides whether physical controller input goes to the frontend UI or to the emulated pad. */
-object InputRouter {
-    @Volatile
-    var routeToUi = true
-        private set
-    var onPauseRequested: (() -> Unit)? = null
-    var onRouteChanged: ((Boolean) -> Unit)? = null
-
-    fun setRouteToUi(value: Boolean) {
-        if (routeToUi == value) return
-        routeToUi = value
-        onRouteChanged?.invoke(value)
-    }
-}
-
-class MainActivity : ComponentActivity() {
+/** Launcher: game library and settings. Each game runs in GameActivity, in its own process. */
+class MainActivity : CapyActivity() {
 
     private lateinit var settings: Settings
     private val libraryDir get() = File(settings.libraryPath)
     // Bumped when all-files access may have just been granted, so the library is scanned again.
     private var storageCheck by mutableIntStateOf(0)
+    // Fatal report the last game session left behind, shown once when the launcher returns.
+    private var lastError by mutableStateOf<String?>(null)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        window.addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
-        WindowCompat.setDecorFitsSystemWindows(window, false)
-        WindowCompat.getInsetsController(window, window.decorView).apply {
-            systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
-            hide(WindowInsetsCompat.Type.systemBars())
-        }
-
         settings = Settings(this)
-        NativeBridge.nativeInit(filesDir = filesDir.absolutePath, cacheDir = cacheDir.absolutePath)
         // Games are read by path, which needs all-files access; a fresh install asks for it once.
         if (!Environment.isExternalStorageManager()) {
             runCatching {
@@ -70,38 +68,27 @@ class MainActivity : ComponentActivity() {
             runCatching { libraryDir.mkdirs() }
         }
 
-        InputRouter.onRouteChanged = { toUi -> if (toUi) releaseEmulatedPad() }
-
         val versionText = runCatching { NativeBridge.nativeGetVersion() }.getOrDefault("CapyPS5")
-        val initialGame = intent?.getStringExtra("launch_elf")?.takeIf { File(it).exists() }?.let { elf ->
+        // `adb shell am start ... --es launch_elf <path> [--es launch_dir <dir>]` starts a game directly.
+        intent?.getStringExtra("launch_elf")?.takeIf { File(it).exists() }?.let { elf ->
             val dir = File(intent.getStringExtra("launch_dir") ?: File(elf).parent ?: "")
-            GameItem.fromGameDir(dir, File(elf))
+            GameActivity.launch(this, GameItem.fromGameDir(dir, File(elf)))
         }
 
         setContent {
             CapyPS5Theme {
-                var currentGame by remember { mutableStateOf(initialGame) }
                 val games = remember { mutableStateListOf<GameItem>() }
-                LaunchedEffect(settings.libraryPath, storageCheck) {
+                LaunchedEffect(settings.libraryPaths, storageCheck) {
                     games.clear()
-                    games.addAll(GameItem.scan(libraryDir))
+                    games.addAll(scanLibrary())
                 }
-
-                val game = currentGame
-                if (game != null) {
-                    EmulationScreen(
-                        game = game,
-                        settings = settings,
-                        versionText = versionText,
-                        onExit = ::restartFrontend,
-                    )
-                } else {
+                Box(Modifier.fillMaxSize()) {
                     HomeScreen(
                         games = games,
                         libraryPath = settings.libraryPath,
                         settings = settings,
                         versionText = versionText,
-                        onGameSelected = { currentGame = it },
+                        onGameSelected = { GameActivity.launch(this@MainActivity, it) },
                         onAddGameFile = { uriString ->
                             val localFile = if (uriString.startsWith("content://")) {
                                 copyUriToLocal(android.net.Uri.parse(uriString))
@@ -116,15 +103,22 @@ class MainActivity : ComponentActivity() {
                                     elfPath = localFile.absolutePath,
                                 )
                                 games.add(newGame)
-                                currentGame = newGame
+                                GameActivity.launch(this@MainActivity, newGame)
                             }
                         },
                         onRefresh = {
                             games.clear()
-                            games.addAll(GameItem.scan(libraryDir))
+                            games.addAll(scanLibrary())
                         },
-                        onLibraryPicked = { settings.updateLibraryPath(it) },
+                        onLibraryPicked = { settings.addLibraryPath(it) },
                     )
+                    lastError?.let { report ->
+                        CrashDialog(
+                            report = report,
+                            onSaveLog = ::saveLog,
+                            onClose = { lastError = null },
+                        )
+                    }
                 }
             }
         }
@@ -132,23 +126,36 @@ class MainActivity : ComponentActivity() {
 
     override fun onResume() {
         super.onResume()
+        InputRouter.setRouteToUi(true)
         // Returning from the all-files access screen: scan again now that the folder is readable.
         if (Environment.isExternalStorageManager()) storageCheck++
+        // Returning from a game that closed itself: show why, once.
+        val report = GameActivity.errorFile(this)
+        if (report.exists()) {
+            lastError = runCatching { report.readText() }.getOrNull()?.takeIf { it.isNotBlank() }
+            report.delete()
+        }
     }
 
+    /** Games of every library folder, by name; a game found in two folders shows once. */
+    private fun scanLibrary(): List<GameItem> =
+        settings.libraryPaths.flatMap { GameItem.scan(File(it)) }
+            .distinctBy { it.elfPath }
+            .sortedBy { it.titleName.lowercase() }
+
     /**
-     * The native core cannot be torn down and restarted inside one process yet (guest threads and
-     * global state outlive Emulator::Run), so leaving a game relaunches the frontend in a fresh
-     * process instead of leaving a zombie emulator running.
+     * Writes this app's recent log (both processes share the app's UID, so the game's lines are
+     * included) next to the game library, where users can find and attach it.
      */
-    private fun restartFrontend() {
-        NativeBridge.nativeStopGame()
-        val intent = Intent(this, MainActivity::class.java)
-            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK)
-        startActivity(intent)
-        finishAffinity()
-        Runtime.getRuntime().exit(0)
-    }
+    private fun saveLog(): String? = runCatching {
+        val dir = File(libraryDir, "logs").apply { mkdirs() }
+        val stamp = SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US).format(Date())
+        val file = File(dir, "capyps5-$stamp.txt")
+        val process = Runtime.getRuntime().exec(arrayOf("logcat", "-d", "-v", "time"))
+        process.inputStream.use { input -> file.outputStream().use { output -> input.copyTo(output) } }
+        process.waitFor()
+        file.absolutePath
+    }.getOrNull()
 
     private fun copyUriToLocal(uri: android.net.Uri): File? = try {
         var name = "eboot.bin"
@@ -167,128 +174,56 @@ class MainActivity : ComponentActivity() {
     } catch (_: Exception) {
         null
     }
+}
 
-    // ---- Physical controller -------------------------------------------------------------
-
-    // Buttons from key events and from axes (hat, analog triggers) are tracked separately so
-    // a stick movement never clears a d-pad press that arrived as a key event, and vice versa.
-    private var keyButtons = 0
-    private var axisButtons = 0
-    private var physicalLx = 0f
-    private var physicalLy = 0f
-    private var physicalRx = 0f
-    private var physicalRy = 0f
-    private var physicalL2 = 0f
-    private var physicalR2 = 0f
-
-    private fun sendPad() {
-        NativeBridge.nativeSendControllerInput(
-            keyButtons or axisButtons, physicalLx, physicalLy, physicalRx, physicalRy, physicalL2, physicalR2
-        )
+@Composable
+private fun CrashDialog(report: String, onSaveLog: () -> String?, onClose: () -> Unit) {
+    var savedPath by remember { mutableStateOf<String?>(null) }
+    var focused by remember { mutableIntStateOf(0) }
+    val actions = listOf(
+        "Guardar log" to { savedPath = onSaveLog() ?: "No se pudo guardar el log" },
+        "Cerrar" to onClose,
+    )
+    OnNavKey { key ->
+        when (key) {
+            NavKey.Left -> focused = (focused - 1).mod(actions.size)
+            NavKey.Right -> focused = (focused + 1).mod(actions.size)
+            NavKey.Confirm -> actions[focused].second()
+            NavKey.Back -> onClose()
+            else -> Unit
+        }
     }
-
-    private fun releaseEmulatedPad() {
-        keyButtons = 0
-        axisButtons = 0
-        physicalLx = 0f; physicalLy = 0f; physicalRx = 0f; physicalRy = 0f
-        physicalL2 = 0f; physicalR2 = 0f
-        sendPad()
-    }
-
-    private fun padMask(keyCode: Int): Int = when (keyCode) {
-        KeyEvent.KEYCODE_BUTTON_A -> NativeBridge.BTN_CROSS
-        KeyEvent.KEYCODE_BUTTON_B, KeyEvent.KEYCODE_BACK -> NativeBridge.BTN_CIRCLE
-        KeyEvent.KEYCODE_BUTTON_X -> NativeBridge.BTN_SQUARE
-        KeyEvent.KEYCODE_BUTTON_Y -> NativeBridge.BTN_TRIANGLE
-        KeyEvent.KEYCODE_BUTTON_L1 -> NativeBridge.BTN_L1
-        KeyEvent.KEYCODE_BUTTON_R1 -> NativeBridge.BTN_R1
-        KeyEvent.KEYCODE_BUTTON_L2 -> NativeBridge.BTN_L2
-        KeyEvent.KEYCODE_BUTTON_R2 -> NativeBridge.BTN_R2
-        KeyEvent.KEYCODE_BUTTON_THUMBL -> NativeBridge.BTN_L3
-        KeyEvent.KEYCODE_BUTTON_THUMBR -> NativeBridge.BTN_R3
-        KeyEvent.KEYCODE_BUTTON_START -> NativeBridge.BTN_START
-        KeyEvent.KEYCODE_BUTTON_SELECT -> NativeBridge.BTN_SELECT
-        KeyEvent.KEYCODE_DPAD_UP -> NativeBridge.BTN_UP
-        KeyEvent.KEYCODE_DPAD_DOWN -> NativeBridge.BTN_DOWN
-        KeyEvent.KEYCODE_DPAD_LEFT -> NativeBridge.BTN_LEFT
-        KeyEvent.KEYCODE_DPAD_RIGHT -> NativeBridge.BTN_RIGHT
-        else -> 0
-    }
-
-    private val pauseCombo = NativeBridge.BTN_SELECT or NativeBridge.BTN_START
-
-    override fun dispatchKeyEvent(event: KeyEvent): Boolean {
-        val down = event.action == KeyEvent.ACTION_DOWN
-
-        if (InputRouter.routeToUi) {
-            val nav = UiInput.fromKeyCode(event.keyCode)
-            if (nav != null) {
-                if (down && event.repeatCount % 3 == 0) UiInput.emit(nav)
-                return true
+    Box(Modifier.fillMaxSize().background(Capy.Scrim), contentAlignment = Alignment.Center) {
+        Column(
+            modifier = Modifier
+                .width(560.dp)
+                .background(Capy.Surface, RoundedCornerShape(16.dp))
+                .padding(22.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            Text("El juego se cerró por un error", style = MaterialTheme.typography.titleLarge, color = Capy.Bad)
+            Text(
+                report.trim(),
+                style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
+                color = Capy.TextSecondary,
+                modifier = Modifier.heightIn(max = 220.dp).verticalScroll(rememberScrollState()),
+            )
+            savedPath?.let {
+                Text("Log guardado en:\n$it", style = MaterialTheme.typography.bodySmall, color = Capy.TextPrimary)
             }
-            return super.dispatchKeyEvent(event)
-        }
-
-        // In game: the guide button, or Select+Start together, opens the pause menu.
-        if (event.keyCode == KeyEvent.KEYCODE_BUTTON_MODE) {
-            if (down) InputRouter.onPauseRequested?.invoke()
-            return true
-        }
-        val mask = padMask(event.keyCode)
-        if (mask == 0) return super.dispatchKeyEvent(event)
-        if (event.repeatCount > 0) return true
-        keyButtons = if (down) keyButtons or mask else keyButtons and mask.inv()
-        if (down && keyButtons and pauseCombo == pauseCombo) {
-            InputRouter.onPauseRequested?.invoke()
-            return true
-        }
-        sendPad()
-        return true
-    }
-
-    private var lastStickNav: org.capyps5.emulator.ui.NavKey? = null
-
-    override fun dispatchGenericMotionEvent(event: MotionEvent): Boolean {
-        if (!event.isFromSource(InputDevice.SOURCE_CLASS_JOYSTICK)) return super.dispatchGenericMotionEvent(event)
-
-        val hatX = event.getAxisValue(MotionEvent.AXIS_HAT_X)
-        val hatY = event.getAxisValue(MotionEvent.AXIS_HAT_Y)
-        val lx = event.getAxisValue(MotionEvent.AXIS_X)
-        val ly = event.getAxisValue(MotionEvent.AXIS_Y)
-
-        if (InputRouter.routeToUi) {
-            // Treat the hat and left stick as a d-pad, emitting once per deflection.
-            val x = if (kotlin.math.abs(hatX) > 0.5f) hatX else lx
-            val y = if (kotlin.math.abs(hatY) > 0.5f) hatY else ly
-            val nav = when {
-                x < -0.6f -> org.capyps5.emulator.ui.NavKey.Left
-                x > 0.6f -> org.capyps5.emulator.ui.NavKey.Right
-                y < -0.6f -> org.capyps5.emulator.ui.NavKey.Up
-                y > 0.6f -> org.capyps5.emulator.ui.NavKey.Down
-                else -> null
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                actions.forEachIndexed { i, (label, action) ->
+                    Text(
+                        label,
+                        style = MaterialTheme.typography.labelLarge,
+                        color = Color.White,
+                        modifier = Modifier
+                            .background(if (i == focused) Capy.Accent else Capy.SurfaceHigh, RoundedCornerShape(50))
+                            .clickable { focused = i; action() }
+                            .padding(horizontal = 18.dp, vertical = 9.dp),
+                    )
+                }
             }
-            if (nav != null && nav != lastStickNav) UiInput.emit(nav)
-            lastStickNav = nav
-            return true
         }
-
-        physicalLx = lx
-        physicalLy = ly
-        physicalRx = event.getAxisValue(MotionEvent.AXIS_Z)
-        physicalRy = event.getAxisValue(MotionEvent.AXIS_RZ)
-        physicalL2 = maxOf(event.getAxisValue(MotionEvent.AXIS_LTRIGGER), event.getAxisValue(MotionEvent.AXIS_BRAKE))
-        physicalR2 = maxOf(event.getAxisValue(MotionEvent.AXIS_RTRIGGER), event.getAxisValue(MotionEvent.AXIS_GAS))
-
-        fun set(mask: Int, on: Boolean) {
-            axisButtons = if (on) axisButtons or mask else axisButtons and mask.inv()
-        }
-        set(NativeBridge.BTN_L2, physicalL2 > 0.1f)
-        set(NativeBridge.BTN_R2, physicalR2 > 0.1f)
-        set(NativeBridge.BTN_LEFT, hatX < -0.5f)
-        set(NativeBridge.BTN_RIGHT, hatX > 0.5f)
-        set(NativeBridge.BTN_UP, hatY < -0.5f)
-        set(NativeBridge.BTN_DOWN, hatY > 0.5f)
-        sendPad()
-        return true
     }
 }

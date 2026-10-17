@@ -27,16 +27,33 @@ class Settings(context: Context) {
         private set
     var controlsOpacity by mutableFloatStateOf(prefs.getFloat("controls_opacity", 0.6f))
         private set
-    /** Folder scanned for games (each game a subfolder with eboot.bin). */
-    var libraryPath by mutableStateOf(
-        prefs.getString("library_path", null)
-            ?: File(Environment.getExternalStorageDirectory(), "CapyPS5").absolutePath
+    /** Folders scanned for games (each game a subfolder with eboot.bin); the first one also holds logs. */
+    var libraryPaths by mutableStateOf(
+        prefs.getString("library_paths", null)?.split('\n')?.filter { it.isNotBlank() }?.takeIf { it.isNotEmpty() }
+            ?: listOf(
+                prefs.getString("library_path", null)
+                    ?: File(Environment.getExternalStorageDirectory(), "CapyPS5").absolutePath
+            )
     )
         private set
 
-    fun updateLibraryPath(value: String) {
-        libraryPath = value
-        prefs.edit().putString("library_path", value).apply()
+    /** Main library folder (first in the list). */
+    val libraryPath: String get() = libraryPaths.first()
+
+    fun addLibraryPath(value: String) {
+        if (value in libraryPaths) return
+        storeLibraryPaths(libraryPaths + value)
+    }
+
+    fun removeLibraryPath(value: String) {
+        // At least one folder stays: the launcher needs somewhere to look and to write logs.
+        if (libraryPaths.size <= 1) return
+        storeLibraryPaths(libraryPaths - value)
+    }
+
+    private fun storeLibraryPaths(values: List<String>) {
+        libraryPaths = values
+        prefs.edit().putString("library_paths", values.joinToString("\n")).apply()
     }
 
     fun updateOverlayMode(value: OverlayMode) {

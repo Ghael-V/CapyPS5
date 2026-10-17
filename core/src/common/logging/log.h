@@ -1,6 +1,7 @@
 #ifndef KYTY_COMMON_LOGGING_LOG_H_
 #define KYTY_COMMON_LOGGING_LOG_H_
 
+#include <string>
 #include "common/common.h"
 
 #include <fmt/color.h>
@@ -28,6 +29,9 @@ void      Write(fmt::text_style style, std::string_view text);
 void      WriteToConsoleAndLog(std::string_view text);
 void      WriteFatal(std::string_view text);
 void      WriteFatal(fmt::text_style style, std::string_view text);
+// Android: fatal reports are also appended to this file so the frontend can show them after the
+// game process exits.
+void      SetFatalReportPath(std::string path);
 void      Flush();
 
 namespace Color {

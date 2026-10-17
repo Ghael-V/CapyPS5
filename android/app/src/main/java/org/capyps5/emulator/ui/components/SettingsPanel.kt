@@ -112,7 +112,27 @@ fun SettingsPanel(
             )
         }
         if (onPickLibrary != null) {
-            SettingRow("Carpeta de juegos", settings.libraryPath, focused == 3) {
+            SettingRow("Carpetas de juegos", "Se buscan juegos en todas", focused == 3) {
+                settings.libraryPaths.forEach { path ->
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            path,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = Capy.TextPrimary,
+                            modifier = Modifier.weight(1f),
+                        )
+                        if (settings.libraryPaths.size > 1) {
+                            Text(
+                                "✕",
+                                style = MaterialTheme.typography.labelLarge,
+                                color = Capy.Bad,
+                                modifier = Modifier
+                                    .clickable { settings.removeLibraryPath(path) }
+                                    .padding(horizontal = 8.dp, vertical = 4.dp),
+                            )
+                        }
+                    }
+                }
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -124,7 +144,7 @@ fun SettingsPanel(
                         .padding(vertical = 8.dp),
                     contentAlignment = Alignment.Center,
                 ) {
-                    Text("Cambiar carpeta  Ⓐ", style = MaterialTheme.typography.labelLarge, color = Color.White)
+                    Text("Añadir carpeta  Ⓐ", style = MaterialTheme.typography.labelLarge, color = Color.White)
                 }
             }
         }

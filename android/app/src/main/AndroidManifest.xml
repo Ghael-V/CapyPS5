@@ -34,6 +34,15 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <!-- Each game runs in its own process, so leaving it frees the emulator completely. -->
+        <activity
+            android:name=".GameActivity"
+            android:exported="false"
+            android:process=":game"
+            android:configChanges="orientation|screenSize|smallestScreenSize|screenLayout|keyboardHidden|keyboard|navigation|uiMode"
+            android:screenOrientation="sensorLandscape"
+            android:theme="@style/Theme.CapyPS5" />
     </application>
 
 </manifest>

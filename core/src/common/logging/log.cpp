@@ -169,9 +169,29 @@ void WriteToConsoleAndLog(std::string_view text) {
 	Flush();
 }
 
+static std::string g_fatal_report_path;
+
+void SetFatalReportPath(std::string path) {
+	g_fatal_report_path = std::move(path);
+}
+
+static void AppendFatalReport(std::string_view text) {
+	if (g_fatal_report_path.empty()) {
+		return;
+	}
+	if (auto* file = std::fopen(g_fatal_report_path.c_str(), "a"); file != nullptr) {
+		std::fwrite(text.data(), 1, text.size(), file);
+		if (text.empty() || text.back() != '\n') {
+			std::fputc('\n', file);
+		}
+		std::fclose(file);
+	}
+}
+
 void WriteFatal(std::string_view text) {
 #if defined(__ANDROID__) || defined(ANDROID) || defined(KYTY_PLATFORM_ANDROID)
 	AndroidLog(ANDROID_LOG_ERROR, text);
+	AppendFatalReport(text);
 	Flush();
 	return;
 #endif
@@ -188,6 +208,7 @@ void WriteFatal(fmt::text_style style, std::string_view text) {
 #if defined(__ANDROID__) || defined(ANDROID) || defined(KYTY_PLATFORM_ANDROID)
 	(void)style;
 	AndroidLog(ANDROID_LOG_ERROR, text);
+	AppendFatalReport(text);
 	Flush();
 	return;
 #endif
