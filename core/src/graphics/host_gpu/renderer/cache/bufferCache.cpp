@@ -372,8 +372,20 @@ void BufferCache::ReadMemory(uint64_t vaddr, uint64_t size, bool is_write) {
 		Common::DebugFlags::FrameTrace("  cpu fault download 0x%llx size=%llu write=%d buffer=0x%llx+%llu",
 		    static_cast<unsigned long long>(vaddr), static_cast<unsigned long long>(size), is_write ? 1 : 0,
 		    static_cast<unsigned long long>(buffer.CpuAddress()), static_cast<unsigned long long>(buffer.Size()));
-		(void)DownloadBufferMemory<false>(buffer, vaddr, size);
-		m_memory_tracker.UnmarkRegionAsGpuModified(vaddr, size);
+		// Stray's render thread reads GPU-written buffers page after page, and each page fault
+		// waited for the GPU on its own. Download the GPU-written pages that follow in the same
+		// buffer too, so one wait serves the whole sequential read.
+		// `setprop debug.capy.read_ahead_kb N` sets the window (0 downloads the faulting pages only).
+		static Common::DebugFlags::CachedValue read_ahead_kb("debug.capy.read_ahead_kb", 256);
+		const uint64_t read_ahead   = static_cast<uint64_t>(std::max<int64_t>(read_ahead_kb.Get(), 0)) * 1024u;
+		const uint64_t buffer_end   = buffer.CpuAddress() + buffer.Size();
+		const uint64_t download_low = std::max(Common::AlignDown(vaddr, TRACKER_PAGE_SIZE), buffer.CpuAddress());
+		const uint64_t download_end =
+		    std::max(std::min(Common::AlignUp(vaddr + size, TRACKER_PAGE_SIZE) + read_ahead, buffer_end), vaddr + size);
+		const uint64_t download_size = read_ahead != 0 ? download_end - download_low : size;
+		const uint64_t download_addr = read_ahead != 0 ? download_low : vaddr;
+		(void)DownloadBufferMemory<false>(buffer, download_addr, download_size);
+		m_memory_tracker.UnmarkRegionAsGpuModified(download_addr, download_size);
 		if (is_write) {
 			m_memory_tracker.MarkRegionAsCpuModified(vaddr, size);
 		}

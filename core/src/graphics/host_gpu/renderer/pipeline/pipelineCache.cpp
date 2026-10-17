@@ -1023,6 +1023,33 @@ PipelineCache::Pipeline& PipelineCache::GetGraphicsPipeline(
 		     static_cast<void*>(pixel_program.module));
 	}
 
+#if defined(__ANDROID__)
+	// `setprop debug.capy.pipeline_log 1`: every 2 s log how many graphics pipelines were
+	// created and the shaders and vertex layout of the last one (tag CapyPS5-Pipeline).
+	static Common::DebugFlags::CachedValue pipeline_log("debug.capy.pipeline_log", 0);
+	if (pipeline_log.Get() != 0) {
+		static uint32_t created     = 0;
+		static auto     next_report = std::chrono::steady_clock::now();
+		created++;
+		std::string layout;
+		for (uint32_t a = 0; a < key.vertex_input.attribute_count; a++) {
+			layout += fmt::format(" a{}=b{}+{}", a, key.vertex_input.attributes[a].binding,
+			                      key.vertex_input.attributes[a].offset);
+		}
+		for (uint32_t b = 0; b < key.vertex_input.binding_count; b++) {
+			layout += fmt::format(" b{}s{}", b, key.vertex_input.bindings[b].stride);
+		}
+		__android_log_print(ANDROID_LOG_WARN, "CapyPS5-Pipeline", "new vs=%llu ps=%llu topo=%u colors=%u%s",
+		                    static_cast<unsigned long long>(vs_id), static_cast<unsigned long long>(ps_id),
+		                    static_cast<uint32_t>(topology), rendering.color_count, layout.c_str());
+		if (const auto now = std::chrono::steady_clock::now(); now >= next_report) {
+			next_report = now + std::chrono::seconds(2);
+			__android_log_print(ANDROID_LOG_WARN, "CapyPS5-Pipeline", "---- %u graphics pipelines created, %zu cached",
+			                    created, m_graphics_pipelines.size());
+			created = 0;
+		}
+	}
+#endif
 	auto cached = std::make_unique<Pipeline>();
 	LogPipelineTrace("CreatePipelineInternal begin", vs_id, ps_id);
 	CreatePipelineInternal(m_graphics, *cached, rendering, key.vertex_input, vertex_info,

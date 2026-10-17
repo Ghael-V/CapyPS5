@@ -6,16 +6,24 @@
 
 #include "graphics/host_gpu/renderer/gpuProfiler.h"
 #include "common/assert.h"
+#include "common/debugFlags.h"
 #include "common/logging/log.h"
 #include "graphics/host_gpu/graphicContext.h"
 
 #include <algorithm>
+#include <array>
+#include <chrono>
 #include <cstdio>
+#include <mutex>
 #include <optional>
+#include <string>
+#include <unordered_map>
+#include <vector>
 
 #if defined(__ANDROID__) || defined(ANDROID)
 #include <android/log.h>
 #include <dlfcn.h>
+#include <unwind.h>
 #define CS_LOG(...)
 #define CS_ERR(...) __android_log_print(ANDROID_LOG_ERROR, "CapyPS5-Scheduler", __VA_ARGS__)
 #else
@@ -26,6 +34,118 @@
 namespace Libs::Graphics {
 
 static thread_local CommandScheduler* g_deferred_callback_scheduler = nullptr;
+
+#if defined(__ANDROID__)
+// `setprop debug.capy.submit_stats 1`: every 2 s log which call chains submit, and how long the
+// CPU waited on the GPU from each (tag CapyPS5-Submit), to find serializing waits.
+namespace SubmitStats {
+
+struct Entry {
+	uint32_t submits = 0;
+	uint32_t waits   = 0;
+	uint64_t wait_ns = 0;
+};
+
+struct Trace {
+	std::array<uintptr_t, 6> frames {};
+	size_t                   count = 0;
+};
+
+_Unwind_Reason_Code CollectFrame(_Unwind_Context* context, void* arg) {
+	auto* trace = static_cast<Trace*>(arg);
+	if (trace->count >= trace->frames.size()) {
+		return _URC_END_OF_STACK;
+	}
+	trace->frames[trace->count++] = _Unwind_GetIP(context);
+	return _URC_NO_REASON;
+}
+
+bool Enabled() {
+	static Common::DebugFlags::CachedValue enabled("debug.capy.submit_stats", 0);
+	return enabled.Get() != 0;
+}
+
+std::mutex                                         g_mutex;
+std::unordered_map<std::string, Entry>             g_entries;
+std::chrono::steady_clock::time_point              g_report = std::chrono::steady_clock::now();
+
+std::string Key() {
+	Trace trace;
+	_Unwind_Backtrace(CollectFrame, &trace);
+	std::string key;
+	// Skip this function and the scheduler entry point itself.
+	for (size_t i = 2; i < trace.count; i++) {
+		Dl_info info {};
+		const auto base = dladdr(reinterpret_cast<void*>(trace.frames[i]), &info) != 0
+		                      ? reinterpret_cast<uintptr_t>(info.dli_fbase)
+		                      : 0;
+		char frame[32];
+		std::snprintf(frame, sizeof(frame), " +0x%llx", static_cast<unsigned long long>(trace.frames[i] - base));
+		key += frame;
+	}
+	return key;
+}
+
+void Report() {
+	const auto now = std::chrono::steady_clock::now();
+	if (now < g_report + std::chrono::seconds(2)) {
+		return;
+	}
+	g_report = now;
+	std::vector<std::pair<std::string, Entry>> sorted(g_entries.begin(), g_entries.end());
+	std::sort(sorted.begin(), sorted.end(), [](const auto& a, const auto& b) {
+		return a.second.wait_ns != b.second.wait_ns ? a.second.wait_ns > b.second.wait_ns
+		                                            : a.second.submits > b.second.submits;
+	});
+	uint64_t total_ns = 0;
+	uint32_t total_submits = 0;
+	for (const auto& [key, entry]: sorted) {
+		total_ns += entry.wait_ns;
+		total_submits += entry.submits;
+	}
+	__android_log_print(ANDROID_LOG_WARN, "CapyPS5-Submit", "---- %u submits, CPU waited %.1f ms on the GPU",
+	                    total_submits, static_cast<double>(total_ns) / 1e6);
+	for (size_t i = 0; i < sorted.size() && i < 10; i++) {
+		const auto& [key, entry] = sorted[i];
+		__android_log_print(ANDROID_LOG_WARN, "CapyPS5-Submit", "%7.1f ms waits %-4u submits %-4u from%s",
+		                    static_cast<double>(entry.wait_ns) / 1e6, entry.waits, entry.submits, key.c_str());
+	}
+	g_entries.clear();
+}
+
+void NoteSubmit() {
+	if (!Enabled()) {
+		return;
+	}
+	auto key = Key();
+	std::lock_guard lock(g_mutex);
+	g_entries[key].submits++;
+	Report();
+}
+
+void NoteWait(std::chrono::steady_clock::time_point start) {
+	const auto ns = std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - start).count();
+	auto key = Key();
+	std::lock_guard lock(g_mutex);
+	auto& entry = g_entries[key];
+	entry.waits++;
+	entry.wait_ns += static_cast<uint64_t>(ns);
+}
+
+} // namespace SubmitStats
+#define SUBMIT_STATS_WAIT(expr)                                                                     \
+	do {                                                                                           \
+		if (SubmitStats::Enabled()) {                                                              \
+			const auto submit_stats_start = std::chrono::steady_clock::now();                      \
+			expr;                                                                                  \
+			SubmitStats::NoteWait(submit_stats_start);                                             \
+		} else {                                                                                   \
+			expr;                                                                                  \
+		}                                                                                          \
+	} while (false)
+#else
+#define SUBMIT_STATS_WAIT(expr) expr
+#endif
 
 namespace {
 
@@ -196,7 +316,7 @@ void CommandScheduler::Flush(SubmitInfo& submit) {
 
 void CommandScheduler::FlushAndWait() {
 	const auto tick = Submit();
-	m_master.Wait(tick);
+	SUBMIT_STATS_WAIT(m_master.Wait(tick));
 	BeginNext();
 }
 
@@ -206,7 +326,7 @@ void CommandScheduler::Finish() {
 	if (!m_command.IsInvalid()) {
 		Submit();
 	}
-	m_master.Wait(CurrentTick() - 1);
+	SUBMIT_STATS_WAIT(m_master.Wait(CurrentTick() - 1));
 	BeginNext();
 	PopPendingOperations();
 }
@@ -220,10 +340,10 @@ void CommandScheduler::Wait(uint64_t tick) {
 		// resources are released only at the next GPU operation boundary.
 		const auto submitted_tick = Submit();
 		EXIT_IF(submitted_tick != tick);
-		m_master.Wait(tick);
+		SUBMIT_STATS_WAIT(m_master.Wait(tick));
 		BeginNext();
 	} else {
-		m_master.Wait(tick);
+		SUBMIT_STATS_WAIT(m_master.Wait(tick));
 	}
 }
 
@@ -380,6 +500,9 @@ std::atomic<uint64_t> g_submit_count {0};
 uint64_t CommandScheduler::Submit(SubmitInfo submit) {
 	EXIT_IF(m_command.IsInvalid());
 	g_submit_count.fetch_add(1, std::memory_order_relaxed);
+#if defined(__ANDROID__)
+	SubmitStats::NoteSubmit();
+#endif
 	EXIT_IF(submit.num_wait_semaphores > SubmitInfo::MaxSemaphores ||
 	        submit.num_signal_semaphores >= SubmitInfo::MaxSemaphores);
 

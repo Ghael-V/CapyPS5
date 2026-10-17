@@ -213,6 +213,12 @@ bool HasFoldWindows() {
 }
 
 uint64_t FoldHleArgument(uint64_t value) {
+	// Every window lies above the mask, so most arguments (small values, folded pointers) leave
+	// at once; this runs for all 16 argument slots of every emulator call.
+	const auto mask = g_address_fold_mask.load(std::memory_order_relaxed);
+	if (value <= mask) {
+		return value;
+	}
 	const auto count = g_fold_window_count.load(std::memory_order_acquire);
 	for (uint32_t i = 0; i < count; i++) {
 		const auto& [start, size] = g_fold_windows[i];

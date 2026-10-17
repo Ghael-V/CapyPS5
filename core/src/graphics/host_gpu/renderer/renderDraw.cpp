@@ -1741,9 +1741,10 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 	}
 	// Draws whose shaders write memory need a barrier before later work reads it. Ending the pass
 	// for it split Stray's 4K G-buffer pass (7 targets) at every draw; dependent draws inside a
-	// pass are ordered by the game's own wait events, so the barrier waits for the pass end.
-	// `setprop debug.capy.defer_write_barrier 0` ends the pass after each such draw as before.
-	static Common::DebugFlags::CachedValue defer_write_barrier("debug.capy.defer_write_barrier", 1);
+	// pass are ordered by the game's own wait events, so the barrier could wait for the pass end.
+	// Off by default: Stray's draws read what earlier draws of the pass wrote (layers flicker).
+	// `setprop debug.capy.defer_write_barrier 1` defers it.
+	static Common::DebugFlags::CachedValue defer_write_barrier("debug.capy.defer_write_barrier", 0);
 	if (shader_write_stages) {
 		if (defer_write_barrier.Get() != 0 && m_context.GetCommandScheduler().Current().IsRendering()) {
 			m_context.GetCommandScheduler().Current().DeferGlobalBarrier();
