@@ -103,6 +103,8 @@ public:
 	                                                bool allow_wait = true);
 	void                                        Commit();
 	[[nodiscard]] uint64_t Copy(const void* source, uint64_t size, uint64_t alignment = 0);
+	/** Number of times the ring restarted from offset 0 (earlier data may be overwritten). */
+	[[nodiscard]] uint64_t Wraps() const noexcept { return m_wraps; }
 
 private:
 	friend struct StreamBufferTestAccess;
@@ -121,6 +123,7 @@ private:
 
 	uint64_t              m_offset      = 0;
 	uint64_t              m_mapped_size = 0;
+	uint64_t              m_wraps       = 0;
 	std::vector<Watch>    m_current_watches;
 	size_t                m_current_watch_cursor = 0;
 	std::optional<size_t> m_invalidation_mark;

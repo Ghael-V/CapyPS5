@@ -12,6 +12,7 @@
 #include "graphics/host_gpu/renderer/cache/streamBuffer.h"
 
 #include <map>
+#include <unordered_map>
 #include <mutex>
 #include <span>
 #include <utility>
@@ -144,6 +145,14 @@ private:
 	MemoryTracker                                     m_memory_tracker;
 	StreamBuffer                                      m_staging_buffer;
 	StreamBuffer                                      m_stream_buffer;
+	// Fresh copies served inside the current render pass, reused by later draws of the pass.
+	struct PassFreshCopy {
+		uint64_t size   = 0;
+		uint64_t offset = 0;
+	};
+	std::unordered_map<uint64_t, PassFreshCopy>       m_pass_fresh;
+	uint64_t                                          m_pass_fresh_serial = 0;
+	uint64_t                                          m_pass_fresh_wraps = 0;
 	StreamBuffer                                      m_download_buffer;
 	StreamBuffer                                      m_device_buffer;
 	TextureCache&                                     m_texture_cache;

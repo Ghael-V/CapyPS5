@@ -199,6 +199,7 @@ void CommandBuffer::BeginRendering(const RenderState& state) const {
 	Handle().beginRendering(rendering);
 	m_render_state = state;
 	m_rendering    = true;
+	g_pass_serial++;
 }
 
 void CommandBuffer::EndRendering() const {

@@ -39,6 +39,14 @@ namespace {
 constexpr uint64_t MiB           = 1024 * 1024;
 constexpr uint64_t GdsBufferSize = 64 * 1024;
 
+// Ring for per-draw data and fresh copies of CPU-modified buffers. Asterix XXL2 fills 64 MiB
+// every frame and waits for the GPU (20 FPS); 128+ MiB reaches 30 FPS but breaks its floor and
+// distant buildings (cause unknown, see HANDOFF). `setprop debug.capy.stream_mb N` (read at start).
+uint64_t StreamBufferSize() {
+	Common::DebugFlags::CachedValue mb("debug.capy.stream_mb", 64);
+	return static_cast<uint64_t>(std::clamp<int64_t>(mb.Get(), 16, 1024)) * MiB;
+}
+
 } // namespace
 
 void BufferCache::WriteDataBuffer(Buffer& buffer, uint64_t address, const void* source,
@@ -248,7 +256,7 @@ BufferCache::BufferCache(GraphicContext& graphics, CommandScheduler& scheduler,
                              BDA_PAGETABLE_SIZE),
       m_memory_tracker(page_manager),
       m_staging_buffer(graphics, scheduler, MemoryUsage::Upload, 512 * MiB),
-      m_stream_buffer(graphics, scheduler, MemoryUsage::Stream, 64 * MiB),
+      m_stream_buffer(graphics, scheduler, MemoryUsage::Stream, StreamBufferSize()),
       m_download_buffer(graphics, scheduler, MemoryUsage::Download, 64 * MiB),
       m_device_buffer(graphics, scheduler, MemoryUsage::DeviceLocal, 128 * MiB),
       m_texture_cache(texture_cache) {
@@ -667,14 +675,42 @@ std::pair<Buffer*, uint64_t> BufferCache::ObtainBuffer(uint64_t vaddr, uint64_t 
 	// data fresh from the stream buffer instead; the cached copy syncs later outside a pass.
 	// `debug.capy.in_pass_stream 0` disables this.
 	static Common::DebugFlags::CachedValue in_pass_stream("debug.capy.in_pass_stream", 1);
+	// `debug.capy.in_pass_stream_max <bytes>`: largest buffer served fresh inside a pass.
+	static Common::DebugFlags::CachedValue in_pass_stream_max("debug.capy.in_pass_stream_max", 16 * 1024 * 1024);
 	const bool in_pass_fresh = in_pass_stream.Get() != 0 && command.IsRendering() &&
-	                           !is_texel_buffer && size <= 16u * 1024 * 1024 &&
+	                           !is_texel_buffer && size <= static_cast<uint64_t>(in_pass_stream_max.Get()) &&
 	                           m_memory_tracker.IsRegionCpuModified(vaddr, size);
-	const bool fresh_copy = !is_written &&
+	// Bytes of an asynchronous readback are no longer marked GPU-modified, but they reach guest
+	// memory only when the GPU finishes: a copy from guest memory would read the old contents.
+	// `setprop debug.capy.fresh_skip_async 0` ignores pending readbacks as before.
+	static Common::DebugFlags::CachedValue fresh_skip_async("debug.capy.fresh_skip_async", 1);
+	const bool async_pending = fresh_skip_async.Get() != 0 && [&] {
+		std::scoped_lock lock {m_async_download_lock};
+		return m_async_download_ranges.Intersects(vaddr, size);
+	}();
+	const bool fresh_copy = !is_written && !async_pending &&
 	                        ((stream_max.Get() > 0 && size <= static_cast<uint64_t>(stream_max.Get())) ||
 	                         in_window || in_pass_fresh) &&
 	                        !m_memory_tracker.IsRegionGpuModified(vaddr, size);
-	if (fresh_copy || (!is_written && size <= CACHING_PAGESIZE &&
+	// Asterix XXL2 reads the same CPU-modified buffers (up to MiBs) in every draw of a pass; a
+	// copy per draw filled the stream ring each frame (CPU waits), and when a copy did not fit
+	// the fallback upload ended the pass, which on the Adreno loses depth (distant buildings
+	// blinked as the sky drew over them). Reusing the pass's copy made the building vanish for
+	// good (data changes between draws of a pass), so it is off by default.
+	// `setprop debug.capy.pass_fresh_reuse 1` reuses the copy while the ring has not wrapped.
+	static Common::DebugFlags::CachedValue pass_fresh_reuse("debug.capy.pass_fresh_reuse", 0);
+	if (in_pass_fresh && fresh_copy && pass_fresh_reuse.Get() != 0) {
+		if (m_pass_fresh_serial != CommandBuffer::PassSerial() ||
+		    m_pass_fresh_wraps != m_stream_buffer.Wraps()) {
+			m_pass_fresh.clear();
+			m_pass_fresh_serial = CommandBuffer::PassSerial();
+			m_pass_fresh_wraps  = m_stream_buffer.Wraps();
+		}
+		if (const auto it = m_pass_fresh.find(vaddr); it != m_pass_fresh.end() && it->second.size >= size) {
+			return {&m_stream_buffer, it->second.offset};
+		}
+	}
+	if (fresh_copy || (!is_written && !async_pending && size <= CACHING_PAGESIZE &&
 	    !Common::DebugFlags::Enabled(Common::DebugFlags::NoStreamBuffer) &&
 	    !m_memory_tracker.IsRegionGpuModified(vaddr, size) &&
 	    m_memory_tracker.IsRegionCpuModified(vaddr, size))) {
@@ -692,6 +728,14 @@ std::pair<Buffer*, uint64_t> BufferCache::ObtainBuffer(uint64_t vaddr, uint64_t 
 				std::memset(mapped, 0, size);
 			}
 			m_stream_buffer.Commit();
+			if (in_pass_fresh && fresh_copy) {
+				// A ring wrap may overwrite earlier copies of the pass.
+				if (m_pass_fresh_wraps != m_stream_buffer.Wraps()) {
+					m_pass_fresh.clear();
+					m_pass_fresh_wraps = m_stream_buffer.Wraps();
+				}
+				m_pass_fresh[vaddr] = {size, offset};
+			}
 			return {&m_stream_buffer, offset};
 		}
 	}

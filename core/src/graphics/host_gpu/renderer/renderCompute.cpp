@@ -197,8 +197,10 @@ bool RenderExecutor::TryConsumeComputeImageClear(const ShaderComputeInputInfo& i
 	if (!cache.ClearImageFromBuffer(command, descriptor.Base48(), size, packed_clear)) {
 		// A plain buffer fill (color metadata keys in UE4) is cheaper on the CPU: running it on
 		// the GPU made the next CPU read of those keys wait for the GPU to go idle.
+		// `setprop debug.capy.cpu_fill 0` runs these fills on the GPU again.
+		static Common::DebugFlags::CachedValue cpu_fill("debug.capy.cpu_fill", 1);
 		constexpr uint64_t MaxCpuFill = 16ull << 20u;
-		if (size > MaxCpuFill || cache.HasImagesInRegion(descriptor.Base48(), size) ||
+		if (cpu_fill.Get() == 0 || size > MaxCpuFill || cache.HasImagesInRegion(descriptor.Base48(), size) ||
 		    !command.GetContext().GetBufferCache().FillMemory(descriptor.Base48(), size, packed_clear)) {
 			return false;
 		}

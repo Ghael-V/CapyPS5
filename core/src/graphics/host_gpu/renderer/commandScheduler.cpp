@@ -47,7 +47,7 @@ struct Entry {
 };
 
 struct Trace {
-	std::array<uintptr_t, 6> frames {};
+	std::array<uintptr_t, 9> frames {};
 	size_t                   count = 0;
 };
 
