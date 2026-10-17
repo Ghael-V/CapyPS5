@@ -2137,6 +2137,11 @@ int KYTY_SYSV_ABI listen(int s, int backlog) {
 	return Network::Net::Listen(s, backlog);
 }
 
+int KYTY_SYSV_ABI shutdown(int s, int how) {
+	PRINT_NAME();
+	return Network::Net::Shutdown(s, how);
+}
+
 int KYTY_SYSV_ABI accept(int s, void* addr, uint32_t* addrlen) {
 	PRINT_NAME();
 	return Network::Net::Accept(s, addr, addrlen);
@@ -2373,6 +2378,7 @@ LIB_DEFINE(InitLibKernel_1_Posix) {
 	LIB_FUNC("KuOmgKoqCdY", Posix::bind);
 	LIB_FUNC("XVL8So3QJUk", Posix::connect);
 	LIB_FUNC("pxnCmagrtao", Posix::listen);
+	LIB_FUNC("TUuiYS2kE8s", Posix::shutdown);
 	LIB_FUNC("3e+4Iv7IJ8U", Posix::accept);
 	LIB_FUNC("RenI1lL1WFk", Posix::getsockname);
 	LIB_FUNC("6O8EwYOgH9Y", Posix::getsockopt);
