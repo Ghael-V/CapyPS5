@@ -1162,7 +1162,13 @@ bool SrtWalker::EvaluateInst(const Inst& inst, uint64_t& result) {
 			}
 			return false;
 		case ValueOpcode::ULessThan32:
-			if (binary()) {
+			// No U32 is below zero, including an unknown loop-carried value.
+			if (!Arg(inst, 1, b)) return false;
+			if (static_cast<uint32_t>(b) == 0u) {
+				result = 0u;
+				return true;
+			}
+			if (Arg(inst, 0, a)) {
 				result = static_cast<uint32_t>(a) < static_cast<uint32_t>(b);
 				return true;
 			}

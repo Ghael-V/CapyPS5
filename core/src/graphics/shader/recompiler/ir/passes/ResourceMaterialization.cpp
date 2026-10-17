@@ -1594,7 +1594,8 @@ ResourcePlan ExtractResourcePlan(const Program& program) {
 		}
 		if (op != ValueOpcode::LogicalAnd && op != ValueOpcode::LogicalOr &&
 		    op != ValueOpcode::LogicalNot && op != ValueOpcode::IEqual32 &&
-		    op != ValueOpcode::INotEqual32 && op != ValueOpcode::ULessThanEqual32 &&
+		    op != ValueOpcode::INotEqual32 && op != ValueOpcode::ULessThan32 &&
+		    op != ValueOpcode::ULessThanEqual32 &&
 		    op != ValueOpcode::SelectU1 && op != ValueOpcode::SelectU32) return finish(opaque());
 		auto& node = plan.value_storage.emplace_back(op);
 		for (size_t index = 0; index < inst->NumArgs(); ++index)
