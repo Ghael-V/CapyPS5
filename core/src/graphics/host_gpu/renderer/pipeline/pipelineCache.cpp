@@ -564,6 +564,14 @@ void PipelineCache::InitializeDriverCache() {
 	if (title_id.empty()) {
 		return;
 	}
+#if defined(__ANDROID__)
+	// `setprop debug.capy.pipeline_cache 0` (read at start) creates pipelines without a driver
+	// cache, as before the cache was enabled on Android.
+	if (Common::DebugFlags::CachedValue("debug.capy.pipeline_cache", 1).Get() == 0) {
+		PipelineCacheLog("Vulkan pipeline cache: disabled (debug.capy.pipeline_cache 0)");
+		return;
+	}
+#endif
 #if !defined(__ANDROID__)
 	// On Android the cache is always on: the driver keys entries by shader contents and pipeline
 	// state, so entries from another emulator build simply miss.
