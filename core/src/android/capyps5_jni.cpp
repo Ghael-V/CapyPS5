@@ -2,6 +2,7 @@
 
 #include "common/common.h"
 #include "common/file.h"
+#include "common/debugFlags.h"
 #include "common/logging/log.h"
 #include "common/passInspector.h"
 #include "common/stringUtils.h"
@@ -136,6 +137,19 @@ JNIEXPORT jboolean JNICALL Java_org_capyps5_emulator_NativeBridge_nativeStartGam
 	});
 
 	return JNI_TRUE;
+}
+
+// Frontend settings for this session (see Common::DebugFlags::SetFrontendOption). Called before
+// nativeStartGame; `name` is the property name, e.g. "debug.capy.res_scale".
+JNIEXPORT void JNICALL Java_org_capyps5_emulator_NativeBridge_nativeSetOption(
+    JNIEnv* env, jclass /*clazz*/, jstring name, jlong value) {
+	if (name == nullptr) {
+		return;
+	}
+	const char* text = env->GetStringUTFChars(name, nullptr);
+	Common::DebugFlags::SetFrontendOption(text, static_cast<int64_t>(value));
+	ALOGI("option %s = %lld", text, static_cast<long long>(value));
+	env->ReleaseStringUTFChars(name, text);
 }
 
 JNIEXPORT void JNICALL Java_org_capyps5_emulator_NativeBridge_nativeStopGame(

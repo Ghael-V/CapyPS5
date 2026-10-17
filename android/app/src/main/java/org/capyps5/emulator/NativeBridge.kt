@@ -21,6 +21,8 @@ object NativeBridge {
     external fun nativeDestroySurface()
     external fun nativeStartGame(gamePath: String, elfPath: String): Boolean
     external fun nativeStopGame()
+    /** Sets a core option (a debug.capy.* name) for this session; call before nativeStartGame. */
+    external fun nativeSetOption(name: String, value: Long)
     external fun nativeSendControllerInput(
         buttons: Int,
         lx: Float,

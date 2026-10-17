@@ -15,7 +15,7 @@ import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.withContext
 
 /** Controller/keyboard actions used to drive the frontend UI without touch. */
-enum class NavKey { Up, Down, Left, Right, Confirm, Back, Menu, Secondary }
+enum class NavKey { Up, Down, Left, Right, Confirm, Back, Menu, Secondary, TabLeft, TabRight }
 
 object UiInput {
     private val _keys = MutableSharedFlow<NavKey>(extraBufferCapacity = 16)
@@ -30,6 +30,8 @@ object UiInput {
         KeyEvent.KEYCODE_BUTTON_B, KeyEvent.KEYCODE_BACK, KeyEvent.KEYCODE_ESCAPE -> NavKey.Back
         KeyEvent.KEYCODE_BUTTON_START, KeyEvent.KEYCODE_MENU, KeyEvent.KEYCODE_BUTTON_MODE -> NavKey.Menu
         KeyEvent.KEYCODE_BUTTON_Y -> NavKey.Secondary
+        KeyEvent.KEYCODE_BUTTON_L1 -> NavKey.TabLeft
+        KeyEvent.KEYCODE_BUTTON_R1 -> NavKey.TabRight
         else -> null
     }
 

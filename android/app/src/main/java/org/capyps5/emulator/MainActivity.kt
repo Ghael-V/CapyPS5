@@ -111,6 +111,9 @@ class MainActivity : CapyActivity() {
                             games.addAll(scanLibrary())
                         },
                         onLibraryPicked = { settings.addLibraryPath(it) },
+                        onClearShaderCache = ::clearShaderCache,
+                        onSaveLog = ::saveLog,
+                        overlayActive = lastError != null,
                     )
                     lastError?.let { report ->
                         CrashDialog(
@@ -135,6 +138,14 @@ class MainActivity : CapyActivity() {
             lastError = runCatching { report.readText() }.getOrNull()?.takeIf { it.isNotBlank() }
             report.delete()
         }
+    }
+
+    /** Deletes the persisted pipeline cache of one game, or of every game when [titleId] is null. */
+    private fun clearShaderCache(titleId: String?): String {
+        val dir = File(filesDir, "_PipelineCache")
+        val files = dir.listFiles()?.filter { titleId == null || it.name == "$titleId.bin" } ?: emptyList()
+        val removed = files.count { it.delete() }
+        return if (removed == 0) "No había caché de shaders" else "Caché de shaders borrada"
     }
 
     /** Games of every library folder, by name; a game found in two folders shows once. */

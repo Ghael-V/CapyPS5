@@ -20,6 +20,14 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.outlined.Logout
+import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.outlined.Layers
+import androidx.compose.material.icons.outlined.Tune
+import androidx.compose.material3.Icon
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.size
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -131,7 +139,7 @@ fun EmulationScreen(
                             if (started) return
                             started = true
                             if (!java.io.File(game.elfPath).exists()) {
-                                loadError = "No se encontró el ejecutable:\n${game.elfPath}"
+                                loadError = "No se encontrÃ³ el ejecutable:\n${game.elfPath}"
                                 return
                             }
                             if (!NativeBridge.nativeStartGame(game.directoryPath, game.elfPath)) {
@@ -239,63 +247,70 @@ private fun PauseMenu(
     onExit: () -> Unit,
 ) {
     val entries = listOf(
-        "Reanudar" to onResume,
-        "Ajustes" to onSettings,
-        "Capas (depuraci�n)" to onLayers,
-        "Salir del juego" to onExit,
+        Triple("Reanudar", Icons.Filled.PlayArrow, onResume),
+        Triple("Ajustes", Icons.Outlined.Tune, onSettings),
+        Triple("Capas", Icons.Outlined.Layers, onLayers),
+        Triple("Salir", Icons.AutoMirrored.Outlined.Logout, onExit),
     )
     var focused by remember { mutableIntStateOf(0) }
     OnNavKey { key ->
         when (key) {
-            NavKey.Up -> focused = (focused - 1).mod(entries.size)
-            NavKey.Down -> focused = (focused + 1).mod(entries.size)
-            NavKey.Confirm -> entries[focused].second()
+            NavKey.Left -> focused = (focused - 1).mod(entries.size)
+            NavKey.Right -> focused = (focused + 1).mod(entries.size)
+            NavKey.Confirm -> entries[focused].third()
             NavKey.Back, NavKey.Menu -> onResume()
             else -> Unit
         }
     }
     Box(
         Modifier.fillMaxSize().background(Capy.Scrim).clickable(onClick = onResume),
-        contentAlignment = Alignment.Center,
+        contentAlignment = Alignment.BottomStart,
     ) {
         Column(
             modifier = Modifier
-                .width(320.dp)
-                .background(Capy.Surface, RoundedCornerShape(16.dp))
-                .border(1.dp, Capy.Outline, RoundedCornerShape(16.dp))
+                .fillMaxWidth()
+                .background(Capy.Surface)
                 .clickable(enabled = false) {}
-                .padding(20.dp),
-            verticalArrangement = Arrangement.spacedBy(6.dp),
+                .padding(horizontal = 28.dp, vertical = 18.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            Text(game.titleName, style = MaterialTheme.typography.titleLarge, maxLines = 1)
-            Text(game.titleId, style = MaterialTheme.typography.bodySmall, color = Capy.TextSecondary)
-            Spacer(Modifier.height(8.dp))
-            entries.forEachIndexed { i, (label, action) ->
-                val isFocused = i == focused
-                val danger = i == entries.lastIndex
-                Row(
-                    modifier = Modifier
-                        .background(
-                            when {
-                                isFocused && danger -> Capy.Bad
-                                isFocused -> Capy.Accent
-                                else -> Capy.SurfaceHigh
-                            },
-                            RoundedCornerShape(10.dp),
-                        )
-                        .clickable(onClick = action)
-                        .padding(horizontal = 16.dp, vertical = 11.dp),
-                ) {
-                    Text(
-                        label,
-                        style = MaterialTheme.typography.titleMedium,
-                        color = if (isFocused) Color.White else if (danger) Capy.Bad else Capy.TextPrimary,
-                        modifier = Modifier.weight(1f),
-                    )
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(game.titleName, style = MaterialTheme.typography.titleLarge, maxLines = 1)
+                Spacer(Modifier.width(12.dp))
+                Text(game.titleId, style = MaterialTheme.typography.bodySmall, color = Capy.TextSecondary)
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                entries.forEachIndexed { i, (label, icon, action) ->
+                    val isFocused = i == focused
+                    val danger = i == entries.lastIndex
+                    Column(
+                        modifier = Modifier
+                            .width(112.dp)
+                            .background(
+                                when {
+                                    isFocused && danger -> Capy.Bad
+                                    isFocused -> Color.White
+                                    else -> Capy.SurfaceHigh
+                                },
+                                RoundedCornerShape(14.dp),
+                            )
+                            .clickable { focused = i; action() }
+                            .padding(vertical = 14.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.spacedBy(6.dp),
+                    ) {
+                        val tint = when {
+                            isFocused && danger -> Color.White
+                            isFocused -> Color.Black
+                            danger -> Capy.Bad
+                            else -> Capy.TextPrimary
+                        }
+                        Icon(icon, null, Modifier.size(24.dp), tint = tint)
+                        Text(label, style = MaterialTheme.typography.labelLarge, color = tint)
+                    }
                 }
             }
-            Spacer(Modifier.height(6.dp))
-            HintBar(listOf("Ⓐ" to "Elegir", "Ⓑ" to "Volver"))
+            HintBar(listOf("◀ ▶" to "Elegir", "Ⓐ" to "Aceptar", "Ⓑ" to "Volver al juego"))
         }
     }
 }
@@ -314,7 +329,7 @@ private fun ErrorCard(message: String, onExit: () -> Unit) {
             Text("No se pudo arrancar", style = MaterialTheme.typography.titleLarge, color = Capy.Bad)
             Text(message, style = MaterialTheme.typography.bodyMedium, color = Capy.TextSecondary)
             Text(
-                "Volver al inicio  Ⓐ",
+                "Volver al inicio  â’¶",
                 style = MaterialTheme.typography.labelLarge,
                 color = Color.White,
                 modifier = Modifier

@@ -56,6 +56,10 @@ class GameActivity : CapyActivity() {
         InputRouter.onRouteChanged = { toUi -> if (toUi) releaseEmulatedPad() }
 
         val settings = Settings(this)
+        // Global settings with this game's overrides, applied before the core reads them.
+        CoreOption.entries.forEach { option ->
+            NativeBridge.nativeSetOption(option.property, settings.effectiveOption(game.titleId, option))
+        }
         val versionText = runCatching { NativeBridge.nativeGetVersion() }.getOrDefault("CapyPS5")
         setContent {
             CapyPS5Theme {

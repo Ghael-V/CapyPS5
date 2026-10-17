@@ -1,6 +1,8 @@
 #ifndef COMMON_DEBUG_FLAGS_H
 #define COMMON_DEBUG_FLAGS_H
 
+#include <cstring>
+#include <array>
 #include <algorithm>
 #include <atomic>
 #include <cstdarg>
@@ -61,6 +63,42 @@ inline bool Enabled(Flag flag) {
 	return (g_mask.load(std::memory_order_relaxed) & (1u << flag)) != 0;
 }
 
+// Options the frontend sets before a game starts (user and per-game settings). They take
+// precedence over the system property of the same name; set only before the game runs.
+struct FrontendOption {
+	char    name[64] {};
+	int64_t value = 0;
+};
+inline std::array<FrontendOption, 32> g_frontend_options {};
+inline std::atomic<uint32_t>          g_frontend_option_count {0};
+
+inline void SetFrontendOption(const char* name, int64_t value) {
+	const auto count = g_frontend_option_count.load(std::memory_order_relaxed);
+	for (uint32_t i = 0; i < count; i++) {
+		if (std::strcmp(g_frontend_options[i].name, name) == 0) {
+			g_frontend_options[i].value = value;
+			return;
+		}
+	}
+	if (count >= g_frontend_options.size() || std::strlen(name) >= sizeof(FrontendOption::name)) {
+		return;
+	}
+	std::strcpy(g_frontend_options[count].name, name);
+	g_frontend_options[count].value = value;
+	g_frontend_option_count.store(count + 1, std::memory_order_release);
+}
+
+inline bool GetFrontendOption(const char* name, int64_t* value) {
+	const auto count = g_frontend_option_count.load(std::memory_order_acquire);
+	for (uint32_t i = 0; i < count; i++) {
+		if (std::strcmp(g_frontend_options[i].name, name) == 0) {
+			*value = g_frontend_options[i].value;
+			return true;
+		}
+	}
+	return false;
+}
+
 /** Numeric debug property, e.g. `static CachedValue wait("debug.capy.wait_us", 2000);`. */
 class CachedValue {
 public:
@@ -81,7 +119,9 @@ public:
 			int64_t value = m_fallback;
 #if defined(__ANDROID__)
 			char text[PROP_VALUE_MAX] = {};
-			if (__system_property_get(m_name, text) > 0) {
+			if (GetFrontendOption(m_name, &value)) {
+				// Set by the frontend for this session.
+			} else if (__system_property_get(m_name, text) > 0) {
 				char* end    = nullptr;
 				const auto v = std::strtoll(text, &end, 0);
 				if (end != text) {

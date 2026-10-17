@@ -66,6 +66,7 @@ fun SettingsPanel(
             NavKey.Confirm -> if (focused == 3) onPickLibrary?.invoke() else adjust(focused, 1)
             NavKey.Right -> adjust(focused, 1)
             NavKey.Back, NavKey.Menu, NavKey.Secondary -> onClose()
+            else -> Unit
         }
     }
 

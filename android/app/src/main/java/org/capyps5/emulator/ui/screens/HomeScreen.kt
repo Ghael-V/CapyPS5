@@ -3,6 +3,7 @@ package org.capyps5.emulator.ui.screens
 import android.net.Uri
 import android.os.Environment
 import android.provider.DocumentsContract
+import android.view.InputDevice
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
@@ -10,8 +11,6 @@ import androidx.compose.animation.Crossfade
 import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
-import androidx.compose.animation.slideInHorizontally
-import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -22,6 +21,8 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -30,14 +31,19 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.itemsIndexed
+import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.MoreHoriz
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Refresh
-import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material.icons.outlined.SportsEsports
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -61,18 +67,26 @@ import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.delay
+import org.capyps5.emulator.CoreOption
 import org.capyps5.emulator.R
 import org.capyps5.emulator.Settings
 import org.capyps5.emulator.model.GameItem
 import org.capyps5.emulator.ui.NavKey
 import org.capyps5.emulator.ui.OnNavKey
-import org.capyps5.emulator.ui.components.SettingsPanel
 import org.capyps5.emulator.ui.rememberImage
 import org.capyps5.emulator.ui.theme.Capy
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
+private const val GridColumns = 6
+
+private fun hasGamepad(): Boolean = InputDevice.getDeviceIds().any { id ->
+    val device = InputDevice.getDevice(id) ?: return@any false
+    !device.isVirtual && (device.sources and InputDevice.SOURCE_GAMEPAD) == InputDevice.SOURCE_GAMEPAD
+}
+
+/** Launcher home: a row of games ("Juegos") or the whole library as a grid ("Biblioteca"). */
 @Composable
 fun HomeScreen(
     games: List<GameItem>,
@@ -83,10 +97,14 @@ fun HomeScreen(
     onAddGameFile: (String) -> Unit,
     onRefresh: () -> Unit,
     onLibraryPicked: (String) -> Unit,
+    onClearShaderCache: (titleId: String?) -> String,
+    onSaveLog: () -> String?,
+    overlayActive: Boolean = false,
 ) {
+    var tab by remember { mutableIntStateOf(0) }
     var selected by remember { mutableIntStateOf(0) }
     var showSettings by remember { mutableStateOf(false) }
-    val listState = rememberLazyListState()
+    var optionsFor by remember { mutableStateOf<GameItem?>(null) }
     val current = games.getOrNull(selected.coerceIn(0, (games.size - 1).coerceAtLeast(0)))
 
     val filePicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri: Uri? ->
@@ -99,26 +117,28 @@ fun HomeScreen(
         }
     }
 
-    LaunchedEffect(selected, games.size) {
-        if (games.isNotEmpty()) listState.animateScrollToItem(selected.coerceIn(0, games.size - 1))
-    }
-
-    OnNavKey(enabled = !showSettings) { key ->
+    OnNavKey(enabled = !showSettings && optionsFor == null && !overlayActive) { key ->
+        val count = games.size
         when (key) {
-            NavKey.Left -> if (games.isNotEmpty()) selected = (selected - 1).coerceAtLeast(0)
-            NavKey.Right -> if (games.isNotEmpty()) selected = (selected + 1).coerceAtMost(games.size - 1)
+            NavKey.TabLeft -> tab = 0
+            NavKey.TabRight -> tab = 1
+            NavKey.Left -> if (count > 0) selected = (selected - 1).coerceAtLeast(0)
+            NavKey.Right -> if (count > 0) selected = (selected + 1).coerceAtMost(count - 1)
+            NavKey.Up -> if (tab == 1 && count > 0) selected = (selected - GridColumns).coerceAtLeast(0)
+            NavKey.Down -> if (tab == 1 && count > 0) selected = (selected + GridColumns).coerceAtMost(count - 1)
             NavKey.Confirm -> current?.let(onGameSelected)
-            NavKey.Menu, NavKey.Secondary -> showSettings = true
-            else -> Unit
+            NavKey.Secondary -> optionsFor = current
+            NavKey.Menu -> showSettings = true
+            NavKey.Back -> if (tab == 1) tab = 0
         }
     }
 
     Box(Modifier.fillMaxSize().background(Capy.Background)) {
-        // Key art of the selected game, faded into the background like a console dashboard.
+        // Key art of the selected game, faded towards the left so text stays readable.
         val art by rememberImage(current?.backgroundPath, 1280)
         Crossfade(targetState = art, label = "background") { bitmap ->
             if (bitmap != null) {
-                Image(bitmap, null, Modifier.fillMaxSize(), contentScale = ContentScale.Crop, alpha = 0.55f)
+                Image(bitmap, null, Modifier.fillMaxSize(), contentScale = ContentScale.Crop, alpha = 0.6f)
             } else {
                 Image(
                     painterResource(R.drawable.capy_bg), null, Modifier.fillMaxSize(),
@@ -126,65 +146,64 @@ fun HomeScreen(
                 )
             }
         }
-        Box(
-            Modifier.fillMaxSize().background(
-                Brush.verticalGradient(0f to Color(0x6607090E), 0.45f to Color(0x3307090E), 1f to Capy.Background)
-            )
-        )
-        Box(
-            Modifier.fillMaxSize().background(
-                Brush.horizontalGradient(0f to Color(0xCC07090E), 0.6f to Color.Transparent)
-            )
-        )
+        Box(Modifier.fillMaxSize().background(Brush.horizontalGradient(0f to Color(0xEE07090E), 0.65f to Color(0x2207090E))))
+        Box(Modifier.fillMaxSize().background(Brush.verticalGradient(0.55f to Color.Transparent, 1f to Capy.Background)))
 
-        Column(Modifier.fillMaxSize().padding(horizontal = 28.dp, vertical = 18.dp)) {
+        Column(Modifier.fillMaxSize().padding(horizontal = 32.dp, vertical = 18.dp)) {
             TopBar(
-                onSettings = { showSettings = true },
-                onRefresh = onRefresh,
+                tab = tab,
+                onTab = { tab = it },
                 onAdd = { filePicker.launch(arrayOf("*/*")) },
+                onRefresh = onRefresh,
+                onSettings = { showSettings = true },
             )
-            Spacer(Modifier.weight(1f))
-
-            if (games.isEmpty()) {
-                EmptyLibrary(libraryPath) { filePicker.launch(arrayOf("*/*")) }
-            } else {
-                LazyRow(
-                    state = listState,
-                    horizontalArrangement = Arrangement.spacedBy(14.dp),
-                    verticalAlignment = Alignment.Bottom,
-                    contentPadding = PaddingValues(end = 400.dp),
-                    modifier = Modifier.fillMaxWidth().height(124.dp),
-                ) {
-                    itemsIndexed(games, key = { _, g -> g.elfPath }) { index, game ->
-                        GameTile(game, index == selected) {
-                            if (index == selected) onGameSelected(game) else selected = index
-                        }
+            Spacer(Modifier.height(18.dp))
+            when {
+                games.isEmpty() -> {
+                    Spacer(Modifier.weight(1f))
+                    EmptyLibrary(libraryPath, onAddFolder = { folderPicker.launch(null) }, onBrowse = { filePicker.launch(arrayOf("*/*")) })
+                    Spacer(Modifier.weight(1f))
+                }
+                tab == 0 -> {
+                    GameRow(games, selected, onSelect = { i -> if (i == selected) onGameSelected(games[i]) else selected = i })
+                    Spacer(Modifier.weight(1f))
+                    current?.let {
+                        GameDetails(it, onPlay = { onGameSelected(it) }, onOptions = { optionsFor = it })
                     }
                 }
-                Spacer(Modifier.height(18.dp))
-                current?.let { GameDetails(it) { onGameSelected(it) } }
+                else -> {
+                    GameGrid(
+                        games, selected,
+                        onSelect = { i -> if (i == selected) onGameSelected(games[i]) else selected = i },
+                        modifier = Modifier.weight(1f),
+                    )
+                }
             }
-            Spacer(Modifier.height(14.dp))
-            HintBar(if (games.isEmpty()) listOf("Ⓨ" to "Ajustes") else listOf("◀ ▶" to "Elegir", "Ⓐ" to "Jugar", "Ⓨ" to "Ajustes"))
+            Spacer(Modifier.height(12.dp))
+            HintBar(
+                if (games.isEmpty()) listOf("Start" to "Ajustes")
+                else listOf("Ⓐ" to "Jugar", "Ⓨ" to "Opciones del juego", "Start" to "Ajustes", "L1 / R1" to "Pestañas")
+            )
         }
 
-        AnimatedVisibility(
-            visible = showSettings,
-            enter = fadeIn(),
-            exit = fadeOut(),
-        ) {
-            Box(Modifier.fillMaxSize().background(Capy.Scrim).clickable { showSettings = false })
+        optionsFor?.let { game ->
+            GameOptionsPanel(
+                game = game,
+                settings = settings,
+                onPlay = { optionsFor = null; onGameSelected(game) },
+                onClearShaderCache = { onClearShaderCache(game.titleId) },
+                onClose = { optionsFor = null },
+            )
         }
-        AnimatedVisibility(
-            visible = showSettings,
-            enter = slideInHorizontally { it },
-            exit = slideOutHorizontally { it },
-            modifier = Modifier.align(Alignment.CenterEnd),
-        ) {
-            SettingsPanel(
-                settings, versionText,
+
+        AnimatedVisibility(visible = showSettings, enter = fadeIn(), exit = fadeOut()) {
+            SettingsScreen(
+                settings = settings,
+                versionText = versionText,
+                onAddFolder = { folderPicker.launch(null) },
+                onClearShaderCache = { onClearShaderCache(null) },
+                onSaveLog = onSaveLog,
                 onClose = { showSettings = false },
-                onPickLibrary = { folderPicker.launch(null) },
             )
         }
     }
@@ -208,7 +227,7 @@ private fun treeUriToPath(uri: Uri): String? {
 }
 
 @Composable
-private fun TopBar(onSettings: () -> Unit, onRefresh: () -> Unit, onAdd: () -> Unit) {
+private fun TopBar(tab: Int, onTab: (Int) -> Unit, onAdd: () -> Unit, onRefresh: () -> Unit, onSettings: () -> Unit) {
     val time by produceState(initialValue = "") {
         val format = SimpleDateFormat("HH:mm", Locale.getDefault())
         while (true) {
@@ -216,56 +235,102 @@ private fun TopBar(onSettings: () -> Unit, onRefresh: () -> Unit, onAdd: () -> U
             delay(10_000)
         }
     }
+    val gamepad by produceState(initialValue = hasGamepad()) {
+        while (true) {
+            value = hasGamepad()
+            delay(2_000)
+        }
+    }
     Row(verticalAlignment = Alignment.CenterVertically) {
-        Image(
-            painterResource(R.mipmap.ic_launcher), "CapyPS5",
-            Modifier.size(30.dp).clip(RoundedCornerShape(8.dp)),
-        )
-        Spacer(Modifier.width(10.dp))
-        Text("CapyPS5", style = MaterialTheme.typography.titleLarge)
+        listOf("Juegos", "Biblioteca").forEachIndexed { i, label ->
+            Text(
+                label,
+                style = MaterialTheme.typography.titleLarge,
+                color = if (i == tab) Capy.TextPrimary else Capy.TextMuted,
+                modifier = Modifier.clickable { onTab(i) }.padding(end = 26.dp),
+            )
+        }
         Spacer(Modifier.weight(1f))
-        IconPill(Icons.Default.Add, "Añadir", onAdd)
-        Spacer(Modifier.width(8.dp))
-        IconPill(Icons.Default.Refresh, null, onRefresh)
-        Spacer(Modifier.width(8.dp))
-        IconPill(Icons.Default.Settings, null, onSettings)
-        Spacer(Modifier.width(16.dp))
-        Text(time, style = MaterialTheme.typography.titleMedium, color = Capy.TextSecondary)
+        TopIcon(Icons.Filled.Add, onAdd)
+        TopIcon(Icons.Filled.Refresh, onRefresh)
+        TopIcon(Icons.Outlined.Settings, onSettings)
+        Icon(
+            Icons.Outlined.SportsEsports, null, Modifier.padding(horizontal = 10.dp).size(22.dp),
+            tint = if (gamepad) Capy.TextPrimary else Capy.TextMuted,
+        )
+        Text(time, style = MaterialTheme.typography.titleMedium, color = Capy.TextSecondary, modifier = Modifier.padding(start = 6.dp))
     }
 }
 
 @Composable
-private fun IconPill(icon: ImageVector, label: String?, onClick: () -> Unit) {
-    Row(
-        modifier = Modifier
-            .clip(RoundedCornerShape(50))
-            .background(Color(0x33FFFFFF))
-            .clickable(onClick = onClick)
-            .padding(horizontal = if (label != null) 12.dp else 8.dp, vertical = 7.dp),
-        verticalAlignment = Alignment.CenterVertically,
+private fun TopIcon(icon: ImageVector, onClick: () -> Unit) {
+    Box(
+        Modifier.clip(RoundedCornerShape(50)).clickable(onClick = onClick).padding(10.dp),
+        contentAlignment = Alignment.Center,
     ) {
-        Icon(icon, label, Modifier.size(18.dp), tint = Capy.TextPrimary)
-        if (label != null) {
-            Spacer(Modifier.width(6.dp))
-            Text(label, style = MaterialTheme.typography.labelLarge)
+        Icon(icon, null, Modifier.size(22.dp), tint = Capy.TextPrimary)
+    }
+}
+
+@Composable
+private fun GameRow(games: List<GameItem>, selected: Int, onSelect: (Int) -> Unit) {
+    val state = rememberLazyListState()
+    LaunchedEffect(selected) { if (games.isNotEmpty()) state.animateScrollToItem(selected.coerceIn(0, games.size - 1)) }
+    Column {
+        LazyRow(
+            state = state,
+            horizontalArrangement = Arrangement.spacedBy(14.dp),
+            verticalAlignment = Alignment.Top,
+            contentPadding = PaddingValues(end = 480.dp),
+            modifier = Modifier.fillMaxWidth().height(132.dp),
+        ) {
+            itemsIndexed(games, key = { _, g -> g.elfPath }) { index, game ->
+                val size by animateDpAsState(if (index == selected) 128.dp else 88.dp, label = "tileSize")
+                GameTile(game, index == selected, Modifier.size(size)) { onSelect(index) }
+            }
+        }
+        games.getOrNull(selected)?.let {
+            Text(it.titleName, style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
         }
     }
 }
 
 @Composable
-private fun GameTile(game: GameItem, selected: Boolean, onClick: () -> Unit) {
-    val size by animateDpAsState(if (selected) 120.dp else 92.dp, label = "tileSize")
+private fun GameGrid(games: List<GameItem>, selected: Int, onSelect: (Int) -> Unit, modifier: Modifier) {
+    val state = rememberLazyGridState()
+    LaunchedEffect(selected) { if (games.isNotEmpty()) state.animateScrollToItem(selected.coerceIn(0, games.size - 1)) }
+    LazyVerticalGrid(
+        columns = GridCells.Fixed(GridColumns),
+        state = state,
+        horizontalArrangement = Arrangement.spacedBy(16.dp),
+        verticalArrangement = Arrangement.spacedBy(16.dp),
+        modifier = modifier,
+    ) {
+        itemsIndexed(games, key = { _, g -> g.elfPath }) { index, game ->
+            Column {
+                GameTile(game, index == selected, Modifier.fillMaxWidth().aspectRatio(1f)) { onSelect(index) }
+                Text(
+                    game.titleName,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = if (index == selected) Capy.TextPrimary else Capy.TextSecondary,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.padding(top = 6.dp),
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun GameTile(game: GameItem, selected: Boolean, modifier: Modifier, onClick: () -> Unit) {
     val icon by rememberImage(game.iconPath, 256)
+    val shape = RoundedCornerShape(14.dp)
     Box(
-        modifier = Modifier
-            .size(size)
-            .clip(RoundedCornerShape(14.dp))
+        modifier = modifier
+            .clip(shape)
             .background(Capy.SurfaceHigh)
-            .border(
-                if (selected) 3.dp else 1.dp,
-                if (selected) Color.White else Capy.Outline,
-                RoundedCornerShape(14.dp),
-            )
+            .border(if (selected) 3.dp else 1.dp, if (selected) Color.White else Capy.Outline, shape)
             .clickable(onClick = onClick),
         contentAlignment = Alignment.Center,
     ) {
@@ -274,8 +339,7 @@ private fun GameTile(game: GameItem, selected: Boolean, onClick: () -> Unit) {
             Image(bitmap, game.titleName, Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
         } else {
             Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.padding(8.dp)) {
-                Icon(Icons.Outlined.SportsEsports, null, Modifier.size(32.dp), tint = Capy.TextSecondary)
-                Spacer(Modifier.height(4.dp))
+                Icon(Icons.Outlined.SportsEsports, null, Modifier.size(30.dp), tint = Capy.TextSecondary)
                 Text(
                     game.titleName, style = MaterialTheme.typography.labelSmall, color = Capy.TextSecondary,
                     maxLines = 2, overflow = TextOverflow.Ellipsis,
@@ -286,7 +350,7 @@ private fun GameTile(game: GameItem, selected: Boolean, onClick: () -> Unit) {
 }
 
 @Composable
-private fun GameDetails(game: GameItem, onPlay: () -> Unit) {
+private fun GameDetails(game: GameItem, onPlay: () -> Unit, onOptions: () -> Unit) {
     Column(Modifier.widthIn(max = 560.dp)) {
         Text(game.titleName, style = MaterialTheme.typography.displaySmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
         Spacer(Modifier.height(4.dp))
@@ -296,48 +360,133 @@ private fun GameDetails(game: GameItem, onPlay: () -> Unit) {
             color = Capy.TextSecondary,
         )
         Spacer(Modifier.height(14.dp))
-        Row(
-            modifier = Modifier
-                .clip(RoundedCornerShape(50))
-                .background(Color.White)
-                .clickable(onClick = onPlay)
-                .padding(horizontal = 26.dp, vertical = 10.dp),
-            verticalAlignment = Alignment.CenterVertically,
+        Row(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
+            Row(
+                modifier = Modifier
+                    .clip(RoundedCornerShape(50))
+                    .background(Color.White)
+                    .clickable(onClick = onPlay)
+                    .padding(horizontal = 30.dp, vertical = 11.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Icon(Icons.Filled.PlayArrow, null, Modifier.size(20.dp), tint = Color.Black)
+                Spacer(Modifier.width(6.dp))
+                Text("Jugar", style = MaterialTheme.typography.titleMedium, color = Color.Black)
+            }
+            Box(
+                Modifier.clip(RoundedCornerShape(50)).background(Color(0x33FFFFFF)).clickable(onClick = onOptions).padding(11.dp),
+            ) {
+                Icon(Icons.Filled.MoreHoriz, "Opciones del juego", Modifier.size(20.dp), tint = Capy.TextPrimary)
+            }
+        }
+    }
+}
+
+/** Per-game overrides of the core options, plus game actions. */
+@Composable
+private fun GameOptionsPanel(
+    game: GameItem,
+    settings: Settings,
+    onPlay: () -> Unit,
+    onClearShaderCache: () -> String,
+    onClose: () -> Unit,
+) {
+    var message by remember { mutableStateOf<String?>(null) }
+    var row by remember { mutableIntStateOf(0) }
+    // Read so the rows recompose when a value changes.
+    val optionsVersion = settings.coreOptionsVersion
+    val items = remember(optionsVersion, message) {
+        CoreOption.entries.map { option ->
+            // null = follow the global value.
+            val choices: List<Long?> = listOf<Long?>(null) + option.choices.map { it.first }
+            val override = settings.gameOption(game.titleId, option)
+            SettingItem(
+                option.title,
+                option.description,
+                override?.let { option.label(it) } ?: "Global (${option.label(settings.coreOption(option))})",
+                onStep = { settings.updateGameOption(game.titleId, option, cycle(choices, override, it)) },
+            )
+        } + listOf(
+            SettingItem(
+                "Borrar caché de shaders de este juego", "Se vuelven a compilar al jugar", danger = true,
+                onConfirm = { message = onClearShaderCache() },
+            ),
+            SettingItem("Jugar", null, onConfirm = onPlay),
+        ) + listOfNotNull(message?.let { SettingItem(it) })
+    }
+    if (row >= items.size) row = items.size - 1
+
+    OnNavKey { key ->
+        val item = items.getOrNull(row)
+        when (key) {
+            NavKey.Up -> row = (row - 1).mod(items.size)
+            NavKey.Down -> row = (row + 1).mod(items.size)
+            NavKey.Left -> item?.onStep?.invoke(-1)
+            NavKey.Right -> item?.onStep?.invoke(1)
+            NavKey.Confirm -> item?.onConfirm?.invoke() ?: item?.onStep?.invoke(1)
+            NavKey.Back, NavKey.Secondary, NavKey.Menu -> onClose()
+            else -> Unit
+        }
+    }
+    Box(Modifier.fillMaxSize().background(Capy.Scrim).clickable(onClick = onClose), contentAlignment = Alignment.CenterEnd) {
+        Column(
+            Modifier
+                .width(460.dp)
+                .fillMaxHeight()
+                .background(Capy.Surface)
+                .clickable(enabled = false) {}
+                .padding(24.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
-            Icon(Icons.Default.PlayArrow, null, Modifier.size(20.dp), tint = Color.Black)
-            Spacer(Modifier.width(6.dp))
-            Text("Jugar", style = MaterialTheme.typography.titleMedium, color = Color.Black)
+            Text(game.titleName, style = MaterialTheme.typography.titleLarge, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Text(
+                "Opciones de este juego · ${game.titleId}",
+                style = MaterialTheme.typography.bodySmall,
+                color = Capy.TextSecondary,
+            )
+            Spacer(Modifier.height(8.dp))
+            items.forEachIndexed { i, item -> SettingRowView(item, focused = i == row) { row = i } }
+            Spacer(Modifier.weight(1f))
+            HintBar(listOf("◀ ▶" to "Cambiar", "Ⓐ" to "Elegir", "Ⓑ" to "Volver"))
         }
     }
 }
 
 @Composable
-private fun EmptyLibrary(libraryPath: String, onBrowse: () -> Unit) {
-    Column(Modifier.widthIn(max = 520.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+private fun EmptyLibrary(libraryPath: String, onAddFolder: () -> Unit, onBrowse: () -> Unit) {
+    Column(Modifier.widthIn(max = 560.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         Text("Tu biblioteca está vacía", style = MaterialTheme.typography.displaySmall)
         Text(
-            "Copia cada juego como carpeta (con eboot.bin y sce_sys/) dentro de\n$libraryPath\ny pulsa actualizar, o abre un ejecutable suelto.",
+            "Copia cada juego como carpeta (con eboot.bin y sce_sys/) dentro de\n$libraryPath\no añade otra carpeta donde ya los tengas.",
             style = MaterialTheme.typography.bodyMedium,
             color = Capy.TextSecondary,
         )
-        Row(
-            modifier = Modifier
-                .clip(RoundedCornerShape(50))
-                .background(Color.White)
-                .clickable(onClick = onBrowse)
-                .padding(horizontal = 22.dp, vertical = 10.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Icon(Icons.Default.Add, null, Modifier.size(18.dp), tint = Color.Black)
-            Spacer(Modifier.width(6.dp))
-            Text("Abrir ELF / EBOOT", style = MaterialTheme.typography.titleMedium, color = Color.Black)
+        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            PillButton("Añadir carpeta", Icons.Filled.Add, primary = true, onClick = onAddFolder)
+            PillButton("Abrir un ejecutable", null, primary = false, onClick = onBrowse)
         }
+    }
+}
+
+@Composable
+private fun PillButton(label: String, icon: ImageVector?, primary: Boolean, onClick: () -> Unit) {
+    Row(
+        modifier = Modifier
+            .clip(RoundedCornerShape(50))
+            .background(if (primary) Color.White else Color(0x33FFFFFF))
+            .clickable(onClick = onClick)
+            .padding(horizontal = 22.dp, vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        icon?.let { Icon(it, null, Modifier.size(18.dp), tint = if (primary) Color.Black else Capy.TextPrimary) }
+        if (icon != null) Spacer(Modifier.width(6.dp))
+        Text(label, style = MaterialTheme.typography.titleMedium, color = if (primary) Color.Black else Capy.TextPrimary)
     }
 }
 
 @Composable
 fun HintBar(hints: List<Pair<String, String>>, modifier: Modifier = Modifier) {
-    Row(modifier, horizontalArrangement = Arrangement.spacedBy(18.dp)) {
+    Row(modifier, horizontalArrangement = Arrangement.spacedBy(20.dp)) {
         hints.forEach { (button, action) ->
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(button, style = MaterialTheme.typography.labelLarge, color = Capy.TextPrimary)

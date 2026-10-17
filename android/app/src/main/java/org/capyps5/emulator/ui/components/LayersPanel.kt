@@ -110,6 +110,7 @@ fun LayersPanel(onClose: () -> Unit, modifier: Modifier = Modifier) {
                 for (i in passes.indices) passes[i] = passes[i].copy(skipped = false)
             }
             NavKey.Back, NavKey.Menu -> onClose()
+            else -> Unit
         }
     }
 
