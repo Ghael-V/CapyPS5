@@ -559,6 +559,14 @@ RenderState RenderExecutor::AcquireRenderTargets(CommandBuffer& buffer, RenderCo
 		const auto& view   = target.desc.view_info;
 		const auto  layout = image.binding.is_bound ? vk::ImageLayout::eGeneral
 		                                            : vk::ImageLayout::eColorAttachmentOptimal;
+		if (layout == vk::ImageLayout::eGeneral && image.backing.extent.width >= 1920) {
+			// GENERAL may cost the Adreno its framebuffer compression on large targets.
+			Common::DebugFlags::NoteOnce("CapyPS5-Layout", image.info.data.address ^ 0x47454e4552414cull,
+			                             "color target 0x%llx %ux%u fmt=%u bound as a texture too: GENERAL layout",
+			                             static_cast<unsigned long long>(image.info.data.address),
+			                             image.backing.extent.width, image.backing.extent.height,
+			                             static_cast<uint32_t>(image.backing.format));
+		}
 		image.binding.attachment_layout = layout;
 		image.binding.attachment_access =
 		    vk::AccessFlagBits2::eColorAttachmentRead | vk::AccessFlagBits2::eColorAttachmentWrite;
@@ -632,14 +640,54 @@ RenderState RenderExecutor::AcquireRenderTargets(CommandBuffer& buffer, RenderCo
 		// alternates stencil-writing and read-only draws on its 4K depth, and switching between
 		// the two read-only layouts ended the pass at every draw.
 		// `setprop debug.capy.keep_ds_layout 0` picks the layout per draw as before.
+		const auto is_attachment_layout = [](vk::ImageLayout candidate) {
+			return DepthWritableAspects(candidate) || candidate == vk::ImageLayout::eDepthStencilReadOnlyOptimal ||
+			       candidate == vk::ImageLayout::eDepthReadOnlyOptimal ||
+			       candidate == vk::ImageLayout::eStencilReadOnlyOptimal;
+		};
 		static Common::DebugFlags::CachedValue keep_ds_layout("debug.capy.keep_ds_layout", 1);
 		const auto current_layout = image.backing.state.layout;
 		if (keep_ds_layout.Get() != 0 && current_layout != layout && image.backing.subresource_states.empty() &&
-		    current_layout == image.binding.attachment_layout && !(draw_writes & ~DepthWritableAspects(current_layout)) &&
+		    is_attachment_layout(current_layout) && !(draw_writes & ~DepthWritableAspects(current_layout)) &&
 		    !(sampled_aspects & ~DepthReadableAspects(current_layout)) &&
 		    !(DepthReadableAspects(layout) & ~DepthReadableAspects(current_layout) & sampled_aspects)) {
 			layout = current_layout;
 		}
+		// When neither layout serves both draws (God of War Sons of Sparta and Stray alternate a
+		// draw that samples the stencil with one that writes it), switching ended the pass at every
+		// draw. The feedback-loop layout allows both; draws that sample the attachment then enable
+		// the feedback loop for those aspects. `setprop debug.capy.ds_feedback_merge 0` disables it.
+		static Common::DebugFlags::CachedValue ds_feedback_merge("debug.capy.ds_feedback_merge", 1);
+		if (ds_feedback_merge.Get() != 0 && m_context.GetGraphics().attachment_feedback_loop_enabled &&
+		    current_layout != layout && image.backing.subresource_states.empty() &&
+		    is_attachment_layout(current_layout) &&
+		    is_attachment_layout(layout) && buffer.IsRendering()) {
+			layout = vk::ImageLayout::eAttachmentFeedbackLoopOptimalEXT;
+		}
+		if (layout == vk::ImageLayout::eAttachmentFeedbackLoopOptimalEXT) {
+			feedback_aspects |= sampled_aspects;
+		}
+#if defined(__ANDROID__)
+		// `setprop debug.capy.ds_log N`: log the next N depth layout decisions that change layout.
+		static Common::DebugFlags::CachedValue ds_log("debug.capy.ds_log", 0);
+		static int64_t                         ds_armed = 0;
+		static int64_t                         ds_left  = 0;
+		if (ds_log.Get() != ds_armed) {
+			ds_armed = ds_log.Get();
+			ds_left  = ds_armed;
+		}
+		if (ds_left > 0 && current_layout != layout) {
+			ds_left--;
+			__android_log_print(ANDROID_LOG_WARN, "CapyPS5-DsLayout",
+			                    "0x%llx cur=%u new=%u bound=%u writes=0x%x sampled=0x%x sub=%zu rendering=%d fbl=%d",
+			                    static_cast<unsigned long long>(depth.desc.info.data.address),
+			                    static_cast<uint32_t>(current_layout), static_cast<uint32_t>(layout),
+			                    static_cast<uint32_t>(image.binding.attachment_layout),
+			                    static_cast<uint32_t>(draw_writes), static_cast<uint32_t>(sampled_aspects),
+			                    image.backing.subresource_states.size(), buffer.IsRendering() ? 1 : 0,
+			                    m_context.GetGraphics().attachment_feedback_loop_enabled ? 1 : 0);
+		}
+#endif
 		// The attachment store writes even when guest depth/stencil tests do not.
 		const auto access = vk::AccessFlagBits2::eDepthStencilAttachmentRead |
 		                    vk::AccessFlagBits2::eDepthStencilAttachmentWrite;

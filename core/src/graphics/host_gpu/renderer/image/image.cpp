@@ -13,6 +13,9 @@
 #include "kernel/memory.h"
 
 #include <algorithm>
+#if defined(__ANDROID__)
+#include <android/log.h>
+#endif
 #include <array>
 #include <atomic>
 #include <cstdint>
@@ -344,6 +347,27 @@ void Image::Transit(vk::ImageLayout destination_layout, vk::AccessFlags2 destina
 	if (barriers.empty()) {
 		return;
 	}
+	// `setprop debug.capy.transit_log N`: log the next N transitions that end a render pass, with
+	// their layouts and caller (tag CapyPS5-Transit). Change N to log again.
+	static Common::DebugFlags::CachedValue transit_log("debug.capy.transit_log", 0);
+	static int64_t                         transit_armed = 0;
+	static int64_t                         transit_left  = 0;
+	if (transit_log.Get() != transit_armed) {
+		transit_armed = transit_log.Get();
+		transit_left  = transit_armed;
+	}
+#if defined(__ANDROID__)
+	if (transit_left > 0 && m_scheduler.Active() && m_scheduler.Current().IsRendering()) {
+		transit_left--;
+		__android_log_print(ANDROID_LOG_WARN, "CapyPS5-Transit",
+		                    "end pass: addr=0x%llx %ux%u layout %u -> %u access 0x%llx -> 0x%llx caller %p",
+		                    static_cast<unsigned long long>(track_addr), backing.extent.width, backing.extent.height,
+		                    static_cast<uint32_t>(barriers[0].oldLayout), static_cast<uint32_t>(barriers[0].newLayout),
+		                    static_cast<unsigned long long>(static_cast<uint64_t>(barriers[0].srcAccessMask)),
+		                    static_cast<unsigned long long>(static_cast<uint64_t>(barriers[0].dstAccessMask)),
+		                    __builtin_return_address(0));
+	}
+#endif
 	if (GpuProfiler::Enabled() && m_scheduler.Active() && m_scheduler.Current().IsRendering()) {
 		// Name the transition (and who asked for it) that ends the pass.
 		const auto caller = reinterpret_cast<uintptr_t>(__builtin_return_address(0));
