@@ -8,7 +8,12 @@
 #include "graphics/host_gpu/vulkanCommon.h"
 #include "graphics/shader/shader.h"
 
+#include <condition_variable>
 #include <cstddef>
+#include <deque>
+#include <mutex>
+#include <thread>
+#include <vector>
 #include <array>
 #include <filesystem>
 #include <memory>
@@ -138,13 +143,15 @@ public:
 	                                const HW::ShaderRegisters&   sh,
 	                                ShaderComputeInputInfo&      input_info);
 
-	Pipeline& GetGraphicsPipeline(std::span<const RenderColorInfo>       colors,
+	/** Returns nullptr while a pipeline that `allow_async` let compile in the background is not
+	 * ready yet; the caller skips the draw. */
+	Pipeline* GetGraphicsPipeline(std::span<const RenderColorInfo>       colors,
 	                              const RenderDepthInfo&                 depth,
 	                              std::span<const ShaderVertexInputInfo> vertex_info,
 	                              CommandBuffer& command, const ShaderPixelInputInfo* ps_input_info,
 	                              vk::PrimitiveTopology topology, bool primitive_restart_enable,
 	                              const GraphicsPrograms& programs, uint32_t vs_scaled_images = 0,
-	                              uint32_t ps_scaled_images = 0);
+	                              uint32_t ps_scaled_images = 0, bool allow_async = false);
 	Pipeline& GetComputePipeline(const ShaderComputeInputInfo& input_info,
 	                             const ShaderProgram&          compute_program,
 	                             uint32_t                      scaled_images = 0);
@@ -191,6 +198,19 @@ private:
 	std::unordered_map<GraphicsPipelineKey, std::unique_ptr<Pipeline>, GraphicsPipelineKeyHash>
 	                                                        m_graphics_pipelines;
 	std::unordered_map<uint64_t, std::unique_ptr<Pipeline>> m_compute_pipelines;
+
+	// Background graphics pipeline compilation (vkCreateGraphicsPipelines takes ~100 ms per new
+	// pipeline on the Adreno and stalled the GPU thread while games streamed materials).
+	struct AsyncCompile;
+	std::unordered_map<GraphicsPipelineKey, std::shared_ptr<AsyncCompile>, GraphicsPipelineKeyHash>
+	                                        m_pending_pipelines;
+	std::mutex                              m_async_mutex;
+	std::condition_variable                 m_async_available;
+	std::deque<std::shared_ptr<AsyncCompile>> m_async_queue;
+	std::vector<std::thread>                m_async_workers;
+	bool                                    m_async_stop = false;
+	void                                    AsyncWorker();
+	void                                    StopAsyncWorkers();
 
 	void InitializeDriverCache();
 };

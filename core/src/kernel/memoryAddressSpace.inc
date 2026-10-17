@@ -347,6 +347,7 @@ public:
 	}
 
 	bool Unmap(uint64_t vaddr, uint64_t size, bool* placeholder_preserved = nullptr) {
+		InvalidateGuestReadCache();
 		if (size == 0 || UINT64_MAX - vaddr < size) {
 			return false;
 		}
@@ -408,6 +409,7 @@ public:
 	}
 
 	bool UnmapOne(uint64_t vaddr, uint64_t size, bool* placeholder_preserved = nullptr) {
+		InvalidateGuestReadCache();
 #if defined(KYTY_VIRTUAL_MEMORY_ALLOCATION_TESTS)
 		if (g_test_backing_store_unmaps_before_failure == 0) {
 			g_test_backing_store_unmaps_before_failure = UINT32_MAX;
@@ -544,6 +546,7 @@ private:
 
 #if KYTY_PLATFORM == KYTY_PLATFORM_LINUX
 	void RemoveMappingsUnlocked(uint64_t vaddr, uint64_t size) {
+		InvalidateGuestReadCache();
 		const auto end = vaddr + size;
 		auto       it = m_maps.upper_bound(vaddr);
 		if (it != m_maps.begin()) {
@@ -823,6 +826,7 @@ public:
 	bool BackingContains(uint64_t vaddr, uint64_t size) { return m_backing->Contains(vaddr, size); }
 
 	bool Protect(uint64_t vaddr, uint64_t size, VirtualMemory::Mode mode) {
+		InvalidateGuestReadCache();
 		if (size == 0 || UINT64_MAX - vaddr < size) {
 			return false;
 		}
@@ -874,6 +878,7 @@ public:
 	}
 
 	bool UnmapBacking(uint64_t vaddr, uint64_t size) {
+		InvalidateGuestReadCache();
 		std::lock_guard lock(m_mutex);
 		if (!ContainsMappedUnlocked(vaddr, size, MappingType::Backing)) {
 			return false;
@@ -995,6 +1000,7 @@ public:
 	}
 
 	bool ReleaseCommitted(uint64_t vaddr, uint64_t size) {
+		InvalidateGuestReadCache();
 		if (vaddr == 0 || size == 0 || !IsPageAligned(vaddr) || !IsPageAligned(size)) {
 			return false;
 		}
@@ -1460,6 +1466,7 @@ private:
 	}
 
 	void RestorePlaceholder(uint64_t vaddr, uint64_t size) {
+		InvalidateGuestReadCache();
 #if KYTY_PLATFORM != KYTY_PLATFORM_WINDOWS
 		// The address remains owned for the process lifetime; MAP_FIXED only replaces one of our
 		// mappings and never acquires a new guest address.

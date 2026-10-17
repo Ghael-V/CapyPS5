@@ -616,6 +616,24 @@ ShaderSource PrepareShaderSource(std::span<const uint32_t> code, const CompileOp
 			}
 		}
 #endif
+		// Compute shaders that call per-lane functions through a table (several S_SWAPPC_B64 sites,
+		// Little Nightmares) are beyond PrepareCallTarget, which resolves one call. Run an empty
+		// shader in their place instead of closing the emulator.
+		// `setprop debug.capy.skip_call_shaders 0` tries to compile them (and exits on them).
+		const auto calls = std::ranges::count_if(source.decoded.instructions, [](const auto& inst) {
+			return inst.opcode == Decoder::Opcode::S_SWAPPC_B64;
+		});
+		if (calls > 1 && options.stage == ShaderType::Compute &&
+		    Common::DebugFlags::CachedValue("debug.capy.skip_call_shaders", 1).Get() != 0) {
+			Common::DebugFlags::NoteOnce("CapyPS5-Shader", reinterpret_cast<uint64_t>(code.data()),
+			                             "compute shader with %d function-table calls replaced by an empty one",
+			                             static_cast<int>(calls));
+			ShaderSource empty;
+			empty.code = {0xBF810000u}; // S_ENDPGM
+			Decoder::DecodeProgram(empty.code, empty.decoded);
+			empty.decoded.code = empty.code;
+			return empty;
+		}
 		PrepareCallTarget(source, options);
 		source.code.assign(code.begin(), code.end());
 		source.decoded.code = source.code;

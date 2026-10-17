@@ -229,6 +229,26 @@ uint64_t FoldHleArgument(uint64_t value) {
 	return value;
 }
 
+// ReadGuestMemory checks readability with process_vm_readv, one syscall per read; the shader
+// resource walker reads small descriptors thousands of times per frame (27 % of the GPU thread
+// in Castlevania). Pages that read fine are remembered per thread and read with memcpy until the
+// guest unmaps or reprotects memory. Tracker protections need no invalidation: a cached page the
+// tracker made no-access faults into the GPU fault handler, as the fallback below already does.
+static std::atomic<uint64_t> g_guest_read_generation {1};
+
+static void InvalidateGuestReadCache() {
+	g_guest_read_generation.fetch_add(1, std::memory_order_release);
+}
+
+namespace {
+struct GuestReadCache {
+	static constexpr uint32_t Slots = 512;
+	uint64_t                  generation = 0;
+	std::array<uint64_t, Slots> pages {};
+};
+thread_local GuestReadCache t_guest_read_cache;
+} // namespace
+
 #include "memoryAddressSpace.inc"
 
 enum class VirtualRangeType {
@@ -1053,12 +1073,42 @@ bool ReadGuestMemory(uint64_t vaddr, void* data, uint64_t size) {
 		return false;
 	}
 #if KYTY_PLATFORM == KYTY_PLATFORM_LINUX
+	constexpr uint64_t CachePage     = 4096;
+	constexpr uint64_t MaxCachedRead = 16 * CachePage;
+	static Common::DebugFlags::CachedValue read_cache("debug.capy.guest_read_cache", 1);
+	const bool use_cache = size <= MaxCachedRead && read_cache.Get() != 0;
+	auto&      cache      = t_guest_read_cache;
+	const auto generation = g_guest_read_generation.load(std::memory_order_acquire);
+	const auto first_page = vaddr / CachePage;
+	const auto last_page  = (vaddr + size - 1) / CachePage;
+	if (use_cache) {
+		if (cache.generation != generation) {
+			cache.pages.fill(0);
+			cache.generation = generation;
+		}
+		bool hit = true;
+		for (auto page = first_page; page <= last_page && hit; page++) {
+			hit = cache.pages[page % GuestReadCache::Slots] == page + 1;
+		}
+		if (hit) {
+			std::memcpy(data, reinterpret_cast<const void*>(vaddr), size);
+			return true;
+		}
+	}
 	// Read what the guest actually sees at vaddr. process_vm_readv on ourselves returns EFAULT
 	// for unmapped or no-access pages instead of raising SIGSEGV, which makes it safe for
 	// addresses taken from guest command streams.
 	struct iovec local {data, static_cast<size_t>(size)};
 	struct iovec remote {reinterpret_cast<void*>(vaddr), static_cast<size_t>(size)};
 	if (::process_vm_readv(::getpid(), &local, 1, &remote, 1, 0) == static_cast<ssize_t>(size)) {
+		// Only guest-owned mappings are remembered: their unmaps and reprotects invalidate the
+		// cache, host memory freed elsewhere would not.
+		if (use_cache && g_guest_address_space != nullptr &&
+		    g_guest_address_space->BackingContains(first_page * CachePage, (last_page - first_page + 1) * CachePage)) {
+			for (auto page = first_page; page <= last_page; page++) {
+				cache.pages[page % GuestReadCache::Slots] = page + 1;
+			}
+		}
 		return true;
 	}
 #else

@@ -32,6 +32,9 @@
 #include <array>
 #include <chrono>
 #include <atomic>
+#if defined(__ANDROID__) || defined(__linux__)
+#include <pthread.h>
+#endif
 #include <cctype>
 #include <cstdio>
 #include <cstring>
@@ -540,9 +543,25 @@ PipelineCache::PipelineCache(GraphicContext& graphics)
     : m_graphics(graphics), m_program_cache(std::make_unique<ProgramCache>(graphics.device)) {
 	EXIT_NOT_IMPLEMENTED(!Common::Thread::IsMainThread());
 	InitializeDriverCache();
+	for (uint32_t i = 0; i < 2; i++) {
+		m_async_workers.emplace_back([this] { AsyncWorker(); });
+	}
+}
+
+void PipelineCache::StopAsyncWorkers() {
+	{
+		std::lock_guard lock(m_async_mutex);
+		m_async_stop = true;
+	}
+	m_async_available.notify_all();
+	for (auto& worker: m_async_workers) {
+		worker.join();
+	}
+	m_async_workers.clear();
 }
 
 PipelineCache::~PipelineCache() {
+	StopAsyncWorkers();
 	Save();
 	auto destroy = [this](const auto& pipelines) {
 		for (const auto& [key, pipeline]: pipelines) {
@@ -663,6 +682,7 @@ void PipelineCache::InitializeDriverCache() {
 }
 
 void PipelineCache::Save() {
+	StopAsyncWorkers();
 	if (m_driver_cache == nullptr) {
 		return;
 	}
@@ -880,12 +900,24 @@ bool PipelineStaticParameters::operator==(const PipelineStaticParameters& other)
 	return std::memcmp(this, &other, sizeof(*this)) == 0;
 }
 
-PipelineCache::Pipeline& PipelineCache::GetGraphicsPipeline(
+struct PipelineCache::AsyncCompile {
+	PipelineRenderingState             rendering;
+	PipelineVertexInputState           vertex_input;
+	std::vector<ShaderVertexInputInfo> vertex_info;
+	ShaderPixelInputInfo               pixel_info {};
+	bool                               has_pixel = false;
+	GraphicsPrograms                   programs;
+	PipelineStaticParameters           static_params;
+	std::unique_ptr<Pipeline>          pipeline;
+	std::atomic<bool>                  done {false};
+};
+
+PipelineCache::Pipeline* PipelineCache::GetGraphicsPipeline(
     std::span<const RenderColorInfo> colors, const RenderDepthInfo& depth,
     std::span<const ShaderVertexInputInfo> vertex_info, CommandBuffer& command,
     const ShaderPixelInputInfo* ps_input_info, vk::PrimitiveTopology topology,
     bool primitive_restart_enable, const GraphicsPrograms& programs, uint32_t vs_scaled_images,
-    uint32_t ps_scaled_images) {
+    uint32_t ps_scaled_images, bool allow_async) {
 	SavePeriodically();
 	const auto& vs_input_info  = vertex_info.front();
 	const auto& vertex_program = programs.vertex[0];
@@ -1060,7 +1092,24 @@ PipelineCache::Pipeline& PipelineCache::GetGraphicsPipeline(
 	}
 
 	if (auto iter = m_graphics_pipelines.find(key); iter != m_graphics_pipelines.end()) {
-		return *iter->second;
+		return iter->second.get();
+	}
+	if (auto pending = m_pending_pipelines.find(key); pending != m_pending_pipelines.end()) {
+		auto job = pending->second;
+		if (!job->done.load(std::memory_order_acquire)) {
+			if (!allow_async) {
+				// A draw that cannot be skipped needs it now: wait for the worker.
+				std::unique_lock lock(m_async_mutex);
+				m_async_available.wait(lock, [&] { return job->done.load(std::memory_order_acquire); });
+			} else {
+				return nullptr;
+			}
+		}
+		EXIT_NOT_IMPLEMENTED(job->pipeline->pipeline == nullptr || job->pipeline->pipeline_layout == nullptr);
+		auto [iter, inserted] = m_graphics_pipelines.emplace(pending->first, std::move(job->pipeline));
+		EXIT_IF(!inserted);
+		m_pending_pipelines.erase(pending);
+		return iter->second.get();
 	}
 
 	if (graphics_debug_dump_enabled()) {
@@ -1100,6 +1149,29 @@ PipelineCache::Pipeline& PipelineCache::GetGraphicsPipeline(
 		}
 	}
 #endif
+	// `setprop debug.capy.async_pipelines 0` compiles every pipeline on the GPU thread.
+	static Common::DebugFlags::CachedValue async_pipelines("debug.capy.async_pipelines", 1);
+	if (allow_async && async_pipelines.Get() != 0 && !m_async_workers.empty()) {
+		auto job          = std::make_shared<AsyncCompile>();
+		job->rendering    = rendering;
+		job->vertex_input = key.vertex_input;
+		job->vertex_info.assign(vertex_info.begin(), vertex_info.end());
+		job->has_pixel = ps_input_info != nullptr;
+		if (job->has_pixel) {
+			job->pixel_info = *ps_input_info;
+		}
+		job->programs      = programs;
+		job->static_params = static_params;
+		m_pipelines_since_save++;
+		m_pending_pipelines.emplace(std::move(key), job);
+		{
+			std::lock_guard lock(m_async_mutex);
+			m_async_queue.push_back(std::move(job));
+		}
+		m_async_available.notify_all();
+		return nullptr;
+	}
+
 	auto cached = std::make_unique<Pipeline>();
 	LogPipelineTrace("CreatePipelineInternal begin", vs_id, ps_id);
 	m_pipelines_since_save++;
@@ -1113,7 +1185,35 @@ PipelineCache::Pipeline& PipelineCache::GetGraphicsPipeline(
 	auto [iter, inserted] = m_graphics_pipelines.emplace(std::move(key), std::move(cached));
 	EXIT_IF(!inserted);
 
-	return *iter->second;
+	return iter->second.get();
+}
+
+void PipelineCache::AsyncWorker() {
+#if defined(__ANDROID__) || defined(__linux__)
+	pthread_setname_np(pthread_self(), "CapyPipeline");
+#endif
+	for (;;) {
+		std::shared_ptr<AsyncCompile> job;
+		{
+			std::unique_lock lock(m_async_mutex);
+			m_async_available.wait(lock, [this] { return m_async_stop || !m_async_queue.empty(); });
+			if (m_async_stop) {
+				return;
+			}
+			job = std::move(m_async_queue.front());
+			m_async_queue.pop_front();
+		}
+		auto pipeline = std::make_unique<Pipeline>();
+		CreatePipelineInternal(m_graphics, *pipeline, job->rendering, job->vertex_input, job->vertex_info,
+		                       job->has_pixel ? &job->pixel_info : nullptr, job->programs, job->static_params,
+		                       m_driver_cache);
+		job->pipeline = std::move(pipeline);
+		{
+			std::lock_guard lock(m_async_mutex);
+			job->done.store(true, std::memory_order_release);
+		}
+		m_async_available.notify_all();
+	}
 }
 
 PipelineCache::Pipeline&

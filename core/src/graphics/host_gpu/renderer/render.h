@@ -226,6 +226,9 @@ private:
 
 	RenderContext&                        m_context;
 	GraphicsBindings                     m_graphics_bindings;
+	// Buffer ranges written by shaders in the current render pass (deferred write barrier).
+	std::vector<std::pair<uint64_t, uint64_t>> m_pass_writes;
+	uint64_t                                   m_pass_writes_serial = 0;
 	PreparedBindings                     m_compute_bindings;
 	std::vector<ImageId>                  m_bound_images;
 	std::vector<vk::DescriptorImageInfo>  m_descriptor_images;

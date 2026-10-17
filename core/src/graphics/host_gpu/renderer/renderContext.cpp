@@ -83,7 +83,19 @@ bool RenderContext::HandleFault(PageFaultAccess access, uint64_t fault_vaddr) no
 		return false;
 	}
 	if (access == PageFaultAccess::Write) {
-		m_buffer_cache.InvalidateMemory(fault_vaddr, fault_size);
+		// Games fill dynamic buffers page after page, and each 4 KiB page faulted on its own
+		// (signal, mprotect, tracker lock contended by Stray's task threads). Release a whole
+		// window around the fault when nothing in it is GPU-written (that would need a download).
+		// `setprop debug.capy.write_fault_kb N` sets the window (4 = one page as before).
+		static Common::DebugFlags::CachedValue write_fault_kb("debug.capy.write_fault_kb", 64);
+		const uint64_t window = static_cast<uint64_t>(std::max<int64_t>(write_fault_kb.Get(), 4)) * 1024u;
+		const uint64_t window_lo = fault_vaddr & ~(window - 1u);
+		if (window > 4096 && (window & (window - 1u)) == 0 && IsMapped(window_lo, window) &&
+		    !m_buffer_cache.IsRegionGpuModified(window_lo, window)) {
+			m_buffer_cache.InvalidateMemory(window_lo, window);
+		} else {
+			m_buffer_cache.InvalidateMemory(fault_vaddr, fault_size);
+		}
 		m_texture_cache.InvalidateMemory(fault_vaddr, fault_size);
 	} else {
 		// Upstream behaviour: ReadMemory also clears stale GPU-dirty protection when there is

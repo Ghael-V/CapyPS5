@@ -20,7 +20,6 @@
 #include "graphics/host_gpu/renderer/render.h"
 #include "graphics/host_gpu/renderer/renderContext.h"
 #include "graphics/host_gpu/vulkanCommon.h"
-#include "graphics/shader/recompiler/frontend/decode/ShaderDecoder.h"
 #include "graphics/shader/recompiler/ir/ShaderIR.h"
 #include "graphics/shader/recompiler/ir/passes/ResourceMaterialization.h"
 #include "graphics/shader/shader.h"
@@ -245,41 +244,6 @@ static void BindSharedMemory(RenderContext& context, ShaderComputeInputInfo& inp
 	bindings.shared_memory = {storage.Handle(), 0, size};
 }
 
-namespace {
-
-// Compute shaders that call through a per-lane function table (several S_SWAPPC_B64 sites, e.g.
-// Little Nightmares) are beyond the recompiler, which resolves one call per shader. Skip their
-// dispatches instead of closing the emulator. `setprop debug.capy.skip_call_shaders 0` compiles
-// them anyway (and exits on them).
-bool IsUnsupportedCallShader(uint64_t code_addr) {
-	static Common::DebugFlags::CachedValue skip("debug.capy.skip_call_shaders", 1);
-	if (skip.Get() == 0 || code_addr == 0) {
-		return false;
-	}
-	static std::mutex                         mutex;
-	static std::unordered_map<uint64_t, bool> known;
-	std::lock_guard                           lock(mutex);
-	if (const auto it = known.find(code_addr); it != known.end()) {
-		return it->second;
-	}
-	ShaderRecompiler::Decoder::Program program;
-	const auto* code = reinterpret_cast<const uint32_t*>(code_addr);
-	ShaderRecompiler::Decoder::DecodeProgram(std::span<const uint32_t>(code, 4096), program);
-	uint32_t calls = 0;
-	for (const auto& inst: program.instructions) {
-		calls += inst.opcode == ShaderRecompiler::Decoder::Opcode::S_SWAPPC_B64 ? 1u : 0u;
-	}
-	const bool unsupported = calls > 1;
-	if (unsupported) {
-		Common::DebugFlags::NoteOnce("CapyPS5-Shader", code_addr,
-		                             "skipping compute shader 0x%llx: %u function-table calls are unsupported",
-		                             static_cast<unsigned long long>(code_addr), calls);
-	}
-	known.emplace(code_addr, unsupported);
-	return unsupported;
-}
-
-} // namespace
 
 void RenderExecutor::DispatchDirect(uint64_t submit_id, CommandBuffer& buffer,
                                     uint32_t thread_group_x, uint32_t thread_group_y,
@@ -312,7 +276,7 @@ void RenderExecutor::DispatchDirect(uint64_t submit_id, CommandBuffer& buffer,
 		return;
 	}
 
-	if (sh_ctx.GetCs().cs_regs.data_addr == 0 || IsUnsupportedCallShader(sh_ctx.GetCs().cs_regs.data_addr)) {
+	if (sh_ctx.GetCs().cs_regs.data_addr == 0) {
 		return;
 	}
 	Common::DebugFlags::FrameTrace("dispatch %ux%ux%u cs=0x%llx async=%d", thread_group_x,
@@ -516,7 +480,7 @@ void RenderExecutor::DispatchIndirect(uint64_t submit_id, CommandBuffer& buffer,
 	                    0, mode, buffer.GetShaders().GetCs().cs_regs.data_addr);
 	Common::LockGuard lock(m_context.GetMutex());
 	const auto& cs_regs = buffer.GetShaders().GetCs();
-	if (cs_regs.cs_regs.data_addr == 0 || IsUnsupportedCallShader(cs_regs.cs_regs.data_addr)) {
+	if (cs_regs.cs_regs.data_addr == 0) {
 		return;
 	}
 	ShaderComputeInputInfo input_info {};

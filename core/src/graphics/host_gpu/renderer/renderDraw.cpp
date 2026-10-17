@@ -1380,6 +1380,33 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 	}
 	const auto stages = std::span {descriptor_stages.data(), stage_count};
 	PrepareGraphicsBindings(stages, std::span {state.color_info, state.color_count});
+	// Shader buffer writes earlier in this pass are only made visible when the pass ends (see the
+	// deferred write barrier below). If this draw reads one of those ranges, end the pass first.
+	{
+		auto& scheduler = m_context.GetCommandScheduler();
+		if (m_pass_writes_serial != CommandBuffer::PassSerial() || !scheduler.Current().IsRendering()) {
+			m_pass_writes.clear();
+			m_pass_writes_serial = CommandBuffer::PassSerial();
+		}
+		if (!m_pass_writes.empty()) {
+			const auto overlaps = [&](uint64_t address, uint64_t size) {
+				return size != 0 && std::ranges::any_of(m_pass_writes, [&](const auto& written) {
+					return address < written.first + written.second && written.first < address + size;
+				});
+			};
+			bool hazard = overlaps(index_source.address,
+			                       static_cast<uint64_t>(draw.index_count) * index_source.guest_element_size);
+			for (const auto* stage: stages) {
+				for (const auto& source: stage->buffer_sources) {
+					hazard |= overlaps(source.address, source.size);
+				}
+			}
+			if (hazard) {
+				scheduler.EndRendering();
+				m_pass_writes.clear();
+			}
+		}
+	}
 	// `setprop debug.capy.skip_tex 0x<address>` drops pixel-shader draws that sample that texture.
 	static Common::DebugFlags::CachedValue skip_tex("debug.capy.skip_tex", 0);
 	if (const auto tex = skip_tex.Get(); tex != 0 && state.ps_active) {
@@ -1487,10 +1514,33 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 			ps_scaled_images |= ShaderRecompiler::IR::ScaledRenderTargetBit;
 		}
 	}
-	auto& pipeline = m_context.GetPipelineCache().GetGraphicsPipeline(
+	// A draw may be skipped while its pipeline compiles in the background, unless skipping it
+	// would lose something for good: shader buffer writes, or a small target (LUTs and similar
+	// are often rendered once).
+	bool allow_async = !mesh_emulated && !mesh_active;
+	for (const auto& stage: vertex_stages) {
+		allow_async &= !HasShaderBufferWrites(stage.stage);
+	}
+	if (state.ps_active) {
+		allow_async &= !HasShaderBufferWrites(state.ps_input_info.stage);
+	}
+	for (uint32_t i = 0; i < state.color_count && allow_async; i++) {
+		const auto& extent = state.color_info[i].desc.info.extent;
+		allow_async &= static_cast<uint64_t>(extent.width) * extent.height > 512ull * 512ull;
+	}
+	if (state.color_count == 0 && state.depth_info.image_id) {
+		const auto& extent = state.depth_info.desc.info.extent;
+		allow_async &= static_cast<uint64_t>(extent.width) * extent.height > 512ull * 512ull;
+	}
+	auto* pipeline_ptr = m_context.GetPipelineCache().GetGraphicsPipeline(
 	    std::span {state.color_info, state.color_count}, state.depth_info, vertex_stages, buffer,
 	    state.ps_active ? &state.ps_input_info : nullptr, topology, primitive_restart_enable,
-	    state.programs, vs_scaled_images, ps_scaled_images);
+	    state.programs, vs_scaled_images, ps_scaled_images, allow_async);
+	if (pipeline_ptr == nullptr) {
+		Common::DebugFlags::FrameTrace("    -> skipped: pipeline compiling in the background");
+		return;
+	}
+	auto& pipeline = *pipeline_ptr;
 	vk::ImageAspectFlags feedback_aspects;
 	const auto rendering =
 	    AcquireRenderTargets(buffer, state.color_info, state.color_count, state.depth_info,
@@ -1742,12 +1792,26 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 	// Draws whose shaders write memory need a barrier before later work reads it. Ending the pass
 	// for it split Stray's 4K G-buffer pass (7 targets) at every draw; dependent draws inside a
 	// pass are ordered by the game's own wait events, so the barrier could wait for the pass end.
-	// Off by default: Stray's draws read what earlier draws of the pass wrote (layers flicker).
-	// `setprop debug.capy.defer_write_barrier 1` defers it.
-	static Common::DebugFlags::CachedValue defer_write_barrier("debug.capy.defer_write_barrier", 0);
+	// Deferring it blindly (1) made Stray's layers flicker: some draws read what earlier draws of
+	// the pass wrote. 2 (default) defers it and records the written ranges, so a later draw of the
+	// pass that reads one ends the pass first. 0 ends the pass after every such draw.
+	static Common::DebugFlags::CachedValue defer_write_barrier("debug.capy.defer_write_barrier", 2);
 	if (shader_write_stages) {
 		if (defer_write_barrier.Get() != 0 && m_context.GetCommandScheduler().Current().IsRendering()) {
 			m_context.GetCommandScheduler().Current().DeferGlobalBarrier();
+			if (defer_write_barrier.Get() == 2) {
+				for (const auto* stage: stages) {
+					const auto& program = *stage->runtime->program;
+					for (const auto& resource: program.info.buffers) {
+						if (resource.written && resource.descriptor_index < stage->buffer_sources.size()) {
+							const auto& source = stage->buffer_sources[resource.descriptor_index];
+							if (source.size != 0) {
+								m_pass_writes.emplace_back(source.address, source.size);
+							}
+						}
+					}
+				}
+			}
 		} else {
 			m_context.GetCommandScheduler().EndRendering();
 			ShaderWriteBarrier(vk_buffer, shader_write_stages);
