@@ -1,6 +1,8 @@
 package org.capyps5.emulator.ui.screens
 
 import android.net.Uri
+import android.os.Environment
+import android.provider.DocumentsContract
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
@@ -80,6 +82,7 @@ fun HomeScreen(
     onGameSelected: (GameItem) -> Unit,
     onAddGameFile: (String) -> Unit,
     onRefresh: () -> Unit,
+    onLibraryPicked: (String) -> Unit,
 ) {
     var selected by remember { mutableIntStateOf(0) }
     var showSettings by remember { mutableStateOf(false) }
@@ -88,6 +91,12 @@ fun HomeScreen(
 
     val filePicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri: Uri? ->
         uri?.let { onAddGameFile(it.toString()) }
+    }
+    val folderPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri: Uri? ->
+        uri?.let(::treeUriToPath)?.let {
+            selected = 0
+            onLibraryPicked(it)
+        }
     }
 
     LaunchedEffect(selected, games.size) {
@@ -172,9 +181,30 @@ fun HomeScreen(
             exit = slideOutHorizontally { it },
             modifier = Modifier.align(Alignment.CenterEnd),
         ) {
-            SettingsPanel(settings, versionText, onClose = { showSettings = false })
+            SettingsPanel(
+                settings, versionText,
+                onClose = { showSettings = false },
+                onPickLibrary = { folderPicker.launch(null) },
+            )
         }
     }
+}
+
+/**
+ * The core opens games by file path (the app holds all-files access), so a folder picked through
+ * the system picker is turned back into its path: "primary:Games" is internal storage, any other
+ * volume id ("1234-ABCD:Games") is an SD card or USB drive under /storage.
+ */
+private fun treeUriToPath(uri: Uri): String? {
+    val docId = runCatching { DocumentsContract.getTreeDocumentId(uri) }.getOrNull() ?: return null
+    val volume = docId.substringBefore(':')
+    val relative = docId.substringAfter(':', "")
+    val root = if (volume.equals("primary", ignoreCase = true)) {
+        Environment.getExternalStorageDirectory().absolutePath
+    } else {
+        "/storage/$volume"
+    }
+    return if (relative.isEmpty()) root else "$root/$relative"
 }
 
 @Composable

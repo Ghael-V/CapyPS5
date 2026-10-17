@@ -38,9 +38,15 @@ import org.capyps5.emulator.ui.theme.Capy
 
 /** Side panel with emulator preferences; fully usable with touch or a controller. */
 @Composable
-fun SettingsPanel(settings: Settings, versionText: String, onClose: () -> Unit, modifier: Modifier = Modifier) {
+fun SettingsPanel(
+    settings: Settings,
+    versionText: String,
+    onClose: () -> Unit,
+    modifier: Modifier = Modifier,
+    onPickLibrary: (() -> Unit)? = null,
+) {
     var focused by remember { mutableIntStateOf(0) }
-    val rows = 3
+    val rows = if (onPickLibrary != null) 4 else 3
 
     fun <T> cycle(values: Array<T>, current: T, delta: Int): T =
         values[(values.indexOf(current) + delta).mod(values.size)]
@@ -48,7 +54,8 @@ fun SettingsPanel(settings: Settings, versionText: String, onClose: () -> Unit, 
     fun adjust(row: Int, delta: Int) = when (row) {
         0 -> settings.updateOverlayMode(cycle(OverlayMode.entries.toTypedArray(), settings.overlayMode, delta))
         1 -> settings.updateTouchControls(cycle(TouchControlsMode.entries.toTypedArray(), settings.touchControls, delta))
-        else -> settings.updateControlsOpacity((settings.controlsOpacity + delta * 0.1f).coerceIn(0.1f, 1f))
+        2 -> settings.updateControlsOpacity((settings.controlsOpacity + delta * 0.1f).coerceIn(0.1f, 1f))
+        else -> Unit
     }
 
     OnNavKey { key ->
@@ -56,7 +63,8 @@ fun SettingsPanel(settings: Settings, versionText: String, onClose: () -> Unit, 
             NavKey.Up -> focused = (focused - 1).mod(rows)
             NavKey.Down -> focused = (focused + 1).mod(rows)
             NavKey.Left -> adjust(focused, -1)
-            NavKey.Right, NavKey.Confirm -> adjust(focused, 1)
+            NavKey.Confirm -> if (focused == 3) onPickLibrary?.invoke() else adjust(focused, 1)
+            NavKey.Right -> adjust(focused, 1)
             NavKey.Back, NavKey.Menu, NavKey.Secondary -> onClose()
         }
     }
@@ -102,6 +110,23 @@ fun SettingsPanel(settings: Settings, versionText: String, onClose: () -> Unit, 
                 valueRange = 0.1f..1f,
                 colors = SliderDefaults.colors(thumbColor = Capy.Accent, activeTrackColor = Capy.Accent),
             )
+        }
+        if (onPickLibrary != null) {
+            SettingRow("Carpeta de juegos", settings.libraryPath, focused == 3) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .background(Capy.Accent, RoundedCornerShape(8.dp))
+                        .clickable {
+                            focused = 3
+                            onPickLibrary()
+                        }
+                        .padding(vertical = 8.dp),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text("Cambiar carpeta  Ⓐ", style = MaterialTheme.typography.labelLarge, color = Color.White)
+                }
+            }
         }
 
         Spacer(Modifier.height(4.dp))

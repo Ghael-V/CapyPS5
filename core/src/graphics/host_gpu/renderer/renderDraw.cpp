@@ -628,6 +628,18 @@ RenderState RenderExecutor::AcquireRenderTargets(CommandBuffer& buffer, RenderCo
 			             ? vk::ImageLayout::eAttachmentFeedbackLoopOptimalEXT
 			             : vk::ImageLayout::eGeneral;
 		}
+		// Keep the layout the attachment already has when it also serves this draw: Stray
+		// alternates stencil-writing and read-only draws on its 4K depth, and switching between
+		// the two read-only layouts ended the pass at every draw.
+		// `setprop debug.capy.keep_ds_layout 0` picks the layout per draw as before.
+		static Common::DebugFlags::CachedValue keep_ds_layout("debug.capy.keep_ds_layout", 1);
+		const auto current_layout = image.backing.state.layout;
+		if (keep_ds_layout.Get() != 0 && current_layout != layout && image.backing.subresource_states.empty() &&
+		    current_layout == image.binding.attachment_layout && !(draw_writes & ~DepthWritableAspects(current_layout)) &&
+		    !(sampled_aspects & ~DepthReadableAspects(current_layout)) &&
+		    !(DepthReadableAspects(layout) & ~DepthReadableAspects(current_layout) & sampled_aspects)) {
+			layout = current_layout;
+		}
 		// The attachment store writes even when guest depth/stencil tests do not.
 		const auto access = vk::AccessFlagBits2::eDepthStencilAttachmentRead |
 		                    vk::AccessFlagBits2::eDepthStencilAttachmentWrite;
@@ -1727,9 +1739,18 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 	if (state.ps_active && HasShaderBufferWrites(state.ps_input_info.stage)) {
 		shader_write_stages |= vk::PipelineStageFlagBits::eFragmentShader;
 	}
+	// Draws whose shaders write memory need a barrier before later work reads it. Ending the pass
+	// for it split Stray's 4K G-buffer pass (7 targets) at every draw; dependent draws inside a
+	// pass are ordered by the game's own wait events, so the barrier waits for the pass end.
+	// `setprop debug.capy.defer_write_barrier 0` ends the pass after each such draw as before.
+	static Common::DebugFlags::CachedValue defer_write_barrier("debug.capy.defer_write_barrier", 1);
 	if (shader_write_stages) {
-		m_context.GetCommandScheduler().EndRendering();
-		ShaderWriteBarrier(vk_buffer, shader_write_stages);
+		if (defer_write_barrier.Get() != 0 && m_context.GetCommandScheduler().Current().IsRendering()) {
+			m_context.GetCommandScheduler().Current().DeferGlobalBarrier();
+		} else {
+			m_context.GetCommandScheduler().EndRendering();
+			ShaderWriteBarrier(vk_buffer, shader_write_stages);
+		}
 	}
 	// `setprop debug.capy.dump_after N`: during a frame trace, write the color targets back to
 	// guest memory right after the Nth draw (1-based, as numbered by the trace) of the frame.

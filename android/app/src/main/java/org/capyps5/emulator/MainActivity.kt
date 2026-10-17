@@ -8,7 +8,9 @@ import android.view.KeyEvent
 import android.view.MotionEvent
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -41,7 +43,9 @@ object InputRouter {
 class MainActivity : ComponentActivity() {
 
     private lateinit var settings: Settings
-    private val libraryDir by lazy { File(Environment.getExternalStorageDirectory(), "CapyPS5") }
+    private val libraryDir get() = File(settings.libraryPath)
+    // Bumped when all-files access may have just been granted, so the library is scanned again.
+    private var storageCheck by mutableIntStateOf(0)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -54,7 +58,17 @@ class MainActivity : ComponentActivity() {
 
         settings = Settings(this)
         NativeBridge.nativeInit(filesDir = filesDir.absolutePath, cacheDir = cacheDir.absolutePath)
-        if (!libraryDir.exists()) runCatching { libraryDir.mkdirs() }
+        // Games are read by path, which needs all-files access; a fresh install asks for it once.
+        if (!Environment.isExternalStorageManager()) {
+            runCatching {
+                startActivity(
+                    Intent(android.provider.Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION)
+                        .setData(android.net.Uri.parse("package:$packageName"))
+                )
+            }
+        } else if (!libraryDir.exists()) {
+            runCatching { libraryDir.mkdirs() }
+        }
 
         InputRouter.onRouteChanged = { toUi -> if (toUi) releaseEmulatedPad() }
 
@@ -67,7 +81,11 @@ class MainActivity : ComponentActivity() {
         setContent {
             CapyPS5Theme {
                 var currentGame by remember { mutableStateOf(initialGame) }
-                val games = remember { mutableStateListOf<GameItem>().apply { addAll(GameItem.scan(libraryDir)) } }
+                val games = remember { mutableStateListOf<GameItem>() }
+                LaunchedEffect(settings.libraryPath, storageCheck) {
+                    games.clear()
+                    games.addAll(GameItem.scan(libraryDir))
+                }
 
                 val game = currentGame
                 if (game != null) {
@@ -80,7 +98,7 @@ class MainActivity : ComponentActivity() {
                 } else {
                     HomeScreen(
                         games = games,
-                        libraryPath = libraryDir.absolutePath,
+                        libraryPath = settings.libraryPath,
                         settings = settings,
                         versionText = versionText,
                         onGameSelected = { currentGame = it },
@@ -105,10 +123,17 @@ class MainActivity : ComponentActivity() {
                             games.clear()
                             games.addAll(GameItem.scan(libraryDir))
                         },
+                        onLibraryPicked = { settings.updateLibraryPath(it) },
                     )
                 }
             }
         }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        // Returning from the all-files access screen: scan again now that the folder is readable.
+        if (Environment.isExternalStorageManager()) storageCheck++
     }
 
     /**

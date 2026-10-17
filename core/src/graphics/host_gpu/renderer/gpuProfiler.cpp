@@ -9,6 +9,7 @@
 #include <cstdio>
 #include <deque>
 #include <dlfcn.h>
+#include <mutex>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -46,6 +47,9 @@ struct State {
 	std::chrono::steady_clock::time_point report = std::chrono::steady_clock::now();
 	uint64_t                              end_caller = 0;
 };
+
+// The GPU thread and the present thread both record and submit.
+std::mutex g_mutex;
 
 State& GetState() {
 	static State state;
@@ -91,6 +95,7 @@ bool Enabled() {
 }
 
 void SetPassLabel(uint64_t target, uint32_t width, uint32_t height, uint64_t pixel_shader) {
+	std::lock_guard lock(g_mutex);
 	std::snprintf(GetState().pass_label, sizeof(GetState().pass_label),
 	              "pass %ux%u rt=0x%llx ps=0x%llx", width, height,
 	              static_cast<unsigned long long>(target),
@@ -98,6 +103,7 @@ void SetPassLabel(uint64_t target, uint32_t width, uint32_t height, uint64_t pix
 }
 
 void NoteDraw() {
+	std::lock_guard lock(g_mutex);
 	auto& state = GetState();
 	if (state.open && !state.pending.empty()) {
 		state.pending.back().draws++;
@@ -106,6 +112,7 @@ void NoteDraw() {
 
 void BeginPass(GraphicContext& graphics, vk::CommandBuffer command, uint32_t width,
                uint32_t height, uint32_t colors, bool depth) {
+	std::lock_guard lock(g_mutex);
 	auto& state = GetState();
 	std::string label = state.pass_label[0] != 0 ? state.pass_label : "pass (unlabeled)";
 	char        shape[48];
@@ -117,6 +124,7 @@ void BeginPass(GraphicContext& graphics, vk::CommandBuffer command, uint32_t wid
 
 void BeginDispatch(GraphicContext& graphics, vk::CommandBuffer command, uint64_t compute_shader,
                    uint32_t groups) {
+	std::lock_guard lock(g_mutex);
 	char label[64];
 	std::snprintf(label, sizeof(label), "dispatch cs=0x%llx", static_cast<unsigned long long>(compute_shader));
 	(void)groups;
@@ -124,6 +132,7 @@ void BeginDispatch(GraphicContext& graphics, vk::CommandBuffer command, uint64_t
 }
 
 void SetEndCaller(const void* caller) {
+	std::lock_guard lock(g_mutex);
 	auto& state = GetState();
 	if (state.end_caller == 0) {
 		Dl_info info {};
@@ -133,6 +142,7 @@ void SetEndCaller(const void* caller) {
 }
 
 void EndScope(vk::CommandBuffer command) {
+	std::lock_guard lock(g_mutex);
 	auto& state = GetState();
 	if (!state.open || state.pending.empty()) {
 		return;
@@ -152,6 +162,7 @@ void EndScope(vk::CommandBuffer command) {
 }
 
 void Collect(GraphicContext& graphics) {
+	std::lock_guard lock(g_mutex);
 	auto& state = GetState();
 	if (state.pool == nullptr) {
 		return;

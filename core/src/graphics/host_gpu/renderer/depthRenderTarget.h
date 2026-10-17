@@ -69,6 +69,24 @@ inline vk::ImageAspectFlags DepthReadableAspects(vk::ImageLayout layout) {
 	}
 }
 
+inline vk::ImageAspectFlags DepthWritableAspects(vk::ImageLayout layout) {
+	switch (layout) {
+		case vk::ImageLayout::eDepthReadOnlyStencilAttachmentOptimal:
+		case vk::ImageLayout::eStencilAttachmentOptimal:
+			return vk::ImageAspectFlagBits::eStencil;
+		case vk::ImageLayout::eDepthAttachmentStencilReadOnlyOptimal:
+		case vk::ImageLayout::eDepthAttachmentOptimal:
+			return vk::ImageAspectFlagBits::eDepth;
+		case vk::ImageLayout::eDepthStencilAttachmentOptimal:
+		case vk::ImageLayout::eAttachmentOptimal:
+		case vk::ImageLayout::eAttachmentFeedbackLoopOptimalEXT:
+		case vk::ImageLayout::eGeneral:
+			return vk::ImageAspectFlagBits::eDepth | vk::ImageAspectFlagBits::eStencil;
+		default:
+			return {};
+	}
+}
+
 inline vk::ImageLayout depth_attachment_layout(const RenderDepthInfo& depth) {
 	// Adreno investigation: `setprop debug.capy.ds_layout 1` keeps one writable layout for every
 	// depth pass (2 uses GENERAL) so read-only passes do not transition the attachment.

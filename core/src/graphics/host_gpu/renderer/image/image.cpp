@@ -6,6 +6,7 @@
 #include "common/profiler.h"
 #include "graphics/host_gpu/renderer/cache/streamBuffer.h"
 #include "graphics/host_gpu/renderer/commandScheduler.h"
+#include "graphics/host_gpu/renderer/gpuProfiler.h"
 #include "graphics/host_gpu/renderer/image/imageView.h"
 #include "graphics/host_gpu/renderer/image/tiler.h"
 #include "graphics/host_gpu/renderer/renderTarget.h"
@@ -217,6 +218,25 @@ Image::Barriers Image::GetBarriers(vk::ImageLayout                      destinat
 	              range->base_layer != 0 || range->layer_count != info.resources.layers);
 	const bool has_subresource_states = !subresource_states.empty();
 
+	// Inside a render pass, an attachment that draws also sample (read-only depth, feedback
+	// loops) alternates between attachment access and attachment plus shader read without a
+	// layout change. A barrier there only ends the pass (Stray split its 4K passes per draw), so
+	// the accesses are merged and the barrier is left to the next real transition.
+	// `setprop debug.capy.merge_access 0` emits the barriers as before.
+	static Common::DebugFlags::CachedValue merge_access("debug.capy.merge_access", 1);
+	constexpr auto in_pass_access = vk::AccessFlagBits2::eColorAttachmentRead |
+	                                vk::AccessFlagBits2::eColorAttachmentWrite |
+	                                vk::AccessFlagBits2::eDepthStencilAttachmentRead |
+	                                vk::AccessFlagBits2::eDepthStencilAttachmentWrite |
+	                                vk::AccessFlagBits2::eShaderRead;
+	const bool may_merge = merge_access.Get() != 0 && binding.is_target && m_scheduler.Active() &&
+	                       m_scheduler.Current().IsRendering() &&
+	                       !(destination_access & ~vk::AccessFlags2 {in_pass_access});
+	const auto merges    = [&](const VulkanImageState& current) {
+		return may_merge && current.layout == destination_layout &&
+		       !(current.access_mask & ~vk::AccessFlags2 {in_pass_access});
+	};
+
 	Barriers barriers;
 	if (partial || has_subresource_states) {
 		if (!has_subresource_states) {
@@ -232,6 +252,11 @@ Image::Barriers Image::GetBarriers(vk::ImageLayout                      destinat
 				const auto index = level * info.resources.layers + layer;
 				EXIT_IF(index >= subresource_states.size());
 				auto& subresource_state = subresource_states[index];
+				if (merges(subresource_state)) {
+					subresource_state.access_mask |= destination_access;
+					subresource_state.pl_stage |= destination_stage;
+					continue;
+				}
 
 				constexpr auto write_access = vk::AccessFlagBits2::eTransferWrite |
 				                              vk::AccessFlagBits2::eShaderWrite |
@@ -269,6 +294,11 @@ Image::Barriers Image::GetBarriers(vk::ImageLayout                      destinat
 		                                vk::AccessFlagBits2::eShaderWrite |
 		                                vk::AccessFlagBits2::eMemoryWrite;
 		const bool     repeated_write = static_cast<bool>(state.access_mask & write_access);
+		if (merges(state)) {
+			state.access_mask |= destination_access;
+			state.pl_stage |= destination_stage;
+			return {};
+		}
 		if (state.layout == destination_layout && state.access_mask == destination_access &&
 		    !repeated_write) {
 			return {};
@@ -313,6 +343,21 @@ void Image::Transit(vk::ImageLayout destination_layout, vk::AccessFlags2 destina
 	    GetBarriers(destination_layout, destination_access, destination_stage, range);
 	if (barriers.empty()) {
 		return;
+	}
+	if (GpuProfiler::Enabled() && m_scheduler.Active() && m_scheduler.Current().IsRendering()) {
+		// Name the transition (and who asked for it) that ends the pass.
+		const auto caller = reinterpret_cast<uintptr_t>(__builtin_return_address(0));
+		GpuProfiler::SetEndCaller(__builtin_return_address(0));
+		const auto old_layout = static_cast<uint32_t>(barriers[0].oldLayout);
+		const auto new_layout = static_cast<uint32_t>(barriers[0].newLayout);
+		Common::DebugFlags::NoteOnce("CapyPS5-Transit",
+		                             (caller << 20u) ^ (static_cast<uint64_t>(old_layout) << 10u) ^ new_layout ^
+		                                 (track_addr << 1u),
+		                             "pass ended by transit addr=0x%llx %ux%u layout %u -> %u access 0x%llx caller %p",
+		                             static_cast<unsigned long long>(track_addr), backing.extent.width,
+		                             backing.extent.height, old_layout, new_layout,
+		                             static_cast<unsigned long long>(static_cast<uint64_t>(destination_access)),
+		                             __builtin_return_address(0));
 	}
 	m_scheduler.EndRendering();
 	vk::DependencyInfo dependency {};

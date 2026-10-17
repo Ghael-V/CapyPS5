@@ -1213,4 +1213,16 @@ uint64_t GuestReturnAddress() {
 #endif
 	return 0;
 }
+
+uint64_t GuestRipFromHostPc(uint64_t host_pc) {
+#if defined(__aarch64__)
+	auto* thread = s_current_fex_thread;
+	if (thread != nullptr && thread->CurrentFrame != nullptr && thread->CTX != nullptr) {
+		return thread->CTX->RestoreRIPFromHostPC(thread, host_pc);
+	}
+#else
+	(void)host_pc;
+#endif
+	return 0;
+}
 } // namespace Cpu

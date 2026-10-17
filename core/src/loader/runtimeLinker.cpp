@@ -714,6 +714,16 @@ static bool KytyExceptionHandler(const Common::HostException::ExceptionInfo& exc
 #if defined(__ANDROID__)
 		__android_log_print(ANDROID_LOG_ERROR, "CapyPS5-Core", "%s", buf);
 #endif
+		if (const auto guest_rip = Cpu::GuestRipFromHostPc(info->exception_address); guest_rip != 0) {
+			const auto* program = Common::Singleton<Loader::RuntimeLinker>::Instance()->FindProgramByAddr(guest_rip);
+			std::snprintf(buf, sizeof(buf), "guest rip=0x%016" PRIx64 " (%s +0x%" PRIx64 ")", guest_rip,
+			              program != nullptr ? program->file_name.filename().string().c_str() : "?",
+			              program != nullptr ? guest_rip - program->base_vaddr : 0);
+			std::printf("%s\n", buf);
+#if defined(__ANDROID__)
+			__android_log_print(ANDROID_LOG_ERROR, "CapyPS5-Core", "%s", buf);
+#endif
+		}
 		if (IsReadableRange(info->exception_address - 48, 96)) {
 			const auto* code = reinterpret_cast<const uint8_t*>(info->exception_address - 48);
 			std::string hex_str = "code (pc-48 .. pc+48): ";

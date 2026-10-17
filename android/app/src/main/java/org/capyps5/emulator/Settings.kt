@@ -1,10 +1,12 @@
 package org.capyps5.emulator
 
 import android.content.Context
+import android.os.Environment
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import java.io.File
 
 enum class OverlayMode(val label: String) { Off("Desactivado"), Compact("Compacto"), Full("Completo") }
 
@@ -25,6 +27,17 @@ class Settings(context: Context) {
         private set
     var controlsOpacity by mutableFloatStateOf(prefs.getFloat("controls_opacity", 0.6f))
         private set
+    /** Folder scanned for games (each game a subfolder with eboot.bin). */
+    var libraryPath by mutableStateOf(
+        prefs.getString("library_path", null)
+            ?: File(Environment.getExternalStorageDirectory(), "CapyPS5").absolutePath
+    )
+        private set
+
+    fun updateLibraryPath(value: String) {
+        libraryPath = value
+        prefs.edit().putString("library_path", value).apply()
+    }
 
     fun updateOverlayMode(value: OverlayMode) {
         overlayMode = value

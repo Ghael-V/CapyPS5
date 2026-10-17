@@ -24,6 +24,8 @@ namespace Cpu {
 uint64_t LastHleFunction();
 /** Guest address an HLE function returns to (0 when unknown; diagnostics). */
 uint64_t GuestReturnAddress();
+/** Guest RIP of the translated code at host address `host_pc` on this thread (0 when unknown). */
+uint64_t GuestRipFromHostPc(uint64_t host_pc);
 
 enum class BackendType {
 	Native,      // Direct x86_64 host execution (PC)
