@@ -616,7 +616,7 @@ public:
 				// game did before it failed.
 				static Common::DebugFlags::CachedValue hle_trace("debug.capy.hle_trace", 0);
 				static std::atomic<int64_t>             traced {0};
-				if (hle_trace.Get() > 0 && traced.fetch_add(1, std::memory_order_relaxed) < hle_trace.Get()) {
+				if (hle_trace.Get() > 0 && traced.load(std::memory_order_relaxed) < hle_trace.Get()) {
 					std::string name = "?";
 					{
 						std::lock_guard<std::mutex> lock(s_trampoline_mutex);
@@ -624,11 +624,26 @@ public:
 							name = it->second;
 						}
 					}
-					__android_log_print(ANDROID_LOG_WARN, "CapyPS5-HleTrace",
-					                    "tid %d %s(0x%llx, 0x%llx, 0x%llx) = 0x%llx", static_cast<int>(gettid()),
-					                    name.c_str(), static_cast<unsigned long long>(a0),
-					                    static_cast<unsigned long long>(a1), static_cast<unsigned long long>(a2),
-					                    static_cast<unsigned long long>(ret));
+					// Mutex calls drown everything else; open/stat-like calls show their path.
+					if (name.find("Mutex") == std::string::npos && name.find("mutex") == std::string::npos &&
+					    traced.fetch_add(1, std::memory_order_relaxed) < hle_trace.Get()) {
+						char path[96] = {};
+						if (name.find("open") != std::string::npos || name.find("Open") != std::string::npos ||
+						    name.find("stat") != std::string::npos || name.find("Stat") != std::string::npos) {
+							for (size_t i = 0; i + 1 < sizeof(path); i++) {
+								char c = 0;
+								if (!Libs::LibKernel::Memory::ReadGuestMemory(a0 + i, &c, 1) || c == 0) {
+									break;
+								}
+								path[i] = c;
+							}
+						}
+						__android_log_print(ANDROID_LOG_WARN, "CapyPS5-HleTrace",
+						                    "tid %d %s(0x%llx, 0x%llx, 0x%llx) = 0x%llx %s", static_cast<int>(gettid()),
+						                    name.c_str(), static_cast<unsigned long long>(a0),
+						                    static_cast<unsigned long long>(a1), static_cast<unsigned long long>(a2),
+						                    static_cast<unsigned long long>(ret), path);
+					}
 				}
 			}
 			if (in_flight != nullptr) {

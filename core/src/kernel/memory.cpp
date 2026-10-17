@@ -740,7 +740,16 @@ public:
 	KYTY_CLASS_NO_COPY(PhysicalMemory);
 
 #if defined(__ANDROID__) || defined(ANDROID) || defined(KYTY_PLATFORM_ANDROID)
-	static constexpr uint64_t TotalSize() { return static_cast<uint64_t>(8192) * 1024 * 1024; }
+	// Same size as the PS5: Asterix & Obelix XXL2 allocates 8.5 GiB of direct memory and crashed
+	// with the 8 GiB used before. The backing is a sparse memfd, so only touched pages cost RAM.
+	// `setprop debug.capy.direct_mem_mb N` overrides it (read once at start).
+	static uint64_t TotalSize() {
+		static const uint64_t size = [] {
+			Common::DebugFlags::CachedValue mb("debug.capy.direct_mem_mb", 13824);
+			return static_cast<uint64_t>(std::clamp<int64_t>(mb.Get(), 4096, 13824)) * 1024 * 1024;
+		}();
+		return size;
+	}
 #else
 	static constexpr uint64_t TotalSize() { return static_cast<uint64_t>(13824) * 1024 * 1024; }
 #endif
@@ -1261,6 +1270,27 @@ bool PhysicalMemory::Alloc(uint64_t search_start, uint64_t search_end, size_t le
 		return true;
 	}
 
+	{
+		uint64_t    free_total = 0;
+		std::string ranges;
+		for (const auto& [start, size]: m_free) {
+			free_total += size;
+			if (ranges.size() < 400) {
+				char range[48];
+				std::snprintf(range, sizeof(range), " 0x%llx+0x%llx", static_cast<unsigned long long>(start),
+				              static_cast<unsigned long long>(size));
+				ranges += range;
+			}
+		}
+		Common::DebugFlags::NoteOnce("CapyPS5-Mem", 0x444d4641494cull ^ len,
+		                             "direct memory alloc failed: len=0x%llx align=0x%llx search=0x%llx..0x%llx "
+		                             "(pool 0x%llx, free 0x%llx):%s",
+		                             static_cast<unsigned long long>(len), static_cast<unsigned long long>(alignment),
+		                             static_cast<unsigned long long>(search_start),
+		                             static_cast<unsigned long long>(search_end),
+		                             static_cast<unsigned long long>(Size()),
+		                             static_cast<unsigned long long>(free_total), ranges.c_str());
+	}
 	return false;
 }
 
