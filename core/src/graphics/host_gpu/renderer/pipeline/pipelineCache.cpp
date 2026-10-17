@@ -30,6 +30,7 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <atomic>
 #include <cctype>
 #include <cstdio>
@@ -107,6 +108,9 @@ std::string PipelineCacheTitleId() {
 template <typename... Args>
 void PipelineCacheLog(fmt::format_string<Args...> format, Args&&... args) {
 	auto message = fmt::format(format, std::forward<Args>(args)...);
+#if defined(__ANDROID__)
+	__android_log_print(ANDROID_LOG_INFO, "CapyPS5-PipelineCache", "%s", message.c_str());
+#endif
 	message += '\n';
 	Log::WriteToConsoleAndLog(message);
 }
@@ -560,6 +564,9 @@ void PipelineCache::InitializeDriverCache() {
 	if (title_id.empty()) {
 		return;
 	}
+#if !defined(__ANDROID__)
+	// On Android the cache is always on: the driver keys entries by shader contents and pipeline
+	// state, so entries from another emulator build simply miss.
 	if (KYTY_BUILD != KYTY_BUILD_RELEASE) {
 		PipelineCacheLog("Vulkan pipeline cache: disabled (non-Release build)");
 		return;
@@ -574,8 +581,14 @@ void PipelineCache::InitializeDriverCache() {
 		PipelineCacheLog("Vulkan pipeline cache: disabled (dirty build)");
 		return;
 	}
+#endif
 
+#if defined(__ANDROID__)
+	// The working directory is not writable on Android; keep the cache in the app's files.
+	m_driver_cache_path = std::filesystem::path(AndroidGetFilesDir()) / "_PipelineCache" / (title_id + ".bin");
+#else
 	m_driver_cache_path     = std::filesystem::path("_PipelineCache") / (title_id + ".bin");
+#endif
 	const auto path         = Common::PathToString(m_driver_cache_path);
 	const bool cache_exists = Common::File::IsFileExisting(m_driver_cache_path);
 	if (cache_exists) {
@@ -645,6 +658,35 @@ void PipelineCache::Save() {
 	if (m_driver_cache == nullptr) {
 		return;
 	}
+	(void)WriteDriverCache();
+	m_graphics.device.destroyPipelineCache(m_driver_cache, nullptr);
+	m_driver_cache = nullptr;
+}
+
+void PipelineCache::SavePeriodically() {
+	if (m_driver_cache == nullptr || m_pipelines_since_save == 0) {
+		return;
+	}
+	const auto now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+	                        std::chrono::steady_clock::now().time_since_epoch())
+	                        .count();
+	if (m_last_save_ms == 0) {
+		m_last_save_ms = now_ms;
+		return;
+	}
+	if (now_ms - m_last_save_ms < 20000) {
+		return;
+	}
+	m_last_save_ms = now_ms;
+	if (WriteDriverCache()) {
+		m_pipelines_since_save = 0;
+	}
+}
+
+bool PipelineCache::WriteDriverCache() {
+	if (m_driver_cache == nullptr) {
+		return false;
+	}
 
 	size_t               size = 0;
 	vk::Result           result;
@@ -666,7 +708,7 @@ void PipelineCache::Save() {
 	    size > std::numeric_limits<uint32_t>::max()) {
 		PipelineCacheLog("Vulkan pipeline cache: save failed ({}, {} bytes)",
 		                 vk::to_string(result), size);
-		return;
+		return false;
 	}
 	payload.resize(size);
 	auto       prefix       = DriverCacheSignature(m_graphics.GetPhysicalDeviceProperties());
@@ -674,7 +716,7 @@ void PipelineCache::Save() {
 	prefix.append(reinterpret_cast<const char*>(&payload_hash), sizeof(payload_hash));
 	if (!Common::File::CreateDirectories(m_driver_cache_path.parent_path())) {
 		PipelineCacheLog("Vulkan pipeline cache: failed to create cache directory");
-		return;
+		return false;
 	}
 	auto temp_path = m_driver_cache_path;
 	temp_path += ".tmp";
@@ -691,12 +733,11 @@ void PipelineCache::Save() {
 	    !Common::File::RenameFile(temp_path, m_driver_cache_path)) {
 		PipelineCacheLog("Vulkan pipeline cache: failed to write {}",
 		                 Common::PathToString(m_driver_cache_path));
-		return;
+		return false;
 	}
 	PipelineCacheLog("Vulkan pipeline cache: saved {} bytes to {}", payload.size(),
 	                 Common::PathToString(m_driver_cache_path));
-	m_graphics.device.destroyPipelineCache(m_driver_cache, nullptr);
-	m_driver_cache = nullptr;
+	return true;
 }
 
 PipelineCache::GraphicsPrograms PipelineCache::GetGraphicsPrograms(
@@ -837,6 +878,7 @@ PipelineCache::Pipeline& PipelineCache::GetGraphicsPipeline(
     const ShaderPixelInputInfo* ps_input_info, vk::PrimitiveTopology topology,
     bool primitive_restart_enable, const GraphicsPrograms& programs, uint32_t vs_scaled_images,
     uint32_t ps_scaled_images) {
+	SavePeriodically();
 	const auto& vs_input_info  = vertex_info.front();
 	const auto& vertex_program = programs.vertex[0];
 	const auto& pixel_program  = programs.pixel;
@@ -1052,6 +1094,7 @@ PipelineCache::Pipeline& PipelineCache::GetGraphicsPipeline(
 #endif
 	auto cached = std::make_unique<Pipeline>();
 	LogPipelineTrace("CreatePipelineInternal begin", vs_id, ps_id);
+	m_pipelines_since_save++;
 	CreatePipelineInternal(m_graphics, *cached, rendering, key.vertex_input, vertex_info,
 	                       ps_input_info, programs, static_params, m_driver_cache);
 	LogPipelineTrace("CreatePipelineInternal done", vs_id, ps_id);
@@ -1084,6 +1127,7 @@ PipelineCache::GetComputePipeline(const ShaderComputeInputInfo& input_info,
 	}
 
 	auto cached = std::make_unique<Pipeline>();
+	m_pipelines_since_save++;
 	CreatePipelineInternal(m_graphics, *cached, input_info.stage, compute_program.module,
 	                       m_driver_cache, scaled_images);
 
@@ -1108,6 +1152,7 @@ PipelineCache::GetMeshComputePipeline(const ShaderVertexInputInfo& input_info,
 		return *iter->second;
 	}
 	auto cached = std::make_unique<Pipeline>();
+	m_pipelines_since_save++;
 	CreatePipelineInternal(m_graphics, *cached, input_info.stage, mesh_program.module,
 	                       m_driver_cache, scaled_images);
 	auto [iter, inserted] = m_compute_pipelines.emplace(key, std::move(cached));

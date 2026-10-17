@@ -110,6 +110,8 @@ public:
 	~PipelineCache();
 	KYTY_CLASS_NO_COPY(PipelineCache);
 	void Save();
+	/** Writes the driver cache to disk without closing it (Android never reaches Save()). */
+	void SavePeriodically();
 
 	struct Pipeline {
 		vk::PipelineLayout      pipeline_layout       = nullptr;
@@ -183,6 +185,9 @@ private:
 	std::unique_ptr<ProgramCache> m_program_cache;
 	vk::PipelineCache             m_driver_cache = nullptr;
 	std::filesystem::path         m_driver_cache_path;
+	uint64_t                      m_pipelines_since_save = 0;
+	int64_t                       m_last_save_ms         = 0;
+	[[nodiscard]] bool            WriteDriverCache();
 	std::unordered_map<GraphicsPipelineKey, std::unique_ptr<Pipeline>, GraphicsPipelineKeyHash>
 	                                                        m_graphics_pipelines;
 	std::unordered_map<uint64_t, std::unique_ptr<Pipeline>> m_compute_pipelines;
