@@ -44,6 +44,10 @@ log (en `CapyPS5/logs/`). Adjúntalo al reportar el fallo.
 Ver `tools/build_android.ps1` (NDK 28.2, CMake 3.31, Ninja). `tools/sign_release.ps1` genera y
 firma la APK de release.
 
+## Agradecimientos
+
+- **Madelein**, por el logo de CapyPS5.
+
 ## Licencia
 
 CapyPS5 es software libre bajo la **GNU General Public License v2** (`LICENSE`). Los componentes de
