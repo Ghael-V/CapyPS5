@@ -1483,6 +1483,26 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 				start = end + 1;
 			}
 		}
+		// The vertex stage too (es or gs registers, whichever is set).
+		for (const uint64_t vs_addr: {buffer.GetShaders().GetVs().es_regs.data_addr,
+		                              buffer.GetShaders().GetVs().gs_regs.data_addr}) {
+			if (vs_addr == 0) {
+				continue;
+			}
+			ShaderRecompiler::Decoder::Program program;
+			const auto* code = reinterpret_cast<const uint32_t*>(vs_addr);
+			ShaderRecompiler::Decoder::DecodeProgram(std::span<const uint32_t>(code, 4096), program);
+			const auto text = ShaderRecompiler::Decoder::ProgramToString(program);
+			Common::DebugFlags::FrameTrace("  vs 0x%llx", static_cast<unsigned long long>(vs_addr));
+			size_t start = 0;
+			while (start < text.size()) {
+				const auto end  = text.find(static_cast<char>(10), start);
+				const auto line = text.substr(start, end == std::string::npos ? std::string::npos : end - start);
+				Common::DebugFlags::FrameTrace("  vs| %s", line.c_str());
+				if (end == std::string::npos) break;
+				start = end + 1;
+			}
+		}
 		if (state.depth_info.image_id) {
 			const bool ok = m_context.GetTextureCache().DebugDownloadImage(state.depth_info.image_id);
 			Common::DebugFlags::FrameTrace("  dump depth addr=0x%llx -> %d",
@@ -1823,6 +1843,20 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 		vk_buffer.drawMeshTasksEXT(mesh_groups, draw.instance_count, 1);
 	} else {
 		EmitDrawPrimitives(ucfg, vk_buffer, draw, emit);
+	}
+	// Bisection aid: `setprop debug.capy.clear_depth_ps 0x<ps>` clears the depth target to
+	// `clear_depth_milli`/1000 right after each draw of that pixel shader.
+	static Common::DebugFlags::CachedValue clear_depth_ps("debug.capy.clear_depth_ps", 0);
+	static Common::DebugFlags::CachedValue clear_depth_milli("debug.capy.clear_depth_milli", 0);
+	if (clear_depth_ps.Get() != 0 && state.depth_info.image_id && rendering.depth_stencil_attachment.has_depth &&
+	    static_cast<uint64_t>(clear_depth_ps.Get()) == split_addr) {
+		vk::ClearAttachment clear {};
+		clear.aspectMask                    = vk::ImageAspectFlagBits::eDepth;
+		clear.clearValue.depthStencil.depth = static_cast<float>(clear_depth_milli.Get()) / 1000.0f;
+		vk::ClearRect rect {};
+		rect.rect.extent = vk::Extent2D {rendering.width, rendering.height};
+		rect.layerCount  = 1;
+		vk_buffer.clearAttachments(1, &clear, 1, &rect);
 	}
 
 	if (!draw.IsIndexed()) {
