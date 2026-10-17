@@ -1029,7 +1029,15 @@ void RenderExecutor::CommitBindings(CommandBuffer&                     buffer,
 					const auto& written = writer->buffer_sources[resource.descriptor_index];
 					if (written.size != 0 && ImageRangeOverlaps(address, size,
 					                                          written.address, written.size)) {
-						EXIT("scalar resource reads overlap a shader buffer write\n");
+						// The scalar values were read when the draw was recorded; a write by this
+						// draw to the same bytes would not be seen. Little Nightmares binds a large
+						// RW buffer that spans its constants, so warn instead of closing.
+						Common::DebugFlags::NoteOnce(
+						    "CapyPS5-Shader", address ^ (written.address << 1u),
+						    "scalar reads 0x%llx+%llu overlap a shader buffer write 0x%llx+%llu",
+						    static_cast<unsigned long long>(address), static_cast<unsigned long long>(size),
+						    static_cast<unsigned long long>(written.address),
+						    static_cast<unsigned long long>(written.size));
 					}
 				}
 			}
