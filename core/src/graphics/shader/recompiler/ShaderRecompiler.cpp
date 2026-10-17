@@ -2,6 +2,7 @@
 #include "graphics/shader/recompiler/Tessellation.h"
 
 #include "common/assert.h"
+#include "common/debugFlags.h"
 #include "common/logging/log.h"
 #include "graphics/shader/recompiler/backend/spirv/SpirvEmitter.h"
 #include "graphics/shader/recompiler/frontend/cfg/ShaderCFG.h"
@@ -25,6 +26,9 @@
 #include <map>
 #include <span>
 #include <utility>
+#if defined(__ANDROID__)
+#include <android/log.h>
+#endif
 
 namespace Libs::Graphics::ShaderRecompiler {
 
@@ -596,6 +600,22 @@ ShaderSource PrepareShaderSource(std::span<const uint32_t> code, const CompileOp
 		Decoder::DecodeProgram(code, source.decoded);
 	}
 	if (source.decoded.has_swap_pc) {
+#if defined(__ANDROID__)
+		// `setprop debug.capy.dump_calls 1`: log the disassembly of shaders with subroutine calls
+		// (tag CapyPS5-ShaderCall) before their call targets are resolved.
+		if (Common::DebugFlags::CachedValue("debug.capy.dump_calls", 0).Get() != 0) {
+			const auto text = Decoder::ProgramToString(source.decoded);
+			__android_log_print(ANDROID_LOG_WARN, "CapyPS5-ShaderCall", "---- stage %d, %zu words",
+			                    static_cast<int>(options.stage), code.size());
+			for (size_t start = 0; start < text.size();) {
+				const auto end = text.find('\n', start);
+				__android_log_print(ANDROID_LOG_WARN, "CapyPS5-ShaderCall", "%s",
+				                    text.substr(start, end == std::string::npos ? std::string::npos : end - start).c_str());
+				if (end == std::string::npos) break;
+				start = end + 1;
+			}
+		}
+#endif
 		PrepareCallTarget(source, options);
 		source.code.assign(code.begin(), code.end());
 		source.decoded.code = source.code;
