@@ -1839,6 +1839,38 @@ Buffer& RenderExecutor::MeshOutputBuffer(uint64_t size) {
 	return *m_mesh_output;
 }
 
+// `setprop debug.capy.trace_ps <ps address>`: frame-trace only the next 8 draws with that pixel
+// shader (tag CapyPS5-Frame; with dump_ps set to the same address it also disassembles it).
+class TracePsScope {
+public:
+	explicit TracePsScope(uint64_t ps_addr) {
+		static Common::DebugFlags::CachedValue trace_ps("debug.capy.trace_ps", 0);
+		static int64_t                         armed = 0;
+		static uint32_t                        left  = 0;
+		if (trace_ps.Get() != armed) {
+			armed = trace_ps.Get();
+			left  = 8;
+		}
+		if (armed != 0 && left != 0 && !Common::DebugFlags::FrameTracing() &&
+		    ps_addr == static_cast<uint64_t>(armed)) {
+			left--;
+			m_active = true;
+			Common::DebugFlags::g_trace_lines.store(0, std::memory_order_relaxed);
+			Common::DebugFlags::g_trace_state.store(1, std::memory_order_relaxed);
+			Common::DebugFlags::FrameTrace("---- trace_ps draw ----");
+		}
+	}
+	~TracePsScope() {
+		if (m_active) {
+			Common::DebugFlags::g_trace_state.store(0, std::memory_order_relaxed);
+		}
+	}
+	KYTY_CLASS_NO_COPY(TracePsScope);
+
+private:
+	bool m_active = false;
+};
+
 void RenderExecutor::DrawIndex(uint64_t submit_id, CommandBuffer& buffer,
                                const DrawIndexArgs& args) {
 	KYTY_PROFILER_FUNCTION();
@@ -1848,6 +1880,8 @@ void RenderExecutor::DrawIndex(uint64_t submit_id, CommandBuffer& buffer,
 	m_context.GetCommandScheduler().PopPendingOperations();
 	auto& ucfg   = buffer.GetUserConfig();
 	auto& sh_ctx = buffer.GetShaders();
+
+	TracePsScope trace_ps_scope(sh_ctx.GetPs().ps_regs.data_addr);
 
 	buffer.SetDebugInfo(static_cast<uint32_t>(CommandBufferDebugOp::DrawIndex), submit_id,
 	                    args.index_count, 0, 1, args.instance_count,
@@ -1963,6 +1997,7 @@ void RenderExecutor::DrawIndex(uint64_t submit_id, CommandBuffer& buffer,
 
 // NOLINTNEXTLINE(readability-function-cognitive-complexity)
 void RenderExecutor::DrawAuto(uint64_t submit_id, CommandBuffer& buffer, const DrawAutoArgs& args) {
+	TracePsScope trace_ps_scope(buffer.GetShaders().GetPs().ps_regs.data_addr);
 	KYTY_PROFILER_FUNCTION();
 
 	EXIT_IF(buffer.IsInvalid());

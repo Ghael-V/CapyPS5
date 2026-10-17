@@ -7,6 +7,7 @@
 #include "common/assert.h"
 #include "common/common.h"
 #include "common/dateTime.h"
+#include "common/debugFlags.h"
 #include "common/emulatorConfig.h"
 #include "common/hostException.h"
 #include "common/logging/log.h"
@@ -3894,6 +3895,15 @@ void KYTY_SYSV_ABI KernelSetThreadDtors(thread_dtors_func_t dtors) {
 }
 
 int KYTY_SYSV_ABI KernelUsleep(KernelUseconds microseconds) {
+	// `setprop debug.capy.sleep_log 1`: log each distinct usleep length >= 1 ms with its guest
+	// caller (tag CapyPS5-Sleep), to find threads that poll with sleeps.
+	static Common::DebugFlags::CachedValue sleep_log("debug.capy.sleep_log", 0);
+	if (sleep_log.Get() != 0 && microseconds >= 1000) {
+		const auto caller = Cpu::GuestReturnAddress();
+		Common::DebugFlags::NoteOnce("CapyPS5-Sleep", (caller << 20u) ^ microseconds,
+		                             "usleep(%u us) from 0x%llx", static_cast<unsigned>(microseconds),
+		                             static_cast<unsigned long long>(caller));
+	}
 	SleepMicroWithSignalPoll(microseconds);
 	return OK;
 }

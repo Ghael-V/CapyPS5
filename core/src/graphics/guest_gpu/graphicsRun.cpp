@@ -846,11 +846,24 @@ bool GuestGpu::Process(Submission& submission) {
 					break;
 				}
 			}
+			// Unity submits hundreds of small graphics batches per second (Castlevania: ~590/s);
+			// flushing each one ended the render pass, so the Adreno stored and reloaded its 4K
+			// targets every time. While more work is queued, keep recording into the same command
+			// buffer; flush when the queue drains or a batch blocks.
+			// `setprop debug.capy.batch_submits 0` flushes after every batch as before.
+			static Common::DebugFlags::CachedValue batch_submits("debug.capy.batch_submits", 1);
+			bool more_queued = false;
+			if (complete && batch_submits.Get() != 0) {
+				Common::LockGuard lock(m_queue_mutex);
+				more_queued = m_submission_count != 0;
+			}
 			if (progressed || !complete) {
 				if (complete) {
 					m_renderer.RunGarbageCollector();
 				}
-				cp.BufferFlush();
+				if (!more_queued) {
+					cp.BufferFlush();
+				}
 			} else if (complete) {
 				m_renderer.RunGarbageCollector();
 			}
