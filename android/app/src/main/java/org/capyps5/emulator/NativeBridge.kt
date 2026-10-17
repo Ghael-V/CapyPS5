@@ -33,6 +33,10 @@ object NativeBridge {
         r2: Float
     )
     external fun nativeGetVersion(): String
+    /** On-screen touchpad: [finger] 0 or 1, [x]/[y] normalized to the pad (0..1). */
+    external fun nativeSendTouch(finger: Int, down: Boolean, x: Float, y: Float)
+    /** Touchpad click, merged into whatever the controllers send. */
+    external fun nativeSetTouchpadClick(down: Boolean)
 
     /** Render passes of the last frame, 5 longs each; see LayersPanel. */
     external fun nativeGetPasses(): LongArray

@@ -66,6 +66,7 @@ import org.capyps5.emulator.ui.OnNavKey
 import org.capyps5.emulator.ui.components.LayersPanel
 import org.capyps5.emulator.ui.components.PerfOverlay
 import org.capyps5.emulator.ui.components.SettingsPanel
+import org.capyps5.emulator.ui.components.TouchpadOverlay
 import org.capyps5.emulator.ui.components.VirtualGamepad
 import org.capyps5.emulator.ui.theme.Capy
 
@@ -195,8 +196,11 @@ fun EmulationScreen(
             VirtualGamepad(
                 modifier = Modifier.fillMaxSize(),
                 alpha = settings.controlsOpacity,
+                showTouchpad = settings.touchpadOverlay != TouchControlsMode.Never,
                 onMenuClick = { showPauseMenu = true },
             )
+        } else if (settings.touchpadOverlay == TouchControlsMode.Always) {
+            TouchpadOverlay(Modifier.fillMaxSize(), alpha = settings.controlsOpacity)
         }
 
         PerfOverlay(

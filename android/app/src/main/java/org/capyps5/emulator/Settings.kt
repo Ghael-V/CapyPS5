@@ -58,6 +58,17 @@ class Settings(context: Context) {
         private set
     var controlsOpacity by mutableFloatStateOf(prefs.getFloat("controls_opacity", 0.6f))
         private set
+    /** On-screen touchpad: Auto shows it with the touch controls, Always also with a physical pad. */
+    var touchpadOverlay by mutableStateOf(
+        runCatching { TouchControlsMode.valueOf(prefs.getString("touchpad_overlay", null)!!) }
+            .getOrDefault(TouchControlsMode.Auto)
+    )
+        private set
+
+    fun updateTouchpadOverlay(value: TouchControlsMode) {
+        touchpadOverlay = value
+        prefs.edit().putString("touchpad_overlay", value.name).apply()
+    }
     /** Folders scanned for games (each game a subfolder with eboot.bin); the first one also holds logs. */
     var libraryPaths by mutableStateOf(
         prefs.getString("library_paths", null)?.split('\n')?.filter { it.isNotBlank() }?.takeIf { it.isNotEmpty() }

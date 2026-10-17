@@ -110,6 +110,14 @@ fun SettingsScreen(
                         },
                     ),
                     SettingItem(
+                        "Touchpad en pantalla",
+                        "Automático: con los controles táctiles · Siempre: también con un mando físico",
+                        settings.touchpadOverlay.label,
+                        onStep = {
+                            settings.updateTouchpadOverlay(cycle(TouchControlsMode.entries, settings.touchpadOverlay, it))
+                        },
+                    ),
+                    SettingItem(
                         "Opacidad de los controles", null, "%.0f %%".format(settings.controlsOpacity * 100),
                         onStep = { settings.updateControlsOpacity((settings.controlsOpacity + it * 0.1f).coerceIn(0.1f, 1f)) },
                     ),

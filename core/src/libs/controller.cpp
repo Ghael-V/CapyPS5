@@ -621,10 +621,7 @@ void GameController::TouchPad(int id, int finger, bool down, float x, float y) {
 		touch.down = down;
 		touch.x    = static_cast<uint16_t>(std::clamp(x, 0.0f, 1.0f) * 1920.0f);
 		touch.y    = static_cast<uint16_t>(std::clamp(y, 0.0f, 1.0f) * 943.0f);
-		if (id == HOST_INPUT_CONTROLLER_ID) {
-			m_state.buttons = down ? m_state.buttons | PAD_BUTTON_TOUCH_PAD
-			                       : m_state.buttons & ~PAD_BUTTON_TOUCH_PAD;
-		}
+		// Touching the pad is not clicking it; the click arrives as PAD_BUTTON_TOUCH_PAD.
 		AddState();
 	}
 }

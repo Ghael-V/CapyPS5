@@ -275,7 +275,11 @@ private fun TopIcon(icon: ImageVector, onClick: () -> Unit) {
 @Composable
 private fun GameRow(games: List<GameItem>, selected: Int, onSelect: (Int) -> Unit) {
     val state = rememberLazyListState()
-    LaunchedEffect(selected) { if (games.isNotEmpty()) state.animateScrollToItem(selected.coerceIn(0, games.size - 1)) }
+    // The selection moves along the row up to the third slot; only then does the row scroll, so
+    // the games before and after the selected one stay in view.
+    LaunchedEffect(selected) {
+        if (games.isNotEmpty()) state.animateScrollToItem((selected - 2).coerceIn(0, games.size - 1))
+    }
     Column {
         LazyRow(
             state = state,

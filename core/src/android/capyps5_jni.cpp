@@ -12,6 +12,8 @@
 #include "emulator.h"
 #include "libs/controller.h"
 
+#include <array>
+#include <mutex>
 #include <algorithm>
 #include <android/log.h>
 #include <atomic>
@@ -164,10 +166,35 @@ JNIEXPORT void JNICALL Java_org_capyps5_emulator_NativeBridge_nativeStopGame(
 	}
 }
 
+// Last pad state from the frontend, so the on-screen touchpad click can be merged into it (a
+// physical controller sends its whole state on every event and would drop the click).
+static std::mutex             g_pad_mutex;
+static jint                   g_last_buttons = 0;
+static std::array<jfloat, 6>  g_last_axes {};
+static bool                   g_touchpad_click = false;
+
+static void SubmitPad(jint buttons, jfloat lx, jfloat ly, jfloat rx, jfloat ry, jfloat l2, jfloat r2);
+
 JNIEXPORT void JNICALL Java_org_capyps5_emulator_NativeBridge_nativeSendControllerInput(
     JNIEnv* /*env*/, jclass /*clazz*/, jint buttons, jfloat lx, jfloat ly,
     jfloat rx, jfloat ry, jfloat l2, jfloat r2) {
+	std::lock_guard lock(g_pad_mutex);
+	g_last_buttons = buttons;
+	g_last_axes    = {lx, ly, rx, ry, l2, r2};
+	SubmitPad(buttons, lx, ly, rx, ry, l2, r2);
+}
+
+JNIEXPORT void JNICALL Java_org_capyps5_emulator_NativeBridge_nativeSetTouchpadClick(
+    JNIEnv* /*env*/, jclass /*clazz*/, jboolean down) {
+	std::lock_guard lock(g_pad_mutex);
+	g_touchpad_click = down != JNI_FALSE;
+	const auto& a = g_last_axes;
+	SubmitPad(g_last_buttons, a[0], a[1], a[2], a[3], a[4], a[5]);
+}
+
+static void SubmitPad(jint buttons, jfloat lx, jfloat ly, jfloat rx, jfloat ry, jfloat l2, jfloat r2) {
 	uint32_t pad_buttons = static_cast<uint32_t>(buttons) & 0xFFFE;
+	if (g_touchpad_click) pad_buttons |= Libs::Controller::PAD_BUTTON_TOUCH_PAD;
 	if (buttons & 1) pad_buttons |= Libs::Controller::PAD_BUTTON_TOUCH_PAD;
 	if (buttons & (1 << 16)) pad_buttons |= Libs::Controller::PAD_BUTTON_TOUCH_PAD;
 
@@ -197,6 +224,12 @@ JNIEXPORT void JNICALL Java_org_capyps5_emulator_NativeBridge_nativeSendControll
 
 	Libs::Controller::SetState(Libs::Controller::HOST_INPUT_CONTROLLER_ID,
 	                           pad_buttons, axis_lx, axis_ly, axis_rx, axis_ry, axis_l2, axis_r2);
+}
+
+// On-screen touchpad: finger 0 or 1, coordinates normalized to the pad (0..1).
+JNIEXPORT void JNICALL Java_org_capyps5_emulator_NativeBridge_nativeSendTouch(
+    JNIEnv* /*env*/, jclass /*clazz*/, jint finger, jboolean down, jfloat x, jfloat y) {
+	Libs::Controller::SetTouchPad(Libs::Controller::HOST_INPUT_CONTROLLER_ID, finger, down != JNI_FALSE, x, y);
 }
 
 // Layout must match NativeBridge.STAT_* in Kotlin.
