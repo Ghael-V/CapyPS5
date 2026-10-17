@@ -1884,6 +1884,24 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 				Common::DebugFlags::FrameTrace("  dump depth-after -> %d", ok ? 1 : 0);
 			}
 		}
+#if defined(__ANDROID__)
+		// `debug.capy.dump_files N`: save the first color target and the depth target of traced
+		// draws [dump_from, dump_from + N) linearly to <files>/watch/f<draw>.img.
+		static Common::DebugFlags::CachedValue dump_from("debug.capy.dump_from", 1);
+		static Common::DebugFlags::CachedValue dump_files("debug.capy.dump_files", 0);
+		if (dump_files.Get() > 0 && static_cast<int64_t>(index) >= dump_from.Get() &&
+		    static_cast<int64_t>(index) < dump_from.Get() + dump_files.Get() && state.color_count > 0) {
+			const auto dir = AndroidGetFilesDir() + "/watch";
+			Common::File::CreateDirectories(dir);
+			char name[32];
+			std::snprintf(name, sizeof(name), "/f%04u.img", index);
+			m_context.GetTextureCache().DebugSaveImageLinear(state.color_info[0].image_id, dir + name);
+			if (state.depth_info.image_id) {
+				std::snprintf(name, sizeof(name), "/f%04u_d.img", index);
+				m_context.GetTextureCache().DebugSaveImageLinear(state.depth_info.image_id, dir + name);
+			}
+		}
+#endif
 	}
 #if defined(__ANDROID__)
 	// `debug.capy.watch_dump N` with watch_ps: save the first color target of the next N draws of
