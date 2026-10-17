@@ -4,9 +4,40 @@
 #include "graphics/host_gpu/graphicContext.h"
 #include "graphics/host_gpu/renderer/image/image.h"
 
+#include <algorithm>
+#include <array>
+#include <utility>
+
 namespace Libs::Graphics {
 
 namespace {
+
+/**
+ * Guest packed 16-bit formats put channel X (red) in the lowest bits; the Vulkan formats they map
+ * to order channels from the top. Re-route the swizzle so samples see the guest's channels:
+ * 5_5_5_1 as A1R5G5B5 swaps red and blue (Ratchet & Clank: Size Matters' sand looked blue), and
+ * 4_4_4_4 as R4G4B4A4 reverses all four.
+ */
+[[nodiscard]] vk::ComponentMapping PackedChannelOrder(vk::Format format, vk::ComponentMapping mapping) {
+	std::array<vk::ComponentSwizzle, 4> source {vk::ComponentSwizzle::eR, vk::ComponentSwizzle::eG,
+	                                            vk::ComponentSwizzle::eB, vk::ComponentSwizzle::eA};
+	switch (format) {
+		case vk::Format::eA1R5G5B5UnormPack16: std::swap(source[0], source[2]); break;
+		case vk::Format::eR4G4B4A4UnormPack16: std::reverse(source.begin(), source.end()); break;
+		default: return mapping;
+	}
+	const auto route = [&](vk::ComponentSwizzle swizzle, uint32_t identity) {
+		switch (swizzle) {
+			case vk::ComponentSwizzle::eIdentity: return source[identity];
+			case vk::ComponentSwizzle::eR: return source[0];
+			case vk::ComponentSwizzle::eG: return source[1];
+			case vk::ComponentSwizzle::eB: return source[2];
+			case vk::ComponentSwizzle::eA: return source[3];
+			default: return swizzle;
+		}
+	};
+	return {route(mapping.r, 0), route(mapping.g, 1), route(mapping.b, 2), route(mapping.a, 3)};
+}
 
 [[nodiscard]] bool IsComponentSwizzle(vk::ComponentSwizzle swizzle) {
 	switch (swizzle) {
@@ -371,7 +402,10 @@ vk::ImageView Image::FindView(const ImageViewInfo& view_info) {
 	create.image                           = image.image;
 	create.viewType                        = normalized.type;
 	create.format                          = normalized.format;
-	create.components                      = normalized.mapping;
+	// Storage and attachment views need the identity mapping; only sampled views are re-routed.
+	const bool sampled_only = !is_storage && !(image.usage & vk::ImageUsageFlagBits::eColorAttachment);
+	create.components       = sampled_only ? PackedChannelOrder(normalized.format, normalized.mapping)
+	                                       : normalized.mapping;
 	create.subresourceRange.aspectMask     = normalized.aspect;
 	create.subresourceRange.baseMipLevel   = normalized.base_level;
 	create.subresourceRange.levelCount     = normalized.level_count;
