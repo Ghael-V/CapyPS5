@@ -195,6 +195,34 @@ void SetAddressFoldMask(uint64_t mask) {
 	g_address_fold_mask.store(mask, std::memory_order_relaxed);
 }
 
+static constexpr uint32_t                                 MaxFoldWindows = 16;
+static std::array<std::pair<uint64_t, uint64_t>, MaxFoldWindows> g_fold_windows {};
+static std::atomic<uint32_t>                              g_fold_window_count {0};
+
+void RegisterFoldWindow(uint64_t start, uint64_t size) {
+	const auto index = g_fold_window_count.load(std::memory_order_relaxed);
+	if (index >= MaxFoldWindows) {
+		return;
+	}
+	g_fold_windows[index] = {start, size};
+	g_fold_window_count.store(index + 1u, std::memory_order_release);
+}
+
+bool HasFoldWindows() {
+	return g_fold_window_count.load(std::memory_order_relaxed) != 0;
+}
+
+uint64_t FoldHleArgument(uint64_t value) {
+	const auto count = g_fold_window_count.load(std::memory_order_acquire);
+	for (uint32_t i = 0; i < count; i++) {
+		const auto& [start, size] = g_fold_windows[i];
+		if (value - start < size) {
+			return value & g_address_fold_mask.load(std::memory_order_relaxed);
+		}
+	}
+	return value;
+}
+
 #include "memoryAddressSpace.inc"
 
 enum class VirtualRangeType {
@@ -3686,6 +3714,7 @@ static void ReserveFoldedTail(uint64_t base, uint64_t requested_len) {
 		return;
 	}
 	UnmapGpuRange(folded, TAIL_SIZE);
+	RegisterFoldWindow(tail, TAIL_SIZE);
 	if (g_address_fold_mask.exchange(FOLD_MASK) == 0 && g_address_fold_hook != nullptr) {
 		g_address_fold_hook(FOLD_MASK);
 	}
@@ -3727,12 +3756,60 @@ int KYTY_SYSV_ABI KernelReserveVirtualRange(void** addr, size_t len, int flags, 
 		if (in_addr == 0 || (in_addr & (PAGE_SIZE - 1)) != 0) {
 			return KERNEL_ERROR_EINVAL;
 		}
-		if ((flags & GUEST_MAP_NO_OVERWRITE) != 0 && g_virtual_ranges->HasOverlap(in_addr, len)) {
-			return KERNEL_ERROR_ENOMEM;
+		// Unreal Engine 5 on PS5 reserves 256 GiB at a fixed address; like the unfixed case
+		// below, a 39-bit host cannot hold it, so reserve the start of the range instead (its
+		// allocators fill from the bottom). `debug.capy.clip_reserve 0` disables this.
+		static Common::DebugFlags::CachedValue clip_fixed("debug.capy.clip_reserve", 1);
+		constexpr size_t FIXED_CLIP_MAX = 0x1000000000ull; // 64 GiB
+		constexpr size_t FIXED_CLIP_MIN = 0x400000000ull;  // 16 GiB
+		const size_t     requested_len  = len;
+		// Above the 39-bit fold mask (UE5 asks for 0x8600000000) the range lives at its folded
+		// address, where the JIT and the Map/Unmap wrappers send its accesses anyway; the game
+		// keeps its own address. Only the room below the next mapping is reserved there.
+		const auto fold_mask = g_address_fold_mask.load(std::memory_order_relaxed);
+		const bool folded    = clip_fixed.Get() != 0 && fold_mask != 0 && in_addr > fold_mask;
+		const auto base      = folded ? (in_addr & fold_mask) : in_addr;
+		const auto clip_min  = folded ? size_t {0x40000000ull} : FIXED_CLIP_MIN;
+		for (;;) {
+			const bool overlap = (folded || (flags & GUEST_MAP_NO_OVERWRITE) != 0) &&
+			                     g_virtual_ranges->HasOverlap(base, len);
+			if (!overlap && folded && !g_guest_address_space->Owns(base, len) &&
+			    g_guest_address_space->AdoptHostRange(base, len)) {
+				Common::DebugFlags::NoteOnce("CapyPS5-Mem", base ^ 0x41444f50ull,
+				                             "adopted host window 0x%llx size 0x%llx for guest 0x%llx",
+				                             static_cast<unsigned long long>(base),
+				                             static_cast<unsigned long long>(len),
+				                             static_cast<unsigned long long>(in_addr));
+			}
+			if (!overlap && ReplaceFixedRangeWithReserved(base, len)) {
+				out_addr            = in_addr;
+				range_already_added = true;
+				break;
+			}
+			if (clip_fixed.Get() == 0 || len <= clip_min) {
+				Common::DebugFlags::NoteOnce(
+				    "CapyPS5-Mem", in_addr ^ 0x46495845ull,
+				    "ReserveVirtualRange fixed 0x%llx size 0x%llx flags 0x%x failed (%s)",
+				    static_cast<unsigned long long>(in_addr),
+				    static_cast<unsigned long long>(requested_len), static_cast<unsigned>(flags),
+				    overlap ? "overlaps an existing range" : "cannot be mapped");
+				return KERNEL_ERROR_ENOMEM;
+			}
+			len = len > FIXED_CLIP_MAX ? FIXED_CLIP_MAX
+			                           : std::max<size_t>(clip_min, (len / 2) & ~(PAGE_SIZE - 1));
 		}
-		if (ReplaceFixedRangeWithReserved(in_addr, len)) {
-			out_addr            = in_addr;
-			range_already_added = true;
+		if (len < requested_len || folded) {
+			Common::DebugFlags::NoteOnce("CapyPS5-Mem", in_addr,
+			                             "ReserveVirtualRange fixed 0x%llx clipped from 0x%llx to 0x%llx at 0x%llx",
+			                             static_cast<unsigned long long>(in_addr),
+			                             static_cast<unsigned long long>(requested_len),
+			                             static_cast<unsigned long long>(len),
+			                             static_cast<unsigned long long>(base));
+			if (!folded) {
+				ReserveFoldedTail(in_addr, requested_len);
+			} else {
+				RegisterFoldWindow(in_addr, requested_len);
+			}
 		}
 	} else {
 		alignment = (alignment != 0 ? alignment : PAGE_SIZE);

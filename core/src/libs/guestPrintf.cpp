@@ -14,6 +14,9 @@
 #include "common/stringUtils.h"
 #include "libs/vaContext.h"
 
+#if defined(__ANDROID__)
+#include <android/log.h>
+#endif
 #include <cfloat>
 #include <cmath>
 #include <vector>
@@ -778,6 +781,10 @@ static int kyty_printf_internal(bool sn, char* sn_s, size_t sn_n, const char* fo
 		}
 	} else {
 		LOGF_COLOR(Log::Color::BrightMagenta, "%s", buffer.data());
+#if defined(__ANDROID__)
+		// Games print their own startup errors; mirror them to logcat (tag CapyPS5-Guest).
+		__android_log_print(ANDROID_LOG_INFO, "CapyPS5-Guest", "%s", buffer.data());
+#endif
 	}
 
 	// return written chars without terminating \0

@@ -566,6 +566,14 @@ public:
 			uint64_t a13 = guest_stack ? guest_stack[8] : 0;
 			uint64_t a14 = guest_stack ? guest_stack[9] : 0;
 			uint64_t a15 = guest_stack ? guest_stack[10] : 0;
+			if (Libs::LibKernel::Memory::HasFoldWindows()) {
+				// Pointers into guest ranges above the 39-bit host limit reach emulator code
+				// unmasked (the JIT only masks the guest's own accesses).
+				for (auto* arg: {&a0, &a1, &a2, &a3, &a4, &a5, &a6, &a7, &a8, &a9, &a10, &a11, &a12,
+				                 &a13, &a14, &a15}) {
+					*arg = Libs::LibKernel::Memory::FoldHleArgument(*arg);
+				}
+			}
 
 			using hle_fn_t = uint64_t (*)(uint64_t, uint64_t, uint64_t, uint64_t,
 			                             uint64_t, uint64_t, uint64_t, uint64_t,
@@ -602,6 +610,27 @@ public:
 			                  a8, a9, a10, a11, a12, a13, a14, a15);
 			t_last_hle_func = host_func;
 			t_hle_saved     = outer_saved;
+			{
+				// `setprop debug.capy.hle_trace N` (before launching a game): log the first N HLE
+				// calls with their first arguments and result (tag CapyPS5-HleTrace), to see what a
+				// game did before it failed.
+				static Common::DebugFlags::CachedValue hle_trace("debug.capy.hle_trace", 0);
+				static std::atomic<int64_t>             traced {0};
+				if (hle_trace.Get() > 0 && traced.fetch_add(1, std::memory_order_relaxed) < hle_trace.Get()) {
+					std::string name = "?";
+					{
+						std::lock_guard<std::mutex> lock(s_trampoline_mutex);
+						if (const auto it = s_trampoline_names.find(host_func); it != s_trampoline_names.end()) {
+							name = it->second;
+						}
+					}
+					__android_log_print(ANDROID_LOG_WARN, "CapyPS5-HleTrace",
+					                    "tid %d %s(0x%llx, 0x%llx, 0x%llx) = 0x%llx", static_cast<int>(gettid()),
+					                    name.c_str(), static_cast<unsigned long long>(a0),
+					                    static_cast<unsigned long long>(a1), static_cast<unsigned long long>(a2),
+					                    static_cast<unsigned long long>(ret));
+				}
+			}
 			if (in_flight != nullptr) {
 				in_flight->func.store(outer_func, std::memory_order_relaxed);
 				in_flight->start_ns.store(outer_start, std::memory_order_relaxed);
@@ -1169,5 +1198,19 @@ CpuBackend* CpuBackend::Instance() {
 namespace Cpu {
 uint64_t LastHleFunction() {
 	return t_last_hle_func;
+}
+
+uint64_t GuestReturnAddress() {
+#if defined(__aarch64__)
+	// Inside an HLE call the guest stack starts with the caller's return address.
+	if (s_current_fex_thread != nullptr && s_current_fex_thread->CurrentFrame != nullptr) {
+		const auto rsp = s_current_fex_thread->CurrentFrame->State.gregs[FEXCore::X86State::REG_RSP];
+		uint64_t   value = 0;
+		if (rsp != 0 && Libs::LibKernel::Memory::ReadGuestMemory(rsp, &value, sizeof(value))) {
+			return value;
+		}
+	}
+#endif
+	return 0;
 }
 } // namespace Cpu

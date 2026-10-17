@@ -206,6 +206,12 @@ using AddressFoldHook = void (*)(uint64_t mask);
 void SetAddressFoldHook(AddressFoldHook hook);
 /** Enables folding up front (the JIT masks from its start). */
 void SetAddressFoldMask(uint64_t mask);
+/** Guest ranges above the fold mask that games really use (reservations placed at their folded
+ * address). Emulator functions receive raw guest pointers, so their arguments inside these
+ * windows are folded on entry. */
+void RegisterFoldWindow(uint64_t start, uint64_t size);
+[[nodiscard]] bool     HasFoldWindows();
+[[nodiscard]] uint64_t FoldHleArgument(uint64_t value);
 
 #if defined(KYTY_VIRTUAL_MEMORY_ALLOCATION_TESTS)
 void     TestBeforeNextBackingMap(callback_func_t callback);

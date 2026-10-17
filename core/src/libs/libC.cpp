@@ -49,6 +49,22 @@ void KernelDispatchPendingSignalForCurrentThread();
 const char* GetProgName();
 } // namespace LibKernel
 
+void GuestProcessExit(const char* api, int code) {
+	const auto caller = Cpu::GuestReturnAddress();
+	auto*      rt     = Common::Singleton<Loader::RuntimeLinker>::Instance();
+	const auto* program = caller != 0 ? rt->FindProgramByAddr(caller) : nullptr;
+	const auto  message = fmt::format(
+	    "Guest {}({}) from 0x{:x} ({} +0x{:x}): the game closed itself", api, code, caller,
+	    program != nullptr ? program->file_name.filename().string() : std::string("?"),
+	    program != nullptr ? caller - program->base_vaddr : 0);
+	Log::WriteFatal(message);
+#if defined(__ANDROID__)
+	__android_log_print(ANDROID_LOG_ERROR, "CapyPS5-Core", "%s", message.c_str());
+#endif
+	std::fflush(nullptr);
+	std::_Exit(code);
+}
+
 namespace LibC {
 
 LIB_VERSION("libc", 1, "libc", 1, 1);
@@ -86,7 +102,7 @@ const char** GetArgv() {
 static KYTY_SYSV_ABI void exit(int code) {
 	PRINT_NAME();
 
-	::exit(code);
+	GuestProcessExit("libc exit", code);
 }
 
 static void PrintAbortStringCandidate(const char* name, uint64_t addr) {

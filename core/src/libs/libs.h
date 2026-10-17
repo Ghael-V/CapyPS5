@@ -79,5 +79,9 @@ namespace Libs {
 
 void InitAll(Loader::SymbolDatabase* s);
 
+// The guest called exit(): log the code and the calling module, then end the process without
+// running host destructors (emulator threads are still using those objects).
+[[noreturn]] void GuestProcessExit(const char* api, int code);
+
 } // namespace Libs
 #endif /* EMULATOR_INCLUDE_EMULATOR_LIBS_LIBS_H_ */

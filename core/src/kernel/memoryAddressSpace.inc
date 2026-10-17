@@ -916,6 +916,32 @@ public:
 		return FindFreeAlignedUnlocked(search_start, search_end, size, alignment);
 	}
 
+	// Takes over another host window for the guest: high guest ranges folded below a 39-bit
+	// host limit can land outside the regions reserved at startup. Fails if anything is mapped.
+	bool AdoptHostRange(uint64_t vaddr, uint64_t size) {
+#if KYTY_PLATFORM == KYTY_PLATFORM_LINUX && !defined(__APPLE__) && defined(MAP_FIXED_NOREPLACE)
+		if (vaddr == 0 || size == 0 || !IsPageAligned(vaddr) || !IsPageAligned(size)) {
+			return false;
+		}
+		std::lock_guard lock(m_mutex);
+		void* ptr = mmap(reinterpret_cast<void*>(vaddr), size, PROT_NONE,
+		                 MAP_PRIVATE | MAP_ANON | MAP_NORESERVE | MAP_FIXED_NOREPLACE, -1, 0);
+		if (ptr == MAP_FAILED || reinterpret_cast<uint64_t>(ptr) != vaddr) {
+			if (ptr != MAP_FAILED) {
+				munmap(ptr, size);
+			}
+			return false;
+		}
+		AddFreeUnlocked(vaddr, size);
+		m_owned.emplace_back(vaddr, size);
+		return true;
+#else
+		(void)vaddr;
+		(void)size;
+		return false;
+#endif
+	}
+
 	bool ReserveFixed(uint64_t vaddr, uint64_t size) {
 		if (vaddr == 0 || size == 0 || !IsPageAligned(vaddr) || !IsPageAligned(size)) {
 			return false;

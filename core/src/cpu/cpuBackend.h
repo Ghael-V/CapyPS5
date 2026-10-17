@@ -22,6 +22,8 @@ namespace Cpu {
 
 /** Host address of the last HLE function the current thread returned from (diagnostics). */
 uint64_t LastHleFunction();
+/** Guest address an HLE function returns to (0 when unknown; diagnostics). */
+uint64_t GuestReturnAddress();
 
 enum class BackendType {
 	Native,      // Direct x86_64 host execution (PC)
