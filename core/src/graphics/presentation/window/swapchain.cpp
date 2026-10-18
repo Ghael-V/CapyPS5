@@ -278,6 +278,8 @@ public:
 	void                 Create();
 	void                 Recreate(bool surface_lost = false);
 	[[nodiscard]] bool   NeedsResize() const;
+	/** Present SRGB frames to an SRGB swapchain, so the final blit does not convert them. */
+	void SetWantSrgb(bool want) noexcept { m_want_srgb = want; }
 	[[nodiscard]] Status AcquireNextImage();
 	[[nodiscard]] bool   PrepareSystemOverlay();
 	void     RecordPresentCommands(CommandBuffer& command, Presenter::Frame* source,
@@ -298,6 +300,8 @@ private:
 	WindowContext&   m_window;
 	vk::SwapchainKHR m_handle = nullptr;
 	vk::Format       m_format = vk::Format::eUndefined;
+	bool             m_want_srgb = false;
+	bool             m_srgb_unavailable = false; // the surface offers no SRGB format
 	vk::Extent2D     m_extent {};
 	// Drawable pixel size observed when this swapchain was created.
 	vk::Extent2D                   m_window_extent {};
@@ -419,17 +423,29 @@ void Swapchain::Create() {
 
 	vk::SurfaceFormatKHR format {vk::Format::eR8G8B8A8Unorm, vk::ColorSpaceKHR::eSrgbNonlinear};
 	if (surface.formats.size() != 1 || surface.formats.front().format != vk::Format::eUndefined) {
-		const auto it = std::find_if(surface.formats.begin(), surface.formats.end(),
-		                             [](const vk::SurfaceFormatKHR& candidate) {
-			                             return candidate.format == vk::Format::eB8G8R8A8Unorm ||
-			                                    candidate.format == vk::Format::eR8G8B8A8Unorm;
-		                             });
+		auto it = surface.formats.end();
+		if (m_want_srgb) {
+			it = std::find_if(surface.formats.begin(), surface.formats.end(),
+			                  [](const vk::SurfaceFormatKHR& candidate) {
+				                  return candidate.format == vk::Format::eB8G8R8A8Srgb ||
+				                         candidate.format == vk::Format::eR8G8B8A8Srgb;
+			                  });
+		}
+		if (it == surface.formats.end()) {
+			it = std::find_if(surface.formats.begin(), surface.formats.end(),
+			                  [](const vk::SurfaceFormatKHR& candidate) {
+				                  return candidate.format == vk::Format::eB8G8R8A8Unorm ||
+				                         candidate.format == vk::Format::eR8G8B8A8Unorm;
+			                  });
+		}
 		if (it == surface.formats.end()) {
 			EXIT("no supported UNORM swapchain format\n");
 		}
 		format = *it;
 	}
 	m_format                      = format.format;
+	m_srgb_unavailable            = m_want_srgb && m_format != vk::Format::eB8G8R8A8Srgb &&
+	                                m_format != vk::Format::eR8G8B8A8Srgb;
 	const auto swapchain_features = graphics.GetFormatProperties(m_format).optimalTilingFeatures;
 	if (!static_cast<bool>(swapchain_features & vk::FormatFeatureFlagBits::eBlitDst)) {
 		EXIT("swapchain format cannot be a blit destination: format=%d\n",
@@ -586,6 +602,10 @@ void Swapchain::Recreate(bool surface_lost) {
 }
 
 bool Swapchain::NeedsResize() const {
+	const bool srgb = m_format == vk::Format::eB8G8R8A8Srgb || m_format == vk::Format::eR8G8B8A8Srgb;
+	if (srgb != m_want_srgb && !m_srgb_unavailable) {
+		return true;
+	}
 	Common::LockGuard lock(m_window.mutex);
 	return m_window_extent.width != m_window.graphic_ctx.screen_width ||
 	       m_window_extent.height != m_window.graphic_ctx.screen_height;
@@ -914,12 +934,10 @@ Presenter::~Presenter() = default;
 Presenter::Frame& Presenter::PrepareFrame(CommandBuffer& buffer, const ImageInfo& info) {
 	KYTY_PROFILER_FUNCTION();
 	EXIT_IF(buffer.IsInvalid());
-	auto frame_format = info.pixel_format;
-	switch (frame_format) {
-		case vk::Format::eR8G8B8A8Srgb: frame_format = vk::Format::eR8G8B8A8Unorm; break;
-		case vk::Format::eB8G8R8A8Srgb: frame_format = vk::Format::eB8G8R8A8Unorm; break;
-		default: break;
-	}
+	// The frame keeps the guest format: the Adreno driver copied an SRGB image into a UNORM one
+	// through a temporary allocation it made and freed on every frame, which held Animal Well's
+	// 4K output at 30 FPS. The swapchain follows the frame's encoding instead (see Present()).
+	const auto frame_format = info.pixel_format;
 	auto* frame = m_impl->frames.Acquire({info.extent.width, info.extent.height}, frame_format);
 	Common::LockGuard render_lock(m_impl->renderer.GetMutex());
 	auto&             image = m_impl->ResolveSurface(info);
@@ -1013,6 +1031,10 @@ void Presenter::Impl::Present() {
 	if (Common::DebugFlags::Enabled(Common::DebugFlags::IdleBeforePresent)) {
 		Common::LockGuard queue_lock(window.graphic_ctx.queue_mutex);
 		(void)window.graphic_ctx.device.waitIdle();
+	}
+	if (layers[0].frame != nullptr) {
+		const auto format = layers[0].frame->image.format;
+		swapchain.SetWantSrgb(format == vk::Format::eB8G8R8A8Srgb || format == vk::Format::eR8G8B8A8Srgb);
 	}
 	// Some window systems keep presenting an old swapchain after a resize.
 	if (swapchain.Handle() != nullptr && swapchain.NeedsResize()) {
