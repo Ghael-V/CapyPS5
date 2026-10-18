@@ -1360,6 +1360,9 @@ KYTY_SYSV_ABI int VideoOutSetFlipRate(int handle, int rate) {
 	PRINT_NAME();
 
 	LOGF("\trate = %d\n", rate);
+#if defined(__ANDROID__)
+	__android_log_print(ANDROID_LOG_WARN, "CapyPS5-VideoOut", "SetFlipRate rate=%d", rate);
+#endif
 
 	auto* ctx = DriverState().Get(handle);
 	if (ctx == nullptr) {

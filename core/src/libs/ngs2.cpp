@@ -1,6 +1,7 @@
 #include "libs/ngs2.h"
 
 #include "common/assert.h"
+#include "common/debugFlags.h"
 #include "common/logging/log.h"
 #include "common/threads.h"
 #include "libs/ajm/atrac9_decoder.h"
@@ -20,6 +21,10 @@
 #include <memory>
 #include <numbers>
 #include <vector>
+
+#if defined(__ANDROID__)
+#include <android/log.h>
+#endif
 
 #include "libatrac9.h"
 
@@ -533,6 +538,8 @@ struct Ngs2VoiceInternal {
 	std::vector<float>              output_matrix;
 	uint32_t                        channels        = 0;
 	uint32_t                        output_id       = 0;
+	float                           mastering_fbw   = 1.0f; // mastering gain, full-band channels
+	float                           mastering_lfe   = 1.0f; // mastering gain, LFE channel
 	bool                            rendering       = false;
 	bool                            rendered        = false;
 	bool                            has_samples     = false;
@@ -1710,7 +1717,11 @@ static void Ngs2RenderVoice(Ngs2VoiceInternal& voice, const std::vector<Ngs2Voic
 					continue;
 				}
 				EXIT_NOT_IMPLEMENTED(port.input != 0);
-				const auto* matrix = port.matrix < 0 ? nullptr : &source->matrices.at(port.matrix);
+				// A matrix the game never filled mixes like no matrix (Animal Well sends every
+				// sampler through matrix 0 without setting it, which mixed nothing).
+				const auto* matrix = port.matrix < 0 || source->matrices.at(port.matrix).empty()
+				                         ? nullptr
+				                         : &source->matrices.at(port.matrix);
 				const size_t output_channels =
 				    matrix == nullptr
 				        ? voice.channels
@@ -1719,7 +1730,7 @@ static void Ngs2RenderVoice(Ngs2VoiceInternal& voice, const std::vector<Ngs2Voic
 					for (uint32_t src = 0; src < source->channels; ++src) {
 						const float level =
 						    port.volume * (matrix == nullptr
-						                       ? (src == dst ? 1.0f : 0.0f)
+						                       ? (src == dst || source->channels == 1 ? 1.0f : 0.0f)
 						                       : (*matrix)[dst * source->channels + src]);
 						for (uint32_t i = 0; i < grain; ++i) {
 							voice.samples[dst * grain + i] +=
@@ -1821,9 +1832,11 @@ int KYTY_SYSV_ABI Ngs2SystemRender(uintptr_t system_handle, const Ngs2RenderBuff
 		}
 		for (uint32_t dst = 0; dst < output.num_channels; ++dst) {
 			for (uint32_t src = 0; src < voice->channels; ++src) {
-				const float level = voice->output_matrix.empty()
-				                        ? (src == dst ? 1.0f : 0.0f)
-				                        : voice->output_matrix.at(src * output.num_channels + dst);
+				const float gain  = (voice->channels >= 6 && src == 3) ? voice->mastering_lfe
+				                                                       : voice->mastering_fbw;
+				const float level = gain * (voice->output_matrix.empty()
+				                                ? (src == dst ? 1.0f : 0.0f)
+				                                : voice->output_matrix.at(src * output.num_channels + dst));
 				for (uint32_t i = 0; i < grain; ++i) {
 					pcm[i * output.num_channels + dst] += voice->samples[src * grain + i] * level;
 				}
@@ -1842,6 +1855,72 @@ int KYTY_SYSV_ABI Ngs2SystemRender(uintptr_t system_handle, const Ngs2RenderBuff
 			    32767l));
 		}
 	}
+#if defined(__ANDROID__)
+	// `debug.capy.ngs2_log 1`: every 200 renders, log the voices per rack type (total/with
+	// samples/playing) and the peak of each output buffer (tag CapyPS5-Ngs2).
+	static Common::DebugFlags::CachedValue ngs2_log("debug.capy.ngs2_log", 0);
+	if (ngs2_log.Get() != 0 && ngs->render_count % 200 == 0) {
+		uint32_t counts[7][3] = {};
+		for (const auto* voice: voices) {
+			auto& c = counts[static_cast<int>(voice->rack->type)];
+			c[0]++;
+			c[1] += voice->has_samples ? 1 : 0;
+			c[2] += voice->state == Ngs2VoicePlayState::Playing ? 1 : 0;
+		}
+		char line[512];
+		int  used = std::snprintf(line, sizeof(line), "render %llu:", static_cast<unsigned long long>(ngs->render_count));
+		for (int t = 0; t < 7; t++) {
+			if (counts[t][0] != 0) {
+				used += std::snprintf(line + used, sizeof(line) - used, " type%d=%u/%u/%u", t, counts[t][0],
+				                      counts[t][1], counts[t][2]);
+			}
+		}
+		for (uint32_t i = 0; i < num_buffer_info && used < 480; ++i) {
+			float peak = 0.0f;
+			if (!output_mix[i].empty()) {
+				for (float v: output_mix[i]) peak = std::max(peak, std::fabs(v));
+			} else if (buffer_info[i].buffer != nullptr && buffer_info[i].waveform_type == 0x18) {
+				const auto* f = static_cast<const float*>(buffer_info[i].buffer);
+				for (size_t k = 0; k < buffer_info[i].buffer_size / sizeof(float); k++) peak = std::max(peak, std::fabs(f[k]));
+			}
+			used += std::snprintf(line + used, sizeof(line) - used, " out%u(type 0x%x ch %u)=%.4f", i,
+			                      buffer_info[i].waveform_type, buffer_info[i].num_channels, peak);
+		}
+		__android_log_write(ANDROID_LOG_WARN, "CapyPS5-Ngs2", line);
+		// Routing of the voices that are not silent samplers: where each port sends, how loud.
+		int listed = 0;
+		for (const auto* voice: voices) {
+			const bool sampler = voice->rack->type == Ngs2RackType::Sampler;
+			if ((sampler && !voice->has_samples) || listed >= 24) {
+				continue;
+			}
+			listed++;
+			used = std::snprintf(line, sizeof(line), "  voice %p type%d ch%u state%u samples%d:",
+			                     static_cast<const void*>(voice), static_cast<int>(voice->rack->type),
+			                     voice->channels, static_cast<unsigned>(voice->state), voice->has_samples ? 1 : 0);
+			{
+				float peak = 0.0f;
+				for (float v: voice->samples) peak = std::max(peak, std::fabs(v));
+				used += std::snprintf(line + used, sizeof(line) - used, " peak%.4f", peak);
+			}
+			if (voice->rack->type == Ngs2RackType::Mastering) {
+				used += std::snprintf(line + used, sizeof(line) - used, " fbw%.3f lfe%.3f out%u matrix%zu",
+				                      voice->mastering_fbw, voice->mastering_lfe, voice->output_id,
+				                      voice->output_matrix.size());
+			}
+			for (size_t p = 0; p < voice->ports.size() && used < 440; p++) {
+				const auto& port = voice->ports[p];
+				if (port.dest == nullptr) {
+					continue;
+				}
+				used += std::snprintf(line + used, sizeof(line) - used, " p%zu->%p(type%d) in%u vol%.2f m%d", p,
+				                      static_cast<const void*>(port.dest), static_cast<int>(port.dest->rack->type),
+				                      port.input, port.volume, port.matrix);
+			}
+			__android_log_write(ANDROID_LOG_WARN, "CapyPS5-Ngs2", line);
+		}
+	}
+#endif
 	for (auto* voice: voices) {
 		// No envelope is configured, so a release stop finishes in this render.
 		if (voice->state == Ngs2VoicePlayState::Stopped) {
@@ -2274,7 +2353,22 @@ int KYTY_SYSV_ABI Ngs2VoiceControl(uintptr_t voice_handle, const Ngs2VoiceParamH
 				}
 				break;
 			}
-			case 0x2001: EXIT_NOT_IMPLEMENTED(voice->rack->type != Ngs2RackType::Reverb); break;
+			case 0x2001: {
+				EXIT_NOT_IMPLEMENTED(voice->rack->type != Ngs2RackType::Reverb);
+				// Setup: input and output channel counts. The reverb itself is not simulated: the
+				// voice passes its inputs through (Animal Well routes all its sound through one, so
+				// leaving it without channels silenced the game). Effect parameters are ignored.
+				if ((param->id & 0xffffu) == 0 && param->size >= sizeof(*param) + 2 * sizeof(uint32_t)) {
+					const auto* values  = reinterpret_cast<const uint32_t*>(param + 1);
+					const auto  max     = std::max(voice->rack->option.reverb.max_channels, 2u);
+					const auto  outputs = values[1] != 0 && values[1] <= max ? values[1] : values[0];
+					if (outputs != 0 && outputs <= max) {
+						voice->ResetSetupState();
+						voice->channels = outputs;
+					}
+				}
+				break;
+			}
 			case 0x3000: {
 				EXIT_NOT_IMPLEMENTED(voice->rack->type != Ngs2RackType::Mastering);
 				const auto* values = reinterpret_cast<const uint32_t*>(param + 1);
@@ -2288,8 +2382,33 @@ int KYTY_SYSV_ABI Ngs2VoiceControl(uintptr_t voice_handle, const Ngs2VoiceParamH
 						                            matrix->levels + matrix->num_levels);
 						break;
 					}
+					case 3: // limiter: the output is not limited
+					case 6: break; // peak meter
+					case 4: { // gain: full-band level, LFE level
+						const auto* levels = reinterpret_cast<const float*>(param + 1);
+#if defined(__ANDROID__)
+						static std::atomic<uint32_t> gain_logs {0};
+						if (gain_logs.fetch_add(1) < 8) {
+							const auto* raw = reinterpret_cast<const uint32_t*>(param + 1);
+							__android_log_print(ANDROID_LOG_WARN, "CapyPS5-Ngs2",
+							                    "mastering gain size=%u raw %08x %08x %08x %08x",
+							                    static_cast<unsigned>(param->size), raw[0], raw[1], raw[2], raw[3]);
+						}
+#endif
+						const auto  usable = [](float level) {
+							return std::isfinite(level) && level >= 0.0f && level <= 16.0f;
+						};
+						if (param->size >= sizeof(*param) + 2 * sizeof(float) && usable(levels[0]) &&
+						    usable(levels[1])) {
+							voice->mastering_fbw = levels[0];
+							voice->mastering_lfe = levels[1];
+						}
+						break;
+					}
 					case 5: voice->output_id = values[0]; break;
-					default: EXIT("unsupported mastering control: 0x%08" PRIx32 "\n", param->id);
+					default:
+						LOGF("unsupported mastering control: 0x%08" PRIx32 " (ignored)\n", param->id);
+						break;
 				}
 				break;
 			}
@@ -2479,6 +2598,57 @@ int KYTY_SYSV_ABI Ngs2VoiceRunCommands(uintptr_t voice_handle, const void* comma
 			default: EXIT("unknown command: 0x%08" PRIx32 "\n", p.id);
 		}
 	}
+	return OK;
+}
+
+struct Ngs2VoicePortInfo {
+	int32_t   matrix_id;
+	float     volume;
+	uint32_t  num_delay_samples;
+	uint32_t  dest_input_id;
+	uintptr_t dest_handle;
+};
+static_assert(sizeof(Ngs2VoicePortInfo) == 24);
+
+constexpr int32_t NGS2_ERROR_INVALID_VOICE_HANDLE = static_cast<int32_t>(0x804a0230u);
+constexpr int32_t NGS2_ERROR_INVALID_VOICE_PORT   = static_cast<int32_t>(0x804a0235u);
+
+// Animal Well queries where each voice sends its output.
+int KYTY_SYSV_ABI Ngs2VoiceGetPortInfo(uintptr_t voice_handle, uint32_t port, Ngs2VoicePortInfo* info) {
+	PRINT_NAME();
+
+	if (info == nullptr) {
+		return NGS2_ERROR_INVALID_OUT_ADDRESS;
+	}
+	if (voice_handle == 0) {
+		return NGS2_ERROR_INVALID_VOICE_HANDLE;
+	}
+	auto* voice = reinterpret_cast<Ngs2VoiceInternal*>(voice_handle);
+
+	Common::LockGuard lock(voice->rack->ngs->mutex);
+	if (port >= voice->ports.size()) {
+		return NGS2_ERROR_INVALID_VOICE_PORT;
+	}
+	const auto& state       = voice->ports[port];
+	*info                   = {};
+	info->matrix_id         = state.matrix;
+	info->volume            = state.volume;
+	info->dest_input_id     = state.input;
+	info->dest_handle       = reinterpret_cast<uintptr_t>(state.dest);
+	return OK;
+}
+
+// The rack info layout is not known; report it zeroed instead of leaving the caller's buffer as
+// it was.
+int KYTY_SYSV_ABI Ngs2RackGetInfo(uintptr_t rack_handle, void* info, size_t info_size) {
+	PRINT_NAME();
+
+	if (info == nullptr) {
+		return NGS2_ERROR_INVALID_OUT_ADDRESS;
+	}
+	LOGF("\t rack = 0x%016" PRIx64 ", info_size = %" PRIu64 "\n", static_cast<uint64_t>(rack_handle),
+	     static_cast<uint64_t>(info_size));
+	std::memset(info, 0, info_size);
 	return OK;
 }
 
