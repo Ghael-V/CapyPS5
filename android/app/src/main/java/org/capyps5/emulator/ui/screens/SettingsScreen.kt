@@ -39,6 +39,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.unit.dp
+import org.capyps5.emulator.ButtonLayout
 import org.capyps5.emulator.CoreOption
 import org.capyps5.emulator.OverlayMode
 import org.capyps5.emulator.Settings
@@ -116,6 +117,12 @@ fun SettingsScreen(
                         onStep = {
                             settings.updateTouchpadOverlay(cycle(TouchControlsMode.entries, settings.touchpadOverlay, it))
                         },
+                    ),
+                    SettingItem(
+                        "Distribución de botones",
+                        "Nintendo intercambia A↔B y X↔Y en los juegos (mandos como el de la Odin)",
+                        settings.buttonLayout.label,
+                        onStep = { settings.updateButtonLayout(cycle(ButtonLayout.entries, settings.buttonLayout, it)) },
                     ),
                     SettingItem(
                         "Opacidad de los controles", null, "%.0f %%".format(settings.controlsOpacity * 100),

@@ -64,6 +64,7 @@ class GameActivity : CapyActivity() {
         InputRouter.onRouteChanged = { toUi -> if (toUi) releaseEmulatedPad() }
 
         val settings = Settings(this)
+        swapFaceButtons = settings.buttonLayout == ButtonLayout.Nintendo
         // Global settings with this game's overrides, applied before the core reads them.
         CoreOption.entries.forEach { option ->
             NativeBridge.nativeSetOption(option.property, settings.effectiveOption(game.titleId, option))

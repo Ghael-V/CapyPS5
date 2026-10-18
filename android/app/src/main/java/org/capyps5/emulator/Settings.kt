@@ -13,6 +13,9 @@ enum class OverlayMode(val label: String) { Off("Desactivado"), Compact("Compact
 
 enum class TouchControlsMode(val label: String) { Auto("Automático"), Always("Siempre"), Never("Nunca") }
 
+/** Face buttons of a physical pad. Nintendo-labelled pads (AYN Odin) report A/B and X/Y by label. */
+enum class ButtonLayout(val label: String) { Standard("Estándar (PS5)"), Nintendo("Nintendo (PS5)") }
+
 /**
  * Emulator core option, passed to the core as its debug.capy.* property before a game starts.
  * Each has a global value and an optional per-game override.
@@ -68,6 +71,16 @@ class Settings(context: Context) {
     fun updateTouchpadOverlay(value: TouchControlsMode) {
         touchpadOverlay = value
         prefs.edit().putString("touchpad_overlay", value.name).apply()
+    }
+    var buttonLayout by mutableStateOf(
+        runCatching { ButtonLayout.valueOf(prefs.getString("button_layout", null)!!) }
+            .getOrDefault(ButtonLayout.Standard)
+    )
+        private set
+
+    fun updateButtonLayout(value: ButtonLayout) {
+        buttonLayout = value
+        prefs.edit().putString("button_layout", value.name).apply()
     }
     /** Folders scanned for games (each game a subfolder with eboot.bin); the first one also holds logs. */
     var libraryPaths by mutableStateOf(

@@ -64,7 +64,18 @@ abstract class CapyActivity : ComponentActivity() {
         sendPad()
     }
 
-    private fun padMask(keyCode: Int): Int = when (keyCode) {
+    /** Swaps A<->B and X<->Y of physical pads (ButtonLayout.Nintendo); games only. */
+    protected var swapFaceButtons = false
+
+    private fun faceSwapped(keyCode: Int): Int = if (!swapFaceButtons) keyCode else when (keyCode) {
+        KeyEvent.KEYCODE_BUTTON_A -> KeyEvent.KEYCODE_BUTTON_B
+        KeyEvent.KEYCODE_BUTTON_B -> KeyEvent.KEYCODE_BUTTON_A
+        KeyEvent.KEYCODE_BUTTON_X -> KeyEvent.KEYCODE_BUTTON_Y
+        KeyEvent.KEYCODE_BUTTON_Y -> KeyEvent.KEYCODE_BUTTON_X
+        else -> keyCode
+    }
+
+    private fun padMask(keyCode: Int): Int = when (faceSwapped(keyCode)) {
         KeyEvent.KEYCODE_BUTTON_A -> NativeBridge.BTN_CROSS
         KeyEvent.KEYCODE_BUTTON_B, KeyEvent.KEYCODE_BACK -> NativeBridge.BTN_CIRCLE
         KeyEvent.KEYCODE_BUTTON_X -> NativeBridge.BTN_SQUARE
