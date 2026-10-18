@@ -1891,13 +1891,18 @@ int KYTY_SYSV_ABI Ngs2SystemRender(uintptr_t system_handle, const Ngs2RenderBuff
 		int listed = 0;
 		for (const auto* voice: voices) {
 			const bool sampler = voice->rack->type == Ngs2RackType::Sampler;
-			if ((sampler && !voice->has_samples) || listed >= 24) {
+			if ((sampler && !voice->has_samples && voice->state != Ngs2VoicePlayState::Playing) || listed >= 24) {
 				continue;
 			}
 			listed++;
 			used = std::snprintf(line, sizeof(line), "  voice %p type%d ch%u state%u samples%d:",
 			                     static_cast<const void*>(voice), static_cast<int>(voice->rack->type),
 			                     voice->channels, static_cast<unsigned>(voice->state), voice->has_samples ? 1 : 0);
+			if (sampler) {
+				used += std::snprintf(line + used, sizeof(line) - used, " rate%u blocks%zu at9%d frame%u/%u",
+				                      voice->sample_rate, voice->blocks.size(), voice->decoder != nullptr ? 1 : 0,
+				                      voice->frame_cursor, voice->frame_samples);
+			}
 			{
 				float peak = 0.0f;
 				for (float v: voice->samples) peak = std::max(peak, std::fabs(v));
@@ -2109,7 +2114,27 @@ int KYTY_SYSV_ABI Ngs2CalcWaveformBlock(const Ngs2WaveformFormat* format, uint32
 		                             codec.superframeSize;
 		block->num_skip_samples = num_samples == 0 ? 0 : static_cast<uint32_t>(skip);
 	} else {
-		return NGS2_ERROR_UNKNOWN_WAVEFORM_FORMAT;
+		// PCM: 8/16/24/32-bit integer and 32/64-bit float, little or big endian (The Binding of
+		// Isaac streams 16-bit PCM and sent the zeroed block on, which played nothing).
+		uint32_t bytes_per_sample = 0;
+		switch (format->waveform_type) {
+			case 0x10:
+			case 0x11: bytes_per_sample = 1; break;
+			case 0x12:
+			case 0x13: bytes_per_sample = 2; break;
+			case 0x14:
+			case 0x15: bytes_per_sample = 3; break;
+			case 0x16:
+			case 0x17:
+			case 0x18:
+			case 0x19: bytes_per_sample = 4; break;
+			case 0x1a:
+			case 0x1b: bytes_per_sample = 8; break;
+			default: return NGS2_ERROR_UNKNOWN_WAVEFORM_FORMAT;
+		}
+		const uint64_t frame_bytes = uint64_t(bytes_per_sample) * format->num_channels;
+		block->data_offset         = uint64_t(sample_pos) * frame_bytes;
+		block->data_size           = uint64_t(num_samples) * frame_bytes;
 	}
 	block->num_samples = num_samples;
 	return OK;
