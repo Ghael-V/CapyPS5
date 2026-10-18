@@ -812,8 +812,22 @@ static FILE* g_stdin  = stdin;
 static int   g_isthreaded = 1;
 static int   g_mb_cur_max = 1;
 
+// Guest allocations that fail are logged (a game that does not check them crashes later on a
+// null pointer far from the cause).
+static void* NoteAllocation(void* result, const char* name, size_t num, size_t size) {
+#if defined(__ANDROID__)
+	if (result == nullptr && num * size != 0) {
+		static std::atomic<uint32_t> logged {0};
+		if (logged.fetch_add(1) < 32) {
+			__android_log_print(ANDROID_LOG_ERROR, "CapyPS5-Alloc", "%s(%zu, %zu) returned null", name, num, size);
+		}
+	}
+#endif
+	return result;
+}
+
 void* KYTY_SYSV_ABI malloc(size_t size) {
-	return std::malloc(size);
+	return NoteAllocation(std::malloc(size), "malloc", 1, size);
 }
 
 void KYTY_SYSV_ABI free(void* ptr) {
@@ -821,11 +835,18 @@ void KYTY_SYSV_ABI free(void* ptr) {
 }
 
 void* KYTY_SYSV_ABI calloc(size_t num, size_t size) {
-	return std::calloc(num, size);
+	void* result = std::calloc(num, size);
+#if defined(__ANDROID__)
+	static Common::DebugFlags::CachedValue alloc_log("debug.capy.alloc_log", 0);
+	if (alloc_log.Get() != 0 && num * size >= static_cast<size_t>(alloc_log.Get()) && num * size < static_cast<size_t>(alloc_log.Get()) * 2) {
+		__android_log_print(ANDROID_LOG_WARN, "CapyPS5-Alloc", "calloc(%zu, %zu) -> %p", num, size, result);
+	}
+#endif
+	return NoteAllocation(result, "calloc", num, size);
 }
 
 void* KYTY_SYSV_ABI realloc(void* ptr, size_t size) {
-	return std::realloc(ptr, size);
+	return NoteAllocation(std::realloc(ptr, size), "realloc", 1, size);
 }
 
 int KYTY_SYSV_ABI posix_memalign(void** memptr, size_t alignment, size_t size) {

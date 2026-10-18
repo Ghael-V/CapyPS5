@@ -6,6 +6,12 @@
 #include "libs/libs.h"
 #include "loader/symbolDatabase.h"
 
+#include <atomic>
+#include <chrono>
+#include <pthread.h>
+#if defined(__ANDROID__)
+#include <android/log.h>
+#endif
 #include <condition_variable>
 #include <cstring>
 #include <deque>
@@ -41,6 +47,16 @@ struct UltUlthreadRuntimeOptParam {
 struct UltMutexState {
 	std::recursive_mutex mutex;
 	uint32_t             attribute = 0;
+};
+
+// Waits end only on a Signal meant for them: Earthion's Rewind thread does not recheck its state
+// after the wait, so a wakeup without a signal (the unresolved stub returned at once) ran it
+// before the game had allocated its buffers.
+struct UltConditionVariableState {
+	std::condition_variable_any cv;
+	std::mutex                  counters;
+	uint32_t                    waiters = 0;
+	uint32_t                    pending = 0;
 };
 
 struct UltSemaphoreState {
@@ -91,6 +107,7 @@ struct UltUlthreadState {
 static std::mutex                                                    g_ult_mutex;
 static std::unordered_map<void*, std::shared_ptr<UltMutexState>>     g_ult_mutexes;
 static std::unordered_map<void*, std::shared_ptr<UltSemaphoreState>> g_ult_semaphores;
+static std::unordered_map<void*, std::shared_ptr<UltConditionVariableState>> g_ult_condition_variables;
 static std::unordered_map<void*, UltResourcePoolState>               g_ult_resource_pools;
 static std::unordered_map<void*, UltQueueDataResourcePoolState>      g_ult_queue_data_pools;
 static std::unordered_map<void*, std::shared_ptr<UltQueueState>>     g_ult_queues;
@@ -568,6 +585,141 @@ static int KYTY_SYSV_ABI UltMutexUnlock(void* mutex) {
 	return OK;
 }
 
+// Condition variables the game uses without a Create seen here (Earthion's waited at once and ran
+// its Rewind thread before its buffers existed) get their state on first use.
+static std::shared_ptr<UltConditionVariableState> UltConditionVariableGet(void* condition_variable) {
+	auto& state = g_ult_condition_variables[condition_variable];
+	if (state == nullptr) {
+		state = std::make_shared<UltConditionVariableState>();
+	}
+	return state;
+}
+
+static int KYTY_SYSV_ABI UltMutexDestroy(void* mutex) {
+	PRINT_NAME();
+
+	std::scoped_lock lock(g_ult_mutex);
+	if (g_ult_mutexes.erase(mutex) == 0) {
+		return (mutex == nullptr ? ULT_ERROR_NULL : ULT_ERROR_STATE);
+	}
+	return OK;
+}
+
+static int KYTY_SYSV_ABI UltConditionVariableCreate(void* condition_variable, const char* name,
+                                                    void* waiting_queue_resource_pool,
+                                                    const void* /*opt_param*/, uint32_t /*build_version*/) {
+	PRINT_NAME();
+
+	if (condition_variable == nullptr) {
+		return ULT_ERROR_NULL;
+	}
+	LOGF("\t condition_variable = 0x%016" PRIx64 ", name = %s\n",
+	     reinterpret_cast<uint64_t>(condition_variable), name != nullptr ? name : "(null)");
+	(void)waiting_queue_resource_pool;
+	std::scoped_lock lock(g_ult_mutex);
+	g_ult_condition_variables[condition_variable] = std::make_shared<UltConditionVariableState>();
+	return OK;
+}
+
+static int KYTY_SYSV_ABI UltConditionVariableDestroy(void* condition_variable) {
+	PRINT_NAME();
+
+	std::scoped_lock lock(g_ult_mutex);
+	const auto it = g_ult_condition_variables.find(condition_variable);
+	if (it == g_ult_condition_variables.end()) {
+		return (condition_variable == nullptr ? ULT_ERROR_NULL : ULT_ERROR_STATE);
+	}
+	{
+		std::scoped_lock counters(it->second->counters);
+		if (it->second->waiters != 0) {
+			return ULT_ERROR_BUSY;
+		}
+	}
+	g_ult_condition_variables.erase(it);
+	return OK;
+}
+
+static int KYTY_SYSV_ABI UltConditionVariableWait(void* condition_variable, void* mutex) {
+	PRINT_NAME();
+
+	std::shared_ptr<UltConditionVariableState> state;
+	std::shared_ptr<UltMutexState>             mutex_state;
+	{
+		std::scoped_lock lock(g_ult_mutex);
+		const auto mx_it = g_ult_mutexes.find(mutex);
+		if (condition_variable == nullptr || mx_it == g_ult_mutexes.end()) {
+#if defined(__ANDROID__)
+			static std::atomic<uint32_t> missing_logs {0};
+			if (missing_logs.fetch_add(1) < 8) {
+				__android_log_print(ANDROID_LOG_WARN, "CapyPS5-Ult", "wait cv=%p mutex=%p unknown", condition_variable, mutex);
+			}
+#endif
+			return (condition_variable == nullptr || mutex == nullptr ? ULT_ERROR_NULL : ULT_ERROR_STATE);
+		}
+		state       = UltConditionVariableGet(condition_variable);
+		mutex_state = mx_it->second;
+	}
+	{
+		std::scoped_lock counters(state->counters);
+		state->waiters++;
+	}
+	const auto signalled = [&state] {
+		std::scoped_lock counters(state->counters);
+		if (state->pending == 0) {
+			return false;
+		}
+		state->pending--;
+		state->waiters--;
+		return true;
+	};
+	// The caller holds the guest mutex; a Signal that lands between the check and the sleep is
+	// caught by the next periodic recheck.
+	while (!signalled()) {
+		state->cv.wait_for(mutex_state->mutex, std::chrono::milliseconds(5));
+	}
+	return OK;
+}
+
+static int KYTY_SYSV_ABI UltConditionVariableSignal(void* condition_variable) {
+	PRINT_NAME();
+
+	std::shared_ptr<UltConditionVariableState> state;
+	{
+		std::scoped_lock lock(g_ult_mutex);
+		if (condition_variable == nullptr) {
+			return ULT_ERROR_NULL;
+		}
+		state = UltConditionVariableGet(condition_variable);
+	}
+	{
+		std::scoped_lock counters(state->counters);
+		if (state->pending < state->waiters) {
+			state->pending++;
+		}
+	}
+	state->cv.notify_all();
+	return OK;
+}
+
+static int KYTY_SYSV_ABI UltConditionVariableSignalAll(void* condition_variable) {
+	PRINT_NAME();
+
+	std::shared_ptr<UltConditionVariableState> state;
+	{
+		std::scoped_lock lock(g_ult_mutex);
+		if (condition_variable == nullptr) {
+			return ULT_ERROR_NULL;
+		}
+		state = UltConditionVariableGet(condition_variable);
+	}
+	{
+		std::scoped_lock counters(state->counters);
+		state->pending = state->waiters;
+	}
+	state->cv.notify_all();
+	return OK;
+}
+
 static int UltSemaphoreGetState(void* semaphore, std::shared_ptr<UltSemaphoreState>* state) {
 	EXIT_IF(state == nullptr);
 
@@ -727,6 +879,12 @@ LIB_DEFINE(InitUlt_1) {
 	LIB_FUNC("mmt8Sa6tL6c", UltMutexCreate);
 	LIB_FUNC("8hEGkR1pfr8", UltMutexLock);
 	LIB_FUNC("h0XebKiMBtk", UltMutexUnlock);
+	LIB_FUNC("jW+HnafeS3Y", UltMutexDestroy);
+	LIB_FUNC("jnKaHGkrxZ4", UltConditionVariableCreate);
+	LIB_FUNC("xrmmI832R4U", UltConditionVariableDestroy);
+	LIB_FUNC("5xGAHCxA8M0", UltConditionVariableWait);
+	LIB_FUNC("JTw1cAVkuc0", UltConditionVariableSignal);
+	LIB_FUNC("byiceqcMvV0", UltConditionVariableSignalAll);
 	LIB_FUNC("h5QlIYj+Ro8", UltSemaphoreCreate);
 	LIB_FUNC("QAH1ofI97vU", UltSemaphoreAcquire);
 	LIB_FUNC("HA1Ldbi3lPY", UltSemaphoreTryAcquire);
