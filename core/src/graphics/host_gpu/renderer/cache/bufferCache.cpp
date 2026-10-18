@@ -896,6 +896,16 @@ bool BufferCache::IsRegionRegistered(uint64_t vaddr, uint64_t size) {
 	return address + m_slot_buffers[id].Size() > vaddr;
 }
 
+bool BufferCache::HasAsyncDownloadIn(uint64_t vaddr, uint64_t size) {
+	std::scoped_lock lock {m_async_download_lock};
+	return m_async_download_ranges.Intersects(vaddr, size);
+}
+
+void BufferCache::DiscardGpuWrites(uint64_t vaddr, uint64_t size) {
+	m_memory_tracker.UnmarkRegionAsGpuModified(vaddr, size);
+	m_gpu_modified_ranges.Subtract(vaddr, size);
+}
+
 bool BufferCache::IsRegionGpuModified(uint64_t vaddr, uint64_t size) {
 	return m_memory_tracker.IsRegionGpuModified(vaddr, size);
 }

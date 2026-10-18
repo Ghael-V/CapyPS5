@@ -86,6 +86,10 @@ public:
 	[[nodiscard]] bool HasGpuDirtyBytes(uint64_t vaddr, uint64_t size);
 	[[nodiscard]] bool IsRegionCpuModified(uint64_t vaddr, uint64_t size);
 	[[nodiscard]] bool IsRegionGpuModified(uint64_t vaddr, uint64_t size);
+	/** Forgets GPU writes to a range whose contents are gone, so nothing is read back. */
+	void               DiscardGpuWrites(uint64_t vaddr, uint64_t size);
+	/** Whether an asynchronous download (still to be published) writes into the range. */
+	[[nodiscard]] bool HasAsyncDownloadIn(uint64_t vaddr, uint64_t size);
 	void               ProcessFaultBuffer();
 	void               SynchronizeBuffersInRange(uint64_t vaddr, uint64_t size);
 	void               RunGarbageCollector();

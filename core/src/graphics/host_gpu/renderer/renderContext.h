@@ -52,7 +52,9 @@ public:
 	[[nodiscard]] bool InvalidateMemory(uint64_t vaddr, uint64_t size);
 	[[nodiscard]] bool IsMapped(uint64_t vaddr, uint64_t size) const noexcept;
 	void               MapMemory(uint64_t vaddr, uint64_t size);
-	void               UnmapMemory(uint64_t vaddr, uint64_t size);
+	/** `discard`: the contents are gone (memory released, or a free range about to be reused),
+	 * so GPU writes are dropped instead of read back. */
+	void               UnmapMemory(uint64_t vaddr, uint64_t size, bool discard = false);
 	void               PrepareBda();
 	// A guest submission (slice) starts: the next PrepareBda uploads what the CPU wrote.
 	void               RequestBdaSync() { m_bda_sync_requested = true; }

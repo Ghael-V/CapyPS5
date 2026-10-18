@@ -934,16 +934,19 @@ Presenter::~Presenter() = default;
 Presenter::Frame& Presenter::PrepareFrame(CommandBuffer& buffer, const ImageInfo& info) {
 	KYTY_PROFILER_FUNCTION();
 	EXIT_IF(buffer.IsInvalid());
-	// The frame keeps the guest format: the Adreno driver copied an SRGB image into a UNORM one
-	// through a temporary allocation it made and freed on every frame, which held Animal Well's
-	// 4K output at 30 FPS. The swapchain follows the frame's encoding instead (see Present()).
-	const auto frame_format = info.pixel_format;
-	auto* frame = m_impl->frames.Acquire({info.extent.width, info.extent.height}, frame_format);
 	Common::LockGuard render_lock(m_impl->renderer.GetMutex());
 	auto&             image = m_impl->ResolveSurface(info);
 	if (image.backing.format == vk::Format::eUndefined) {
 		EXIT("unsupported presentation source, image=%p\n", static_cast<const void*>(&image));
 	}
+	// The frame takes the format of the guest image as it is stored: the Adreno driver copied
+	// between different formats (SRGB into UNORM, or a backing format other than the declared
+	// one) through a temporary allocation it made and freed every frame, which held Animal
+	// Well at 30 FPS and Monster Boy at 20. The swapchain follows the frame (see Present()).
+	const auto frame_format = image.backing.format;
+	Common::DebugFlags::NoteOnce("CapyPS5-Present", 0x50464d54u, "frame format %d (declared %d)",
+	                             static_cast<int>(frame_format), static_cast<int>(info.pixel_format));
+	auto* frame = m_impl->frames.Acquire({info.extent.width, info.extent.height}, frame_format);
 	frame->Configure(m_impl->window.graphic_ctx,
 	                 {image.backing.extent.width, image.backing.extent.height}, frame_format);
 	frame->CopyFrom(buffer, image);

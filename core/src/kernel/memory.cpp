@@ -11,6 +11,9 @@
 #include "libs/errno.h"
 #include "libs/libs.h"
 
+#if defined(__ANDROID__)
+#include <android/log.h>
+#endif
 #include <algorithm>
 #include <array>
 #include <atomic>
@@ -91,11 +94,20 @@ static void MapGpuRange(uint64_t vaddr, uint64_t size) {
 	GetGpuResources().MapMemory(vaddr, size);
 }
 
-static void UnmapGpuRange(uint64_t vaddr, uint64_t size) {
+static void UnmapGpuRange(uint64_t vaddr, uint64_t size, bool discard = false, int caller = __builtin_LINE()) {
 	if (g_gpu_resources == nullptr || !IsGpuAddressRange(vaddr, size)) {
 		return;
 	}
-	GetGpuResources().UnmapMemory(vaddr, size);
+#if defined(__ANDROID__)
+	{
+		static Common::DebugFlags::CachedValue unmap_log("debug.capy.unmap_log", 0);
+		if (unmap_log.Get() != 0) {
+			__android_log_print(ANDROID_LOG_WARN, "CapyPS5-Unmap", "gpu unmap 0x%llx+0x%llx from line %d",
+			                    static_cast<unsigned long long>(vaddr), static_cast<unsigned long long>(size), caller);
+		}
+	}
+#endif
+	GetGpuResources().UnmapMemory(vaddr, size, discard);
 }
 
 static bool DecodeMemoryProtection(int prot, VirtualMemory::Mode* mode, GpuAccessMode* gpu_mode) {
@@ -2847,6 +2859,18 @@ static int UnmapMemoryUnfolded(uint64_t vaddr, size_t len) {
 	if (!g_virtual_ranges->QuerySpan(vaddr, len, &ranges)) {
 		return KERNEL_ERROR_EACCES;
 	}
+#if defined(__ANDROID__)
+	{
+		static Common::DebugFlags::CachedValue unmap_log("debug.capy.unmap_log", 0);
+		if (unmap_log.Get() != 0 && IsGpuAddressRange(vaddr, len)) {
+			for (const auto& range: ranges) {
+				__android_log_print(ANDROID_LOG_WARN, "CapyPS5-Unmap", "unmap 0x%llx+0x%llx type=%d memtype=%d",
+				                    static_cast<unsigned long long>(range.start), static_cast<unsigned long long>(range.size),
+				                    static_cast<int>(range.type), range.memory_type);
+			}
+		}
+	}
+#endif
 	UnmapGpuRange(vaddr, len);
 	return UnmapMemoryRange(vaddr, len);
 }
@@ -3107,7 +3131,7 @@ static int ReleaseDirectMemoryInternal(int64_t start, size_t len) {
 	}
 
 	for (const auto& alias: mapped_aliases) {
-		UnmapGpuRange(alias.map_vaddr, alias.map_size);
+		UnmapGpuRange(alias.map_vaddr, alias.map_size, true); // the memory is released
 	}
 
 	auto restore_gpu_aliases = [&mapped_aliases]() {
@@ -3382,7 +3406,7 @@ static int MapDirectMemoryUnfolded(void** addr, size_t len, int prot, int flags,
 		if (!reserved_target) {
 			out_addr = FindGuestFreeRange(in_addr, len, alignment);
 			if (out_addr != 0) {
-				UnmapGpuRange(out_addr, len);
+				UnmapGpuRange(out_addr, len, true); // a free range: nothing to keep
 				shared_backing = map_shared_fixed(out_addr);
 				if (!shared_backing) {
 					out_addr = 0;

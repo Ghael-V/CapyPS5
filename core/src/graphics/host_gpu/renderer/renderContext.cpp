@@ -127,7 +127,7 @@ void RenderContext::MapMemory(uint64_t vaddr, uint64_t size) {
 	m_mapped_ranges.Add(vaddr, size);
 }
 
-void RenderContext::UnmapMemory(uint64_t vaddr, uint64_t size) {
+void RenderContext::UnmapMemory(uint64_t vaddr, uint64_t size, bool discard) {
 	if (CommandScheduler::InDeferredOperation()) {
 		EXIT("unsupported memory unmap from an asynchronous GPU completion, "
 		     "addr=0x%016" PRIx64 " size=0x%016" PRIx64 "\n",
@@ -139,7 +139,7 @@ void RenderContext::UnmapMemory(uint64_t vaddr, uint64_t size) {
 			return;
 		}
 	}
-	const auto unmap = [this, vaddr, size] {
+	const auto unmap = [this, vaddr, size, discard] {
 		// Check cache ownership on the GPU thread. Guest-memory callbacks can still
 		// access a range with no cached data, so they must finish before it is unmapped.
 		// Only GPU-written data must be read back (finishing the GPU) before the range goes away;
@@ -150,12 +150,28 @@ void RenderContext::UnmapMemory(uint64_t vaddr, uint64_t size) {
 		const bool needs_gpu =
 		    unmap_finish.Get() != 0
 		        ? (m_buffer_cache.IsRegionRegistered(vaddr, size) || m_texture_cache.IsRegionRegistered(vaddr, size))
-		        : m_buffer_cache.IsRegionGpuModified(vaddr, size);
-		if (m_command_scheduler.Active() &&
-		    (needs_gpu || m_command_scheduler.HasPendingPriorityOperations())) {
+		        : !discard && m_buffer_cache.IsRegionGpuModified(vaddr, size);
+		// Pending priority work is mostly flip and end-of-pipe notifications; when the contents are
+		// discarded only an asynchronous download into the range still has to land first.
+		const bool pending = discard ? m_buffer_cache.HasAsyncDownloadIn(vaddr, size)
+		                             : m_command_scheduler.HasPendingPriorityOperations();
+		if (m_command_scheduler.Active() && (needs_gpu || pending)) {
+#if defined(__ANDROID__)
+			{
+				static Common::DebugFlags::CachedValue unmap_log("debug.capy.unmap_log", 0);
+				if (unmap_log.Get() != 0) {
+					__android_log_print(ANDROID_LOG_WARN, "CapyPS5-Unmap", "finish for 0x%llx+0x%llx discard=%d gpu=%d priority=%d",
+					                    static_cast<unsigned long long>(vaddr), static_cast<unsigned long long>(size), discard ? 1 : 0,
+					                    needs_gpu ? 1 : 0, m_command_scheduler.HasPendingPriorityOperations() ? 1 : 0);
+				}
+			}
+#endif
 			const auto tick = m_command_scheduler.CurrentTick();
 			m_command_scheduler.Finish();
 			m_command_scheduler.WaitPriorityOperations(tick);
+		}
+		if (discard) {
+			m_buffer_cache.DiscardGpuWrites(vaddr, size);
 		}
 		m_buffer_cache.InvalidateMemory(vaddr, size);
 		m_texture_cache.UnmapMemory(vaddr, size);
