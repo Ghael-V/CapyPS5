@@ -105,12 +105,27 @@ public:
 	constexpr CachedValue(const char* name, int64_t fallback): m_name(name), m_value(fallback), m_fallback(fallback) {}
 
 	int64_t Get() {
+#if defined(__aarch64__)
+		// Hot paths (every HLE call) read flags: compare against the virtual counter, which costs a
+		// few cycles, so a value set while the game runs is seen within 250 ms on every thread (a
+		// per-thread call count left threads that rarely call, like the flip thread at 2 FPS,
+		// minutes behind).
+		uint64_t ticks = 0;
+		asm volatile("mrs %0, cntvct_el0" : "=r"(ticks));
+		if (ticks < m_next_refresh_ticks.load(std::memory_order_relaxed)) {
+			return m_value.load(std::memory_order_relaxed);
+		}
+		uint64_t frequency = 0;
+		asm volatile("mrs %0, cntfrq_el0" : "=r"(frequency));
+		m_next_refresh_ticks.store(ticks + frequency / 4, std::memory_order_relaxed);
+#else
 		// Hot paths (every HLE call) read flags; only look at the clock every 256th call.
 		static thread_local uint32_t calls = 0;
 		if ((++calls & 255u) != 0 &&
 		    m_next_refresh_ms.load(std::memory_order_relaxed) != 0) {
 			return m_value.load(std::memory_order_relaxed);
 		}
+#endif
 		const auto now = std::chrono::duration_cast<std::chrono::milliseconds>(
 		                     std::chrono::steady_clock::now().time_since_epoch())
 		                     .count();
@@ -138,6 +153,7 @@ private:
 	const char*          m_name;
 	std::atomic<int64_t> m_value;
 	std::atomic<int64_t> m_next_refresh_ms {0};
+	std::atomic<uint64_t> m_next_refresh_ticks {0};
 	int64_t              m_fallback;
 };
 

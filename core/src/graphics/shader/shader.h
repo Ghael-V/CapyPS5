@@ -317,6 +317,8 @@ struct ShaderMappedData {
 
 void ShaderInit();
 void ShaderMapUserData(uint64_t addr, const ShaderMappedData& data);
+/** Code size in dwords of the shader registered at `addr`, 0 when none is (debug dumps). */
+uint32_t ShaderCodeWords(uint64_t addr);
 uint32_t ShaderPixelExportTarget(uint32_t shader_mask, uint32_t export_index);
 
 void     ShaderDbgDumpInputInfo(const ShaderVertexInputInfo& info);

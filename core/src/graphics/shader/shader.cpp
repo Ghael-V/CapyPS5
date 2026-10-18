@@ -71,6 +71,15 @@ void ShaderMapUserData(uint64_t addr, const ShaderMappedData& data) {
 	           addr, static_cast<int>(data.type), data.code_size_bytes, hash);
 }
 
+uint32_t ShaderCodeWords(uint64_t addr) {
+	if (g_shader_map == nullptr) {
+		return 0;
+	}
+	std::scoped_lock lock(g_shader_map_mutex);
+	const auto iter = g_shader_map->find(addr);
+	return iter != g_shader_map->end() ? iter->second.data.code_size_bytes / sizeof(uint32_t) : 0;
+}
+
 static ShaderMapEntry ShaderGetMappedData(uint64_t addr, const char* label) {
 	EXIT_IF(g_shader_map == nullptr);
 

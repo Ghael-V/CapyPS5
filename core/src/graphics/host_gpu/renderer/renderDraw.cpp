@@ -1471,8 +1471,12 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 	    static_cast<uint64_t>(dump_ps.Get()) == buffer.GetShaders().GetPs().ps_regs.data_addr) {
 		{
 			ShaderRecompiler::Decoder::Program program;
-			const auto* code = reinterpret_cast<const uint32_t*>(buffer.GetShaders().GetPs().ps_regs.data_addr);
-			ShaderRecompiler::Decoder::DecodeProgram(std::span<const uint32_t>(code, 4096), program);
+			const auto  ps_addr = buffer.GetShaders().GetPs().ps_regs.data_addr;
+			const auto* code    = reinterpret_cast<const uint32_t*>(ps_addr);
+			const auto  words   = ShaderCodeWords(ps_addr);
+			if (words != 0) {
+				ShaderRecompiler::Decoder::DecodeProgram(std::span<const uint32_t>(code, words), program);
+			}
 			const auto text = ShaderRecompiler::Decoder::ProgramToString(program);
 			size_t start = 0;
 			while (start < text.size()) {
@@ -1490,8 +1494,12 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 				continue;
 			}
 			ShaderRecompiler::Decoder::Program program;
-			const auto* code = reinterpret_cast<const uint32_t*>(vs_addr);
-			ShaderRecompiler::Decoder::DecodeProgram(std::span<const uint32_t>(code, 4096), program);
+			const auto* code  = reinterpret_cast<const uint32_t*>(vs_addr);
+			const auto  words = ShaderCodeWords(vs_addr);
+			if (words == 0) {
+				continue;
+			}
+			ShaderRecompiler::Decoder::DecodeProgram(std::span<const uint32_t>(code, words), program);
 			const auto text = ShaderRecompiler::Decoder::ProgramToString(program);
 			Common::DebugFlags::FrameTrace("  vs 0x%llx", static_cast<unsigned long long>(vs_addr));
 			size_t start = 0;
