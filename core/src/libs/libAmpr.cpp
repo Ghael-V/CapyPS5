@@ -29,6 +29,10 @@
 #include <variant>
 #include <vector>
 
+#if defined(__ANDROID__)
+#include <android/log.h>
+#endif
+
 #ifdef min
 #undef min
 #endif
@@ -228,6 +232,10 @@ static int ResolveOnePath(const char* guest_path, uint32_t* id, uint64_t* size) 
 		}
 		if (log_missing) {
 			LOGF("\tAPR resolve missing path: %s -> %s\n", guest_path, Common::PathToString(info.host_path).c_str());
+#if defined(__ANDROID__)
+			__android_log_print(ANDROID_LOG_WARN, "CapyPS5-Apr", "missing path: %s -> %s", guest_path,
+			                    Common::PathToString(info.host_path).c_str());
+#endif
 		}
 	}
 

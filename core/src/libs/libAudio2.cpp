@@ -1,5 +1,6 @@
 #include "common/assert.h"
 #include "common/common.h"
+#include "common/debugFlags.h"
 #include "common/logging/log.h"
 #include "common/threads.h"
 #include "kernel/pthread.h"
@@ -14,6 +15,10 @@
 #include <cmath>
 #include <cstring>
 #include <vector>
+
+#if defined(__ANDROID__)
+#include <android/log.h>
+#endif
 
 namespace Libs::Audio {
 
@@ -635,7 +640,7 @@ int KYTY_SYSV_ABI AudioOut2ContextGetQueueLevel(AudioOut2ContextHandle ctx, uint
 	return OK;
 }
 
-int KYTY_SYSV_ABI AudioOut2PortCreate(AudioOut2ContextHandle ctx, const AudioOut2PortParam* params,
+static int PortCreateImpl(AudioOut2ContextHandle ctx, const AudioOut2PortParam* params,
                                       AudioOut2PortHandle* port) {
 	EXIT_NOT_IMPLEMENTED(params == nullptr);
 	EXIT_NOT_IMPLEMENTED(port == nullptr);
@@ -725,6 +730,48 @@ int KYTY_SYSV_ABI AudioOut2PortCreate(AudioOut2ContextHandle ctx, const AudioOut
 	return OK;
 }
 
+static int PortSetAttributesImpl(AudioOut2PortHandle port, const AudioOut2Attribute* attributes, uint32_t num);
+
+// `debug.capy.audio2_log 1`: log AudioOut2 port creation and failed attribute changes (tag
+// CapyPS5-Audio2).
+static bool Audio2LogEnabled() {
+	static Common::DebugFlags::CachedValue enabled("debug.capy.audio2_log", 0);
+	return enabled.Get() != 0;
+}
+
+int KYTY_SYSV_ABI AudioOut2PortCreate(AudioOut2ContextHandle ctx, const AudioOut2PortParam* params,
+                                      AudioOut2PortHandle* port) {
+	const int result = PortCreateImpl(ctx, params, port);
+#if defined(__ANDROID__)
+	if (Audio2LogEnabled() && params != nullptr) {
+		__android_log_print(ANDROID_LOG_WARN, "CapyPS5-Audio2",
+		                    "PortCreate ctx=0x%llx type=%u format=0x%x freq=%u user=0x%llx -> %d port=0x%llx",
+		                    static_cast<unsigned long long>(ctx), static_cast<unsigned>(params->port_type),
+		                    params->data_format, params->sampling_freq,
+		                    static_cast<unsigned long long>(params->user_handle), result,
+		                    static_cast<unsigned long long>(result == OK && port != nullptr ? *port : 0));
+	}
+#endif
+	return result;
+}
+
+int KYTY_SYSV_ABI AudioOut2PortSetAttributes(AudioOut2PortHandle port, const AudioOut2Attribute* attributes,
+                                             uint32_t num) {
+	const int result = PortSetAttributesImpl(port, attributes, num);
+#if defined(__ANDROID__)
+	if (Audio2LogEnabled() && result != OK) {
+		__android_log_print(ANDROID_LOG_WARN, "CapyPS5-Audio2", "PortSetAttributes port=0x%llx num=%u -> %d",
+		                    static_cast<unsigned long long>(port), num, result);
+		for (uint32_t i = 0; i < num && attributes != nullptr && i < 8; i++) {
+			__android_log_print(ANDROID_LOG_WARN, "CapyPS5-Audio2", "  attr[%u] id=0x%x size=%u", i,
+			                    static_cast<unsigned>(attributes[i].attribute_id),
+			                    static_cast<unsigned>(attributes[i].value_size));
+		}
+	}
+#endif
+	return result;
+}
+
 int KYTY_SYSV_ABI AudioOut2PortDestroy(AudioOut2PortHandle port) {
 	PRINT_NAME();
 	LOGF("\t port = 0x%016" PRIx64 "\n", port);
@@ -742,8 +789,7 @@ int KYTY_SYSV_ABI AudioOut2PortDestroy(AudioOut2PortHandle port) {
 	return OK;
 }
 
-int KYTY_SYSV_ABI AudioOut2PortSetAttributes(AudioOut2PortHandle       port,
-                                             const AudioOut2Attribute* attributes, uint32_t num) {
+static int PortSetAttributesImpl(AudioOut2PortHandle port, const AudioOut2Attribute* attributes, uint32_t num) {
 	if (num != 0 && attributes == nullptr) {
 		return AUDIO_OUT2_ERROR_INVALID_PARAM;
 	}

@@ -1,5 +1,10 @@
 #include "kernel/fileSystem.h"
 
+#if defined(__ANDROID__)
+#include <android/log.h>
+#endif
+#include <atomic>
+
 #include "common/archive.h"
 #include "common/assert.h"
 #include "common/common.h"
@@ -491,6 +496,12 @@ int KYTY_SYSV_ABI KernelOpen(const char* path, int flags, uint16_t mode) {
 	// A missing path opened without O_CREAT is ENOENT
 	if (!creat && !dir_exist && !file_exist) {
 		g_files->DeleteDescriptor(descriptor);
+#if defined(__ANDROID__)
+		static std::atomic<uint32_t> logged {0};
+		if (logged.fetch_add(1) < 200) {
+			__android_log_print(ANDROID_LOG_WARN, "CapyPS5-File", "open missing: %s", path);
+		}
+#endif
 		return KERNEL_ERROR_ENOENT;
 	}
 

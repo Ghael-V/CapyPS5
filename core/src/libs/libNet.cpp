@@ -2970,6 +2970,65 @@ LIB_DEFINE(InitPlatform_1) {
 	LibSharePlay::InitPlatform_1_SharePlay(s);
 }
 
+namespace LibNpUtility {
+
+LIB_VERSION("NpUtility", 1, "NpUtility", 1, 1);
+
+// Bandwidth test (Sackboy: A Big Adventure runs one while loading and retried it forever when
+// the unresolved stubs never reported a finished test). It finishes at once with a fixed result.
+struct NpBandwidthTestResult {
+	double  upload_bps;
+	double  download_bps;
+	int32_t result;
+	int32_t padding;
+};
+
+constexpr int NP_BANDWIDTH_TEST_STATUS_FINISHED = 2;
+constexpr int NP_BANDWIDTH_TEST_CTX_ID          = 1;
+
+static int KYTY_SYSV_ABI NpBandwidthTestInitStart(const void* /*param*/) {
+	PRINT_NAME();
+	return NP_BANDWIDTH_TEST_CTX_ID;
+}
+
+static int KYTY_SYSV_ABI NpBandwidthTestGetStatus(int ctx_id, int* status) {
+	PRINT_NAME();
+	LOGF("\t ctx_id = %d\n", ctx_id);
+	if (status != nullptr) {
+		*status = NP_BANDWIDTH_TEST_STATUS_FINISHED;
+	}
+	return 0;
+}
+
+static int KYTY_SYSV_ABI NpBandwidthTestShutdown(int ctx_id, NpBandwidthTestResult* result) {
+	PRINT_NAME();
+	LOGF("\t ctx_id = %d\n", ctx_id);
+	if (result != nullptr) {
+		result->upload_bps   = 20e6;
+		result->download_bps = 100e6;
+		result->result       = 0;
+		result->padding      = 0;
+	}
+	return 0;
+}
+
+static int KYTY_SYSV_ABI NpBandwidthTestAbort(int ctx_id) {
+	PRINT_NAME();
+	LOGF("\t ctx_id = %d\n", ctx_id);
+	return 0;
+}
+
+LIB_DEFINE(InitNet_1_NpUtility) {
+	LIB_FUNC("jktww3yJXnc", NpBandwidthTestInitStart);
+	LIB_FUNC("hqzi1IHdQQQ", NpBandwidthTestInitStart); // sceNpBandwidthTestInitStartDownload
+	LIB_FUNC("mA0zsbqm+kA", NpBandwidthTestInitStart); // sceNpBandwidthTestInitStartUpload
+	LIB_FUNC("BYIZGKm6bO4", NpBandwidthTestGetStatus);
+	LIB_FUNC("pLr1fEQS1z8", NpBandwidthTestShutdown);
+	LIB_FUNC("kvdMF48mB3Y", NpBandwidthTestAbort);
+}
+
+} // namespace LibNpUtility
+
 LIB_DEFINE(InitNet_1) {
 	LibNet::InitNet_1_Net(s);
 	LibSsl::InitNet_1_Ssl(s);
@@ -2981,6 +3040,7 @@ LIB_DEFINE(InitNet_1) {
 	LibNpSessionSignaling::InitNet_1_NpSessionSignaling(s);
 	LibNpEntitlementAccess::InitNet_1_NpEntitlementAccess(s);
 	LibNpAuth::InitNet_1_NpAuth(s);
+	LibNpUtility::InitNet_1_NpUtility(s);
 	LibNpTrophy2::InitNet_1_NpTrophy2(s);
 	LibNpUniversalDataSystem::InitNet_1_NpUniversalDataSystem(s);
 	LibNpGameIntent::InitNet_1_NpGameIntent(s);
