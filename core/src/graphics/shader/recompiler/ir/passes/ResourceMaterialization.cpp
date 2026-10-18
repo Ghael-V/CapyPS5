@@ -1906,11 +1906,13 @@ bool MaterializeResources(const ResourcePlan& program, const SrtRuntime& runtime
 		if (program.info.samplers[base_index].gather_lod) {
 			const auto control = snapshot.samplers[i].dwords[2];
 			const auto filter = (control >> 26u) & 3u;
-			// MipNone always selects the base level. Explicit point gathers currently require
-			// encoded-zero primary and secondary bias; linear primary-mip selection is unsupported.
-			if (filter > 1u || (filter == 1u && (control & 0xfffffu) != 0u)) {
+			const auto perf_mip = (snapshot.samplers[i].dwords[1] >> 24u) & 15u;
+			// MipNone always selects the base level. Point/linear selection requires zero
+			// primary/secondary bias; linear mip snapping is not implemented.
+			if (filter > 2u || (filter != 0u && (control & 0xfffffu) != 0u) ||
+			    (filter == 2u && perf_mip != 0u)) {
 				return SpecializationFail(
-				    "explicit-LOD gather requires mip filtering None or Point with zero LOD biases");
+				    "explicit-LOD gather requires None, unbiased Point, or unbiased Linear without mip snapping");
 			}
 		}
 	}

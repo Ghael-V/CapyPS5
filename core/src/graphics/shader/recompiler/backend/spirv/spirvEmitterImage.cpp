@@ -104,10 +104,14 @@ uint32_t GatherMip(ValueEmitContext& ctx, const IR::Inst& inst, const IR::Memory
 		              ConstantF32Value(state, 1.0f / 256.0f));
 	};
 	const auto sampler_control = ctx.Arg(inst, 6);
+	const auto mip_filter = Extract(sampler_control, 26, 2);
 	const auto preclamp = Binary(state, spv::OpINotEqual, TypeBool(state),
 	                            Extract(sampler_control, 28, 1), ConstantU32(state, 0));
-	const auto half = ConstantF32Value(state, 0.5f);
 	const auto zero = ZeroF32(state);
+	// Point selects the nearest mip; linear gathers return the lower, primary mip only.
+	const auto rounding = Select(state, TypeF32(state),
+	    Binary(state, spv::OpIEqual, TypeBool(state), mip_filter, ConstantU32(state, 1)),
+	    ConstantF32Value(state, 0.5f), zero);
 	const auto base = Unary(state, spv::OpConvertUToF, TypeF32(state),
 	                        Extract(ctx.Arg(inst, 4), 12, 4));
 	const auto minimum = Binary(state, spv::OpFSub, TypeF32(state),
@@ -115,19 +119,19 @@ uint32_t GatherMip(ValueEmitContext& ctx, const IR::Inst& inst, const IR::Memory
 	const auto last = ConstantF32Value(state, static_cast<float>(mip_count - 1u));
 	auto lod = Binary(state, spv::OpFAdd, TypeF32(state),
 	                  AddressF32(ctx, mem, address, layout.lod),
-	                  Select(state, TypeF32(state), preclamp, half, zero));
+	                  Select(state, TypeF32(state), preclamp, rounding, zero));
 	lod = EmitGlsl<GLSLstd450FClamp, IR::Type::F32>(
 	    state, lod, LodFixed(ctx.Arg(inst, 5), 0), LodFixed(ctx.Arg(inst, 5), 12));
 	// T# minimum LOD is in physical mip space and applies after the S# view-relative clamp.
 	lod = EmitGlsl<GLSLstd450FMax, IR::Type::F32>(state, lod, minimum);
 	lod = EmitGlsl<GLSLstd450FClamp, IR::Type::F32>(state, lod, zero, last);
 	lod = Binary(state, spv::OpFAdd, TypeF32(state), lod,
-	             Select(state, TypeF32(state), preclamp, zero, half));
+	             Select(state, TypeF32(state), preclamp, zero, rounding));
 	// The clamped value is nonnegative, so conversion performs the integer mip rounding.
 	const auto mip = EmitUMin32(state, Unary(state, spv::OpConvertFToU, TypeU32(state), lod),
 	                           ConstantU32(state, mip_count - 1u));
 	const auto mip_none = Binary(state, spv::OpIEqual, TypeBool(state),
-	                            Extract(sampler_control, 26, 2), ConstantU32(state, 0));
+	                            mip_filter, ConstantU32(state, 0));
 	return Select(state, TypeU32(state), mip_none, ConstantU32(state, 0), mip);
 }
 
