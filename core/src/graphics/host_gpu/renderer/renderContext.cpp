@@ -142,10 +142,17 @@ void RenderContext::UnmapMemory(uint64_t vaddr, uint64_t size) {
 	const auto unmap = [this, vaddr, size] {
 		// Check cache ownership on the GPU thread. Guest-memory callbacks can still
 		// access a range with no cached data, so they must finish before it is unmapped.
+		// Only GPU-written data must be read back (finishing the GPU) before the range goes away;
+		// images are destroyed after the GPU is done with them. Finishing on every registered
+		// range made Monster Boy, which unmaps memory the GPU used every frame, wait for the
+		// whole GPU each frame (14 FPS). `debug.capy.unmap_finish 1` restores that.
+		static Common::DebugFlags::CachedValue unmap_finish("debug.capy.unmap_finish", 0);
+		const bool needs_gpu =
+		    unmap_finish.Get() != 0
+		        ? (m_buffer_cache.IsRegionRegistered(vaddr, size) || m_texture_cache.IsRegionRegistered(vaddr, size))
+		        : m_buffer_cache.IsRegionGpuModified(vaddr, size);
 		if (m_command_scheduler.Active() &&
-		    (m_buffer_cache.IsRegionRegistered(vaddr, size) ||
-		     m_texture_cache.IsRegionRegistered(vaddr, size) ||
-		     m_command_scheduler.HasPendingPriorityOperations())) {
+		    (needs_gpu || m_command_scheduler.HasPendingPriorityOperations())) {
 			const auto tick = m_command_scheduler.CurrentTick();
 			m_command_scheduler.Finish();
 			m_command_scheduler.WaitPriorityOperations(tick);
