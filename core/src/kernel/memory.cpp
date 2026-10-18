@@ -1206,6 +1206,34 @@ static bool SelfTestSub64SharedPlaceholderAlias() {
 
 static bool ReplaceFixedRangeWithReserved(uint64_t start, uint64_t size);
 
+// Reservations clipped below what the game asked for (Unreal reserves 512 GiB): base and the
+// requested length. A fixed mapping into a free part of that logical range reserves it then
+// (Guri maps 128 GiB above its base, past the 64 GiB actually reserved).
+static std::mutex                                 g_clipped_reservations_mutex;
+static std::vector<std::pair<uint64_t, uint64_t>> g_clipped_reservations;
+
+static void RecordClippedReservation(uint64_t base, uint64_t requested_len) {
+	std::lock_guard lock(g_clipped_reservations_mutex);
+	g_clipped_reservations.emplace_back(base, requested_len);
+}
+
+static bool ReserveInsideClippedReservation(uint64_t addr, uint64_t len) {
+	bool inside = false;
+	{
+		std::lock_guard lock(g_clipped_reservations_mutex);
+		for (const auto& [base, size]: g_clipped_reservations) {
+			if (addr >= base && len <= size && addr - base <= size - len) {
+				inside = true;
+				break;
+			}
+		}
+	}
+	if (!inside || g_virtual_ranges->HasOverlap(addr, len)) {
+		return false;
+	}
+	return g_virtual_ranges->Add(addr, len, 0, 0, 0, VirtualRangeType::Reserved, "clip");
+}
+
 void Initialize() {
 	g_flexible_memory_size_frozen = true;
 	VirtualMemory::Init();
@@ -2570,6 +2598,11 @@ static int MapFlexibleMemoryUnfolded(void** addr_in_out, size_t len, int prot, i
 			reserved_target = true;
 			out_addr        = in_addr;
 		}
+		if (!reserved_target && ReserveInsideClippedReservation(in_addr, len)) {
+			UnmapGpuRange(in_addr, len, true);
+			reserved_target = true;
+			out_addr        = in_addr;
+		}
 	} else {
 		const auto search_addr = (in_addr != 0 ? in_addr : DEFAULT_PS5_BASE);
 		out_addr               = FindGuestFreeRange(search_addr, len, map_alignment);
@@ -3236,6 +3269,17 @@ int KYTY_SYSV_ABI KernelCheckedReleaseDirectMemory(int64_t start, size_t len) {
 }
 
 // The ABI entry points and batch operations hold g_memory_operation_mutex.
+// Logs which check of MapDirectMemoryUnfolded ran out (Guri's BatchMap failed with ENOMEM).
+static int MapDirectNoMemory(int line) {
+#if defined(__ANDROID__)
+	static std::atomic<uint32_t> logged {0};
+	if (logged.fetch_add(1) < 16) {
+		__android_log_print(ANDROID_LOG_WARN, "CapyPS5-Mem", "MapDirectMemory: ENOMEM at line %d", line);
+	}
+#endif
+	return KERNEL_ERROR_ENOMEM;
+}
+
 static int MapDirectMemoryUnfolded(void** addr, size_t len, int prot, int flags,
                                    int64_t direct_memory_start, size_t alignment, const char* name,
                                    int type);
@@ -3287,7 +3331,7 @@ static int MapDirectMemoryUnfolded(void** addr, size_t len, int prot, int flags,
 		return KERNEL_ERROR_EINVAL;
 	}
 	if (!g_physical_memory->CanMapDirect(static_cast<uint64_t>(direct_memory_start), len)) {
-		return KERNEL_ERROR_ENOMEM;
+		return MapDirectNoMemory(__LINE__);
 	}
 
 	auto     in_addr         = reinterpret_cast<uint64_t>(*addr);
@@ -3321,7 +3365,7 @@ static int MapDirectMemoryUnfolded(void** addr, size_t len, int prot, int flags,
 			return KERNEL_ERROR_EINVAL;
 		}
 		if (no_overwrite && g_virtual_ranges->HasOverlap(in_addr, len)) {
-			return KERNEL_ERROR_ENOMEM;
+			return MapDirectNoMemory(__LINE__);
 		}
 
 		std::vector<VirtualRanges::Range> reserved_ranges;
@@ -3363,7 +3407,7 @@ static int MapDirectMemoryUnfolded(void** addr, size_t len, int prot, int flags,
 			// do not publish a temporary reserved/PROT_NONE range between two direct views.
 			if (!map_shared_fixed(in_addr)) {
 				restore_mappings(replaced_mappings.size(), true);
-				return KERNEL_ERROR_ENOMEM;
+				return MapDirectNoMemory(__LINE__);
 			}
 			out_addr       = in_addr;
 			shared_backing = true;
@@ -3380,8 +3424,25 @@ static int MapDirectMemoryUnfolded(void** addr, size_t len, int prot, int flags,
 			if (!reserved_target && ReplaceFixedRangeWithReserved(in_addr, len)) {
 				reserved_target = true;
 			}
+			if (!reserved_target && ReserveInsideClippedReservation(in_addr, len)) {
+				UnmapGpuRange(in_addr, len, true);
+				reserved_target = true;
+			}
 			if (!reserved_target) {
-				return KERNEL_ERROR_ENOMEM;
+#if defined(__ANDROID__)
+				{
+					std::vector<VirtualRanges::Range> spans;
+					const bool ok = g_virtual_ranges->QuerySpan(in_addr, len, &spans);
+					__android_log_print(ANDROID_LOG_WARN, "CapyPS5-Mem", "fixed map 0x%llx+0x%llx: span query %d, %zu ranges",
+					                    static_cast<unsigned long long>(in_addr), static_cast<unsigned long long>(len), ok ? 1 : 0, spans.size());
+					for (const auto& r: spans) {
+						__android_log_print(ANDROID_LOG_WARN, "CapyPS5-Mem", "  range 0x%llx+0x%llx type=%d prot=0x%x name=%s",
+						                    static_cast<unsigned long long>(r.start), static_cast<unsigned long long>(r.size),
+						                    static_cast<int>(r.type), r.protection, r.name);
+					}
+				}
+#endif
+				return MapDirectNoMemory(__LINE__);
 			}
 			if (map_shared_fixed(in_addr)) {
 				out_addr       = in_addr;
@@ -3437,7 +3498,7 @@ static int MapDirectMemoryUnfolded(void** addr, size_t len, int prot, int flags,
 	     magic_enum::enum_name(gpu_mode), shared_backing ? "yes" : "no", shared_reason);
 
 	if (out_addr == 0) {
-		return KERNEL_ERROR_ENOMEM;
+		return MapDirectNoMemory(__LINE__);
 	}
 
 	PhysicalMemory::AllocatedBlock mapped_block {};
@@ -3956,6 +4017,7 @@ int KYTY_SYSV_ABI KernelReserveVirtualRange(void** addr, size_t len, int flags, 
 		if (out_addr != 0) {
 			UnmapGpuRange(out_addr, len);
 			if (len < requested_len) {
+				RecordClippedReservation(out_addr, requested_len);
 				ReserveFoldedTail(out_addr, requested_len);
 			}
 		}
@@ -4464,6 +4526,13 @@ int KYTY_SYSV_ABI KernelBatchMap2(KernelBatchMapEntry* entries, int num_entries,
 		}
 
 		if (result != OK) {
+#if defined(__ANDROID__)
+			__android_log_print(ANDROID_LOG_WARN, "CapyPS5-Mem",
+			                    "BatchMap entry %d/%d failed: op=%d start=%p offset=0x%llx len=0x%llx prot=0x%x -> 0x%08x",
+			                    i, num_entries, entry->operation, entry->start,
+			                    static_cast<unsigned long long>(entry->offset), static_cast<unsigned long long>(entry->length),
+			                    static_cast<unsigned>(entry->protection), static_cast<unsigned>(result));
+#endif
 			if (num_entries_out != nullptr) {
 				*num_entries_out = processed;
 			}

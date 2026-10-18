@@ -17,8 +17,10 @@ static constexpr uint64_t HOST_USER_MIN            = 0x1000000000ull;
 #if defined(__ANDROID__) || defined(ANDROID) || defined(KYTY_PLATFORM_ANDROID)
 // Android arm64 kernels often give a 39-bit (512 GiB) address space. Reserving up to
 // 0x6fffffffff left the host ~64 GiB, and FEX's allocator (256 MiB spans per thread) ran out
-// of address space once Unity started its job workers. Guests rarely need more than a few GiB.
-static constexpr uint64_t HOST_USER_MAX = 0x2fffffffffull;
+// of address space once Unity started its job workers. Guests rarely need more than a few GiB,
+// but Unreal hands out pools 128 GiB apart inside its 512 GiB reservation (Guri maps at
+// 0x3040df0000), so the guest owns up to 256 GiB and the host keeps the other half.
+static constexpr uint64_t HOST_USER_MAX = 0x3fffffffffull;
 #else
 static constexpr uint64_t HOST_USER_MAX = 0xfbffffffffull;
 #endif

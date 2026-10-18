@@ -801,6 +801,9 @@ public:
 		features.DCacheLineLog2 = 6;
 		features.SupportsCacheMaintenanceOps = 1;
 		features.SupportsAES = 1;
+		// PS5 games use SHA-NI unconditionally (Guri: sha1msg1); FEX translates it to the ARMv8
+		// SHA1/SHA256 instructions every supported Snapdragon has.
+		features.SupportsSHA = 1;
 		features.SupportsCRC = 1;
 		features.SupportsAtomics = 1;
 		features.SupportsRCPC = 1;
