@@ -3037,7 +3037,7 @@ private:
 				} else result.maximum = std::max(result.maximum, SelectorMaximum(key, {}, 0u, active));
 			}
 		}
-		if (lane != nullptr) result = SelectedFiniteDomain(*lane, handle != nullptr ? lane->Arg(1) : Value {});
+		if (lane != nullptr) result = SelectedSelectorDomain(*lane, handle != nullptr ? lane->Arg(1) : Value {});
 		else if (handle == nullptr) result.maximum = SelectorMaximum(key);
 		if (result.maximum > UINT32_MAX / 4u ||
 		    uint64_t {result.maximum} * indirect.table_stride + indirect.table_offset > UINT32_MAX)
@@ -3656,10 +3656,12 @@ private:
 		return found ? SelectorDomain {maximum, counted ? count : Value {}} : SelectorDomain {};
 	}
 
-	SelectorDomain SelectedFiniteDomain(const Inst& lane, Value guard) const {
+	SelectorDomain SelectedSelectorDomain(const Inst& lane, Value guard) const {
 		if (guard.IsEmpty() ? !HasActiveLane(lane.Arg(1), lane.Parent())
 		                    : !Implies(guard, lane.Arg(1))) return {};
-		return FiniteSelectorDomain(lane.Arg(0), lane.Arg(1));
+		auto result = FiniteSelectorDomain(lane.Arg(0), lane.Arg(1));
+		if (result.maximum == UINT32_MAX) result.maximum = PossibleU32Bits(lane.Arg(0));
+		return result;
 	}
 
 	uint32_t SelectorMaximum(Value value, SelectorBounds bounds = {}, uint32_t depth = 0,
@@ -3676,7 +3678,7 @@ private:
 		};
 		switch (inst->GetOpcode()) {
 			case ValueOpcode::ReadFirstLane:
-				return SelectedFiniteDomain(*inst, guard).maximum;
+				return SelectedSelectorDomain(*inst, guard).maximum;
 			case ValueOpcode::ReadLane:
 				// ReadLane ignores EXEC; only context-free bounds on every source lane apply.
 				return PossibleU32Bits(inst->Arg(0));
