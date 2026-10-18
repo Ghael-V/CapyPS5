@@ -116,7 +116,14 @@ void EmitMemoryOffsets(EmitterState& state) {
 
 uint32_t LdsDwordCount(const EmitterState& state) {
 	const auto* workgroup = ShaderWorkgroupInput(state.program.stage, state.input_info);
-	return workgroup != nullptr ? workgroup->lds_size_dwords : 8192u;
+	if (workgroup != nullptr) {
+		return workgroup->lds_size_dwords;
+	}
+	// Per-invocation LDS: declare only what constant-address accesses reach (Born of Bread's
+	// lighting pixel shader spills 3 values with DS_*_ADDTID; a 32 KB private array per pixel ran
+	// it at a tenth of its speed on Adreno).
+	const auto dwords = state.program.info.function_lds_dwords;
+	return dwords != 0 && dwords != UINT32_MAX ? std::min(dwords, 8192u) : 8192u;
 }
 
 void EnsureLdsStorage(EmitterState& state) {

@@ -382,8 +382,21 @@ void Visit(Program& program, ShaderStageInputInfo input_info, InputUsage& inputs
 				}
 				info.shared_int64_atomics = true;
 			}
-			info.function_lds |= kind == ResourceKind::Lds &&
-			                     program.stage != ShaderType::Compute && program.stage != ShaderType::Mesh;
+			const bool function_lds = kind == ResourceKind::Lds &&
+			                          program.stage != ShaderType::Compute && program.stage != ShaderType::Mesh;
+			info.function_lds |= function_lds;
+			if (function_lds && info.function_lds_dwords != UINT32_MAX) {
+				const auto address = inst.NumArgs() != 0 ? inst.Arg(0) : Value {};
+				if (address.IsImmediate() && address.GetType() == Type::U32 &&
+				    shared_access != SharedAccess::Append && shared_access != SharedAccess::Consume) {
+					const auto last = std::max(memory.offset, memory.secondary_offset) +
+					                  std::max(memory.data_dwords, 1u) * 4u * 2u;
+					info.function_lds_dwords = std::max(info.function_lds_dwords,
+					                                    (address.U32() + last + 3u) / 4u);
+				} else {
+					info.function_lds_dwords = UINT32_MAX;
+				}
+			}
 			if (shared_access == SharedAccess::Append || shared_access == SharedAccess::Consume) {
 				info.subgroup_ballot = true;
 				info.subgroup_shuffle = true;
@@ -606,6 +619,7 @@ void CollectShaderInfo(Program& program, ShaderStageInputInfo input_info) {
 	    info.subgroup_local_invocation_id = info.compute_derivatives = info.image_gather_extended =
 	    info.function_lds = info.function_scratch = info.pixel_valid_mask = info.buffer_int64_atomics =
 	    info.buffer_u8 = info.buffer_u16 = info.shared_int64_atomics = info.coherent_buffers = info.float64 = false;
+	info.function_lds_dwords = 0;
 	InputUsage inputs;
 	for (const auto* block: program.blocks) {
 		for (const auto& inst: *block) {

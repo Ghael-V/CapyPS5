@@ -803,8 +803,13 @@ void DefineModule(EmitterState& state) {
 	                             spv::MemoryModelGLSL450);
 	// GCN/RDNA arithmetic preserves 32-bit signed zero, infinity, and NaN. Declaring that
 	// contract prevents host compilers from treating synthesized IEEE values as finite.
-	state.builder.AddExecutionMode(state.main_func, spv::ExecutionModeSignedZeroInfNanPreserve,
-	                               32u);
+	// `setprop debug.capy.fp_preserve 0` (before shaders compile) leaves it out, letting the host
+	// compiler use fast math (performance experiment).
+	static Common::DebugFlags::CachedValue fp_preserve("debug.capy.fp_preserve", 1);
+	if (fp_preserve.Get() != 0) {
+		state.builder.AddExecutionMode(state.main_func, spv::ExecutionModeSignedZeroInfNanPreserve,
+		                               32u);
+	}
 	if (state.program.info.float64) {
 		EXIT_NOT_IMPLEMENTED(state.program.stage == ShaderType::Compute &&
 		                     state.input_info.compute->float_mode != 0xc0);

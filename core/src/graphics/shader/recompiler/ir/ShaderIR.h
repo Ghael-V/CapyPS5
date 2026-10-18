@@ -510,6 +510,9 @@ struct ShaderInfo {
 	bool                            compute_derivatives           = false;
 	bool                            image_gather_extended         = false;
 	bool                            function_lds                  = false;
+	// Dwords a per-invocation (function) LDS needs when every access has a constant address;
+	// 0 when an address is dynamic (the full LDS is then declared).
+	uint32_t                        function_lds_dwords           = 0;
 	bool                            function_scratch              = false;
 	bool                            pixel_valid_mask              = false;
 	bool                            buffer_int64_atomics          = false;

@@ -882,6 +882,21 @@ void Translator::DS_APPEND_CONSUME(const Decoder::Instruction& inst, IR::ValueOp
 
 void Translator::DS_ADDTID(const Decoder::Instruction& inst, bool write) {
 	const auto memory = MemoryInfoFromDecoded(inst);
+	// Outside compute and mesh shaders LDS is emulated per invocation, so the lane term (which
+	// gives each lane its own slot) is not needed; M0 is also dropped, as compilers set it once
+	// for these lane-private spills. The constant address lets the per-invocation array shrink to
+	// the slots actually used.
+	if (program.stage != ShaderType::Compute && program.stage != ShaderType::Mesh) {
+		const auto address = IR::U32(IR::Value(0u));
+		if (write) {
+			ir.Emit(IR::ValueOpcode::WriteSharedU32, {address, ReadU32(MemorySourceAt(inst, 0)), ir.GetExec()},
+			        AddMemoryInfo(memory, inst.pc));
+		} else {
+			WriteOperand(inst.dst, ir.Emit(IR::ValueOpcode::LoadSharedU32, {address, ir.GetExec()},
+			                               AddMemoryInfo(memory, inst.pc)));
+		}
+		return;
+	}
 	const auto base =
 	    ir.BitwiseAnd(ReadU32(MemorySourceAt(inst, write ? 1u : 0u)), IR::U32(IR::Value(0xffffu)));
 	const auto lane    = IR::U32(ir.Emit(IR::ValueOpcode::LaneId));
