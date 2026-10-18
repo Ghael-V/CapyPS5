@@ -750,6 +750,47 @@ static bool KytyExceptionHandler(const Common::HostException::ExceptionInfo& exc
 			__android_log_print(ANDROID_LOG_ERROR, "CapyPS5-Core", "%s", stack_str.c_str());
 #endif
 		}
+		// Words on the guest stack that point into a loaded module: a rough guest backtrace. In JIT
+		// code FEX keeps guest registers in host ones (arm64: RSP in x8, reported as r8 above).
+		{
+			uint64_t stack_pointer = info->rsp;
+#if defined(__aarch64__)
+			if (Cpu::GuestRipFromHostPc(info->exception_address) != 0) {
+				stack_pointer = info->r8;
+				char regs[320];
+				std::snprintf(regs, sizeof(regs),
+				              "guest regs: rax=%016" PRIx64 " rdx=%016" PRIx64 " rsp=%016" PRIx64 " rbp=%016" PRIx64
+				              " rsi=%016" PRIx64 " rdi=%016" PRIx64 " r8=%016" PRIx64 " r9=%016" PRIx64,
+				              info->rsi, info->rdi, info->r8, info->r9, info->r10, info->r11, info->r12, info->r13);
+				std::printf("%s\n", regs);
+#if defined(__ANDROID__)
+				__android_log_print(ANDROID_LOG_ERROR, "CapyPS5-Core", "%s", regs);
+#endif
+			}
+#endif
+			auto*       linker = Common::Singleton<Loader::RuntimeLinker>::Instance();
+			std::string trace  = "guest stack code:";
+			int         found  = 0;
+			for (uint64_t offset = 0; offset < 4096 * sizeof(uint64_t) && found < 20; offset += sizeof(uint64_t)) {
+				if (!IsReadableRange(stack_pointer + offset, sizeof(uint64_t))) {
+					break;
+				}
+				const auto value   = *reinterpret_cast<const uint64_t*>(stack_pointer + offset);
+				const auto* program = value > 0x100000 ? linker->FindProgramByAddr(value) : nullptr;
+				if (program == nullptr) {
+					continue;
+				}
+				char entry[96];
+				std::snprintf(entry, sizeof(entry), " %s+0x%" PRIx64, program->file_name.filename().string().c_str(),
+				              value - program->base_vaddr);
+				trace += entry;
+				found++;
+			}
+			std::printf("%s\n", trace.c_str());
+#if defined(__ANDROID__)
+			__android_log_print(ANDROID_LOG_ERROR, "CapyPS5-Core", "%s", trace.c_str());
+#endif
+		}
 		std::fflush(stdout);
 	}
 #if !defined(_WIN32)
