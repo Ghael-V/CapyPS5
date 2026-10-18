@@ -143,6 +143,20 @@ bool ReadShaderLiveMemory(void* userdata, uint64_t address, std::span<uint32_t> 
 
 void DumpShaderSpirv(const char* stage_name, uint64_t shader_hash,
                      const std::vector<uint32_t>& spirv) {
+#if defined(__ANDROID__)
+	// `setprop debug.capy.dump_spirv 1` before launching: write every generated module to
+	// <files>/spirv/<stage>_<hash>.spv (read them with spirv-dis from the NDK shader-tools).
+	static Common::DebugFlags::CachedValue dump_spirv("debug.capy.dump_spirv", 0);
+	if (dump_spirv.Get() != 0) {
+		const auto dir = AndroidGetFilesDir() + "/spirv";
+		Common::File::CreateDirectories(dir);
+		const auto path = fmt::format("{}/{}_{:016x}.spv", dir, stage_name, shader_hash);
+		if (auto* out = std::fopen(path.c_str(), "wb"); out != nullptr) {
+			std::fwrite(spirv.data(), sizeof(uint32_t), spirv.size(), out);
+			std::fclose(out);
+		}
+	}
+#endif
 	if (!Config::GraphicsDebugDumpEnabled()) {
 		return;
 	}
@@ -1239,7 +1253,17 @@ PipelineCache::GetComputePipeline(const ShaderComputeInputInfo& input_info,
 	CreatePipelineInternal(m_graphics, *cached, input_info.stage, compute_program.module,
 	                       m_driver_cache, scaled_images);
 
-	EXIT_NOT_IMPLEMENTED(cached->pipeline == nullptr);
+	if (cached->pipeline == nullptr) {
+		// Kept as a null entry so the dispatch is skipped instead of recompiled every time (Born
+		// of Bread: Adreno "Failed to link shaders").
+#if defined(__ANDROID__)
+		__android_log_print(ANDROID_LOG_ERROR, "CapyPS5-Compile",
+		                    "compute pipeline rejected by the driver: program=%llu lds=%u dwords (storage %d) threads=%ux%ux%u",
+		                    static_cast<unsigned long long>(compute_program.id),
+		                    input_info.lds_size_dwords, input_info.lds_storage ? 1 : 0, input_info.threads_num[0], input_info.threads_num[1],
+		                    input_info.threads_num[2]);
+#endif
+	}
 	EXIT_NOT_IMPLEMENTED(cached->pipeline_layout == nullptr);
 
 	auto [iter, inserted] = m_compute_pipelines.emplace(key, std::move(cached));

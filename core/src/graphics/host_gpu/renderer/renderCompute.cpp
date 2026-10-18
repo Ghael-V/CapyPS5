@@ -375,6 +375,11 @@ void RenderExecutor::DispatchDirect(uint64_t submit_id, CommandBuffer& buffer,
 	RebindBuffers(bindings);
 	auto& pipeline = m_context.GetPipelineCache().GetComputePipeline(
 	    input_info, compute_program, ScaledImageMask(bindings));
+	if (pipeline.pipeline == nullptr) {
+		// The driver rejected this shader (logged once by the pipeline cache): skip the dispatch.
+		ResetBindings();
+		return;
+	}
 
 	auto              vk_buffer        = buffer.Handle();
 	CommitBindings(buffer, vk::PipelineBindPoint::eCompute, pipeline,
@@ -500,6 +505,11 @@ void RenderExecutor::DispatchIndirect(uint64_t submit_id, CommandBuffer& buffer,
 	RebindImages(bindings);
 	auto& pipeline = m_context.GetPipelineCache().GetComputePipeline(
 	    input_info, compute_program, ScaledImageMask(bindings));
+	if (pipeline.pipeline == nullptr) {
+		// The driver rejected this shader (logged once by the pipeline cache): skip the dispatch.
+		ResetBindings();
+		return;
+	}
 	// Acquiring arguments can merge cache buffers; finalize shader bindings afterward.
 	const auto [args_buffer, args_offset] = m_context.GetBufferCache().ObtainBuffer(
 	    args_addr, sizeof(vk::DispatchIndirectCommand), false);
