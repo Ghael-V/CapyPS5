@@ -216,27 +216,33 @@ static void CreateDescriptorLayout(GraphicContext& graphics, PipelineCache::Pipe
 	const auto& limits = graphics.GetPhysicalDeviceProperties().limits;
 	uint64_t descriptor_count = 0;
 	uint64_t storage_buffers = 0;
-	std::array<uint64_t, 32> stage_buffers {}, stage_resources {};
+	uint64_t samplers = 0;
+	std::array<uint64_t, 32> stage_buffers {}, stage_resources {}, stage_samplers {};
 	for (const auto& binding: bindings) {
 		descriptor_count += binding.descriptorCount;
 		const bool storage = binding.descriptorType == vk::DescriptorType::eStorageBuffer;
+		const bool sampler = binding.descriptorType == vk::DescriptorType::eSampler;
 		if (storage) storage_buffers += binding.descriptorCount;
+		if (sampler) samplers += binding.descriptorCount;
 		for (auto stages = static_cast<uint32_t>(binding.stageFlags); stages != 0; stages &= stages - 1u) {
 			const auto stage = std::countr_zero(stages);
 			if (storage) stage_buffers[stage] += binding.descriptorCount;
-			if (binding.descriptorType != vk::DescriptorType::eSampler)
+			if (sampler) stage_samplers[stage] += binding.descriptorCount;
+			else
 				stage_resources[stage] += binding.descriptorCount;
 			// Reported, not fatal: drivers that under-report these limits (as some mobile ones do)
 			// still create the layout, and a real failure exits at createDescriptorSetLayout.
 			if (stage_buffers[stage] > limits.maxPerStageDescriptorStorageBuffers ||
-			    stage_resources[stage] > limits.maxPerStageResources) {
+			    stage_resources[stage] > limits.maxPerStageResources ||
+			    stage_samplers[stage] > limits.maxPerStageDescriptorSamplers) {
 				Common::DebugFlags::NoteOnce(
 				    "CapyPS5-Descriptors",
 				    (uint64_t {static_cast<uint32_t>(stage)} << 40u) ^ (stage_buffers[stage] << 20u) ^
-				        stage_resources[stage],
+				        (stage_samplers[stage] << 10u) ^ stage_resources[stage],
 				    "native descriptor stage %u exceeds device limits: buffers=%" PRIu64
-				    "/%u resources=%" PRIu64 "/%u", stage, stage_buffers[stage],
-				     limits.maxPerStageDescriptorStorageBuffers, stage_resources[stage], limits.maxPerStageResources);
+				    "/%u resources=%" PRIu64 "/%u samplers=%" PRIu64 "/%u", stage, stage_buffers[stage],
+				    limits.maxPerStageDescriptorStorageBuffers, stage_resources[stage], limits.maxPerStageResources,
+				    stage_samplers[stage], limits.maxPerStageDescriptorSamplers);
 			}
 		}
 	}
@@ -244,6 +250,11 @@ static void CreateDescriptorLayout(GraphicContext& graphics, PipelineCache::Pipe
 		Common::DebugFlags::NoteOnce("CapyPS5-Descriptors", storage_buffers,
 		                             "native storage-buffer descriptors exceed device limit: %" PRIu64 "/%u",
 		                             storage_buffers, limits.maxDescriptorSetStorageBuffers);
+	}
+	if (samplers > limits.maxDescriptorSetSamplers) {
+		Common::DebugFlags::NoteOnce("CapyPS5-Descriptors", samplers << 32u,
+		                             "native sampler descriptors exceed device limit: %" PRIu64 "/%u",
+		                             samplers, limits.maxDescriptorSetSamplers);
 	}
 	pipeline.uses_push_descriptors = descriptor_count <= graphics.max_push_descriptors;
 

@@ -558,7 +558,7 @@ bool MaterializeIndirectDescriptor(const ResourcePlan&                         p
                                    ResourceSnapshot&             snapshot,
                                    std::vector<DescriptorValue>& descriptors,
                                    std::vector<Specialization>&  specializations,
-                                   uint32_t maximum_resources, Normalize&& normalize) {
+                                   Normalize&& normalize) {
 	const auto& indirect = *program.descriptor_sources[source_index].indirect_descriptor;
 	const auto  descriptor_bytes = read_dwords * sizeof(uint32_t);
 	const auto& sources = indirect.sources;
@@ -574,28 +574,25 @@ bool MaterializeIndirectDescriptor(const ResourcePlan&                         p
 	// the specialization (and so the compiled permutation) change whenever the lights did.
 	bool one_slot_per_key = Decoder::GetGuestIsa() == Decoder::GuestIsa::Gfx7 && sources.empty() &&
 	                              !indirect.selector && indirect.workgroup_axis == UINT32_MAX;
-	const auto intern_candidate = [&](const DescriptorValue& candidate, uint32_t& ordinal) {
-		ordinal = 0u;
+	const auto intern_candidate = [&](const DescriptorValue& candidate) {
 		if (one_slot_per_key) {
-			if (descriptors.size() >= maximum_resources) return false;
-			ordinal = static_cast<uint32_t>(descriptors.size() - children_begin + 1u);
+			const auto ordinal = static_cast<uint32_t>(descriptors.size() - children_begin + 1u);
 			descriptors.push_back(candidate);
 			auto child = root_resource;
 			child.indirect_root = resource_index;
 			specializations.push_back(child);
-			return true;
+			return ordinal;
 		}
-		if (candidate == descriptors[resource_index]) return true;
+		if (candidate == descriptors[resource_index]) return 0u;
 		const auto found = std::find(descriptors.begin() + children_begin, descriptors.end(), candidate);
-		ordinal = static_cast<uint32_t>(found - descriptors.begin() - children_begin + 1u);
+		const auto ordinal = static_cast<uint32_t>(found - descriptors.begin() - children_begin + 1u);
 		if (found == descriptors.end()) {
-			if (descriptors.size() >= maximum_resources) return false;
 			descriptors.push_back(candidate);
 			auto child = root_resource;
 			child.indirect_root = resource_index;
 			specializations.push_back(child);
 		}
-		return true;
+		return ordinal;
 	};
 	uint64_t table_base = 0;
 	uint64_t table_size = UINT64_MAX; // Scalar addresses have no buffer descriptor bounds.
@@ -607,7 +604,7 @@ bool MaterializeIndirectDescriptor(const ResourcePlan&                         p
 		    "indirect {} resource={} source={} table_source={} words={:08x},{:08x},{:08x},{:08x} "
 		    "base={:#x} size={} type={} runtime_stride={} records={} swizzle={} addtid={} oob={} "
 		    "maximum={} offset={} immediate={} record_bytes={} child_count={} child_stride={} "
-		    "child_offset={} indexed_pointer={} candidates={} capacity={} {}",
+		    "child_offset={} indexed_pointer={} candidates={} {}",
 		    reason, resource_index, source_index, indirect.table_source,
 		    table_value.dwords[0], table_value.dwords[1], table_value.dwords[2], table_value.dwords[3],
 		    table_base, table_size, table.Type(), table.Stride(), table.NumRecords(),
@@ -616,7 +613,7 @@ bool MaterializeIndirectDescriptor(const ResourcePlan&                         p
 		    indirect.table_offset, indirect.table_immediate, indirect.table_record_bytes,
 		    pointer != nullptr ? pointer->count : 1u, pointer != nullptr ? pointer->stride : 0u,
 		    pointer != nullptr ? pointer->offset : 0u, pointer != nullptr && pointer->indexed,
-		    descriptors.size(), maximum_resources, details));
+		    descriptors.size(), details));
 	};
 	const auto read_failed = [&](std::string_view reason, uint32_t row, uint32_t child,
 	                             uint64_t base, uint64_t offset, size_t bytes) {
@@ -751,8 +748,7 @@ bool MaterializeIndirectDescriptor(const ResourcePlan&                         p
 					if (!normalize(candidate))
 						return normalization_failed(table_offset, word, step,
 						                            indirect.table_maximum ? "key" : "probe");
-					uint32_t ordinal;
-					if (!intern_candidate(candidate, ordinal)) return false;
+					const auto ordinal = intern_candidate(candidate);
 					if (ordinal == 0u) continue;
 					const auto mapping_word = image_heap ? table_offset / 4u : word * child_count + child;
 					snapshot.flattened_srt.resize(mapping_offset + 2u + mapping_word, 0u);
@@ -843,8 +839,8 @@ bool MaterializeIndirectDescriptor(const ResourcePlan&                         p
 		uint32_t ordinal = 0;
 		if (entry == 0 && !byte_keys) {
 			descriptors[resource_index] = candidate;
-		} else if (!intern_candidate(candidate, ordinal)) {
-			return false;
+		} else {
+			ordinal = intern_candidate(candidate);
 		}
 		snapshot.flattened_srt[mapping_offset + 1u + entry * 2u] = key;
 		snapshot.flattened_srt[mapping_offset + 2u + entry * 2u] = ordinal;
@@ -867,9 +863,8 @@ struct SamplerPlan {
 		uint32_t     source;
 		SamplerClass type;
 	};
-	std::array<std::array<uint32_t, 2>, ShaderInfo::MaxSamplers> mapping;
-	std::array<Binding, ShaderInfo::MaxSamplers>                bindings;
-	uint32_t                                                  sampler_count = 0;
+	std::vector<std::array<uint32_t, 2>> mapping;
+	std::vector<Binding>                bindings;
 };
 
 template <typename T, typename Keep>
@@ -1133,11 +1128,9 @@ static bool BuildResourceSpecialization(const ResourcePlan& program, ResourceSna
 }
 
 bool BuildSamplerPlan(const ShaderInfo& base, SamplerPlan& plan) {
-	if (base.samplers.size() > plan.mapping.size()) {
-		return false;
-	}
-	std::array<uint8_t, ShaderInfo::MaxSamplers> usage {};
-	plan.sampler_count = static_cast<uint32_t>(base.samplers.size());
+	plan.mapping.resize(base.samplers.size());
+	plan.bindings.resize(base.samplers.size());
+	std::vector<uint8_t> usage(base.samplers.size());
 	for (const auto& pair: base.sampled_pairs) {
 		if (pair.image >= base.images.size() || pair.sampler >= base.samplers.size()) {
 			return false;
@@ -1159,8 +1152,8 @@ bool BuildSamplerPlan(const ShaderInfo& base, SamplerPlan& plan) {
 		bool       first   = true;
 		for (uint32_t type = 0; type < mapping.size(); type++) {
 			if ((classes & (1u << type)) == 0u) continue;
-			const auto target = first ? index : plan.sampler_count++;
-			if (target >= ShaderInfo::MaxSamplers) return false;
+			const auto target = first ? index : static_cast<uint32_t>(plan.bindings.size());
+			if (!first) plan.bindings.emplace_back();
 			mapping[type]         = target;
 			plan.bindings[target] = {index, static_cast<SamplerClass>(type)};
 			first                = false;
@@ -1818,9 +1811,9 @@ bool MaterializeResources(const ResourcePlan& program, const SrtRuntime& runtime
 		return true;
 	};
 	const auto resource_failed = [&](std::string_view kind, uint32_t resource, uint32_t source,
-	                                 size_t candidates, uint32_t capacity) {
-		return SpecializationFail(fmt::format("indirect {} resource={} source={} candidates={} capacity={}",
-		    kind, resource, source, candidates, capacity));
+	                                 size_t candidates) {
+		return SpecializationFail(fmt::format("indirect {} resource={} source={} candidates={}",
+		    kind, resource, source, candidates));
 	};
 	snapshot.buffers.resize(program.info.buffers.size());
 	specialization.buffers.assign(program.info.buffers.size(), {});
@@ -1837,7 +1830,7 @@ bool MaterializeResources(const ResourcePlan& program, const SrtRuntime& runtime
 				if (active.empty() || active[base.source]) {
 					if (!MaterializeIndirectDescriptor(
 					        program, base.source, i, 4u, 4u, observed, clean, snapshot,
-					        snapshot.buffers, specialization.buffers, UINT32_MAX,
+					        snapshot.buffers, specialization.buffers,
 					        [&](DescriptorValue& value) {
 						        return NormalizeIndirectBuffer(
 						            value, source->indirect_descriptor->indexed, base);
@@ -1904,7 +1897,7 @@ bool MaterializeResources(const ResourcePlan& program, const SrtRuntime& runtime
 			const bool bounded_table = IsBoundedDescriptorTable(program, indirect);
 			if (!MaterializeIndirectDescriptor(
 			        program, image.source, i, 8u, image.r128 ? 4u : 8u, observed, clean, snapshot, snapshot.images,
-			        specialization.images, UINT32_MAX, [&](DescriptorValue& value) {
+			        specialization.images, [&](DescriptorValue& value) {
 				        // Table entries are guest T#s too: a PS4 one needs the same conversion as
 				        // a directly loaded descriptor.
 				        if (Decoder::GetGuestIsa() == Decoder::GuestIsa::Gfx7 && !NullImageDescriptor(value)) {
@@ -1960,9 +1953,9 @@ bool MaterializeResources(const ResourcePlan& program, const SrtRuntime& runtime
 				snapshot.samplers[i] = {.dword_count = 4u};
 				if ((active.empty() || active[source]) && !MaterializeIndirectDescriptor(
 				        program, source, i, 4u, 4u, observed, clean, snapshot, snapshot.samplers,
-				        specialization.samplers, ShaderInfo::MaxSamplers,
+				        specialization.samplers,
 				        [](DescriptorValue&) { return true; }))
-					return resource_failed("sampler", i, source, snapshot.samplers.size(), ShaderInfo::MaxSamplers);
+					return resource_failed("sampler", i, source, snapshot.samplers.size());
 			} else {
 				if (indirect != nullptr) source = indirect->sources[0];
 				if (!evaluate(source, snapshot.samplers[i])) return MaterializeFail("sampler descriptor could not be evaluated");
@@ -2070,8 +2063,8 @@ void ApplyResourceSpecialization(Program& program, const ResourceSpecialization&
 	SamplerPlan sampler_plan;
 	EXIT_IF(!BuildSamplerPlan(program.info, sampler_plan));
 	const auto original_sampler_count = samplers.size();
-	samplers.reserve(sampler_plan.sampler_count);
-	for (uint32_t index = 0; index < sampler_plan.sampler_count; index++) {
+	samplers.reserve(sampler_plan.bindings.size());
+	for (uint32_t index = 0; index < sampler_plan.bindings.size(); index++) {
 		const auto& binding = sampler_plan.bindings[index];
 		if (index >= original_sampler_count) {
 			samplers.push_back(samplers[binding.source]);
@@ -2080,7 +2073,7 @@ void ApplyResourceSpecialization(Program& program, const ResourceSpecialization&
 		samplers[index].force_point_filtering = binding.type == SamplerClass::Integer;
 		samplers[index].integer_border        = binding.type != SamplerClass::Float;
 	}
-	for (uint32_t index = 0; index < sampler_plan.sampler_count; index++) {
+	for (uint32_t index = 0; index < sampler_plan.bindings.size(); index++) {
 		const auto& binding = sampler_plan.bindings[index];
 		for (auto& candidate: samplers[index].indirect_resources) {
 			candidate = sampler_plan.mapping[candidate][static_cast<uint32_t>(binding.type)];
