@@ -1271,6 +1271,19 @@ void ConstantPropagationPass(const BlockList& blocks, uint32_t wave_size) {
 		}
 		drain();
 	} while (normalized);
+	// Repeated register reads share a bitcast only within the same SSA block.
+	std::unordered_map<const Inst*, Inst*> bitcasts;
+	for (auto* block: blocks) {
+		bitcasts.clear();
+		for (auto& inst: *block) {
+			if (inst.GetOpcode() != ValueOpcode::BitCastF32U32 &&
+			    inst.GetOpcode() != ValueOpcode::BitCastU32F32) continue;
+			const auto* source = Arg(inst, 0).TryInstruction();
+			if (source == nullptr) continue;
+			const auto [entry, inserted] = bitcasts.try_emplace(source, &inst);
+			if (!inserted) Replace(inst, Value(entry->second));
+		}
+	}
 }
 
 } // namespace Libs::Graphics::ShaderRecompiler::IR
