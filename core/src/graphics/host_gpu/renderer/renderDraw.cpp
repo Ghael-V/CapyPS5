@@ -1748,6 +1748,11 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 	}
 
 	auto& dynamic_state = m_context.GetCommandScheduler().GetDynamicState();
+	// Bisection aid: `setprop debug.capy.dyn_invalidate 1` re-records all dynamic state per draw.
+	static Common::DebugFlags::CachedValue dyn_invalidate("debug.capy.dyn_invalidate", 0);
+	if (dyn_invalidate.Get() != 0) {
+		dynamic_state.Invalidate();
+	}
 	UpdateGraphicsDynamicState(buffer, dynamic_state, vertex_stages.back(), state.depth_info,
 	                           rendering);
 	dynamic_state.SetAttachmentFeedbackLoopAspects(feedback_aspects);
@@ -1837,19 +1842,17 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 	if (!draw.IsIndexed()) {
 		SetDrawDebugPhase(buffer, submit_id, draw, 0x500u);
 	}
-	if (mesh_emulated) {
-		vk_buffer.drawIndexed(mesh_index_count, 1, 0, 0, 0);
-	} else if (mesh_active) {
-		vk_buffer.drawMeshTasksEXT(mesh_groups, draw.instance_count, 1);
-	} else {
-		EmitDrawPrimitives(ucfg, vk_buffer, draw, emit);
-	}
 	// Bisection aid: `setprop debug.capy.clear_depth_ps 0x<ps>` clears the depth target to
-	// `clear_depth_milli`/1000 right after each draw of that pixel shader.
+	// `clear_depth_milli`/1000 right after each depth-writing ALWAYS draw of that pixel shader
+	// (`clear_depth_pre 1`: right before it instead, to see what the draw itself writes).
 	static Common::DebugFlags::CachedValue clear_depth_ps("debug.capy.clear_depth_ps", 0);
 	static Common::DebugFlags::CachedValue clear_depth_milli("debug.capy.clear_depth_milli", 0);
-	if (clear_depth_ps.Get() != 0 && state.depth_info.image_id && rendering.depth_stencil_attachment.has_depth &&
-	    static_cast<uint64_t>(clear_depth_ps.Get()) == split_addr) {
+	static Common::DebugFlags::CachedValue clear_depth_pre("debug.capy.clear_depth_pre", 0);
+	const bool clear_depth_probe =
+	    clear_depth_ps.Get() != 0 && rendering.depth_stencil_attachment.has_depth &&
+	    state.depth_info.depth_write_enable && state.depth_info.depth_compare_op == vk::CompareOp::eAlways &&
+	    static_cast<uint64_t>(clear_depth_ps.Get()) == split_addr;
+	const auto probe_clear_depth = [&] {
 		vk::ClearAttachment clear {};
 		clear.aspectMask                    = vk::ImageAspectFlagBits::eDepth;
 		clear.clearValue.depthStencil.depth = static_cast<float>(clear_depth_milli.Get()) / 1000.0f;
@@ -1857,6 +1860,35 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 		rect.rect.extent = vk::Extent2D {rendering.width, rendering.height};
 		rect.layerCount  = 1;
 		vk_buffer.clearAttachments(1, &clear, 1, &rect);
+	};
+	if (clear_depth_probe && clear_depth_pre.Get() != 0) {
+		probe_clear_depth();
+	}
+	// Adreno: a pass that loads depth and starts with a depth-writing ALWAYS draw lost that draw's
+	// depth writes unless something cleared depth in the pass first (Ratchet & Clank: Size
+	// Matters' per-frame depth clear draw kept the previous frame's depth, so the scene failed its
+	// GREATER test and showed the fog colour with trails). Clearing one pixel, which the draw
+	// then overwrites, is enough. `debug.capy.depth_kick 0` disables it.
+	static Common::DebugFlags::CachedValue depth_kick("debug.capy.depth_kick", 1);
+	if (depth_kick.Get() != 0 && rendering.depth_stencil_attachment.has_depth &&
+	    state.depth_info.depth_write_enable && state.depth_info.depth_compare_op == vk::CompareOp::eAlways) {
+		vk::ClearAttachment clear {};
+		clear.aspectMask                    = vk::ImageAspectFlagBits::eDepth;
+		clear.clearValue.depthStencil.depth = 0.0f;
+		vk::ClearRect rect {};
+		rect.rect.extent = vk::Extent2D {1, 1};
+		rect.layerCount  = 1;
+		vk_buffer.clearAttachments(1, &clear, 1, &rect);
+	}
+	if (mesh_emulated) {
+		vk_buffer.drawIndexed(mesh_index_count, 1, 0, 0, 0);
+	} else if (mesh_active) {
+		vk_buffer.drawMeshTasksEXT(mesh_groups, draw.instance_count, 1);
+	} else {
+		EmitDrawPrimitives(ucfg, vk_buffer, draw, emit);
+	}
+	if (clear_depth_probe && clear_depth_pre.Get() == 0) {
+		probe_clear_depth();
 	}
 
 	if (!draw.IsIndexed()) {
