@@ -706,7 +706,12 @@ RenderState RenderExecutor::AcquireRenderTargets(CommandBuffer& buffer, RenderCo
 			Common::DebugFlags::NoteOnce("CapyPS5-Scale", 0x534d495845ull,
 			                             "render pass mixes differently scaled attachments");
 		}
-		state.scale = std::min(state.scale, image.scale);
+		// The color targets set the scale when there are any: The Binding of Isaac draws its room
+		// into unscaled 512x320 targets with the scaled main depth buffer bound, and taking the
+		// depth scale shrank the viewport to the top-left of the room.
+		if (!scale_known) {
+			state.scale = image.scale;
+		}
 		scale_known = true;
 		state.num_layers          = std::min(state.num_layers, view.layer_count);
 		const auto aspects        = ImageViewOps::DepthAspectMask(depth.desc.view_info.format);

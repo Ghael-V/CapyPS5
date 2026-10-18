@@ -14,7 +14,7 @@ enum class OverlayMode(val label: String) { Off("Desactivado"), Compact("Compact
 enum class TouchControlsMode(val label: String) { Auto("Automático"), Always("Siempre"), Never("Nunca") }
 
 /** Face buttons of a physical pad. Nintendo-labelled pads (AYN Odin) report A/B and X/Y by label. */
-enum class ButtonLayout(val label: String) { Standard("Estándar (PS5)"), Nintendo("Nintendo (PS5)") }
+enum class ButtonLayout(val label: String) { Standard("Estándar (Xbox)"), Nintendo("Nintendo (PS5)") }
 
 /**
  * Emulator core option, passed to the core as its debug.capy.* property before a game starts.
