@@ -370,8 +370,9 @@ void EmitAuxPositionExport(ValueEmitContext& ctx, uint32_t data, const IR::Expor
 		const auto output = IR::DecodePositionExportComponent(
 		    state.input_info.vertex->pa_cl_vs_out_cntl, exp.index, component);
 		if (output.layer || output.viewport) {
+			// Without shaderOutputLayer/ViewportIndex the output is not declared and is dropped.
 			const auto raw = ExportRawComponent(ctx, data, component);
-			if (output.layer) {
+			if (output.layer && g_host_features.output_layer) {
 				const auto layer = state.builder.AllocateId();
 				state.builder.AddFunction(spv::OpBitwiseAnd, TypeU32(state), layer, raw,
 				                          ConstantU32(state, 0x7ffu));
@@ -380,7 +381,7 @@ void EmitAuxPositionExport(ValueEmitContext& ctx, uint32_t data, const IR::Expor
 				                         : state.layer_variable;
 				state.builder.AddFunction(spv::OpStore, pointer, layer);
 			}
-			if (output.viewport) {
+			if (output.viewport && g_host_features.output_viewport_index) {
 				// GFX10 MISC.z packs the viewport index in bits 16..19 alongside the layer.
 				const auto viewport = state.builder.AllocateId();
 				state.builder.AddFunction(spv::OpBitFieldUExtract, TypeU32(state), viewport, raw,

@@ -2,6 +2,7 @@
 
 #include "graphics/host_gpu/renderer/cache/bufferCache.h"
 #include "graphics/shader/recompiler/frontend/decode/ShaderDecoder.h"
+#include "graphics/shader/recompiler/HostFeatures.h"
 
 #include <algorithm>
 #include <bit>
@@ -1256,6 +1257,31 @@ uint32_t EmitAtomic32(ValueEmitContext& ctx, const IR::Inst& inst) {
 	});
 }
 
+// Devices without shaderBufferInt64Atomics (old Adreno drivers) get a plain read-modify-write.
+// It is not atomic, but the 64-bit buffer atomics (swap, and, or) mostly set flags or slots.
+static uint32_t EmitNonAtomicBuffer64(ValueEmitContext& ctx, const IR::Inst& inst,
+                                      uint32_t pointer) {
+	auto&      state = ctx.state;
+	const auto value = ctx.Arg(inst, inst.NumArgs() - 2);
+	const auto old   = state.builder.AllocateId();
+	state.builder.AddFunction(spv::OpLoad, TypeU64(state), old, pointer);
+	auto result = value;
+	switch (SpirvAtomicOpcode(inst.GetOpcode())) {
+		case spv::OpAtomicExchange: break;
+		case spv::OpAtomicAnd: result = Binary(state, spv::OpBitwiseAnd, TypeU64(state), old, value); break;
+		case spv::OpAtomicOr: result = Binary(state, spv::OpBitwiseOr, TypeU64(state), old, value); break;
+		case spv::OpAtomicXor: result = Binary(state, spv::OpBitwiseXor, TypeU64(state), old, value); break;
+		case spv::OpAtomicIAdd: result = Binary(state, spv::OpIAdd, TypeU64(state), old, value); break;
+		default: EXIT("unsupported emulated 64-bit buffer atomic %u\n", static_cast<uint32_t>(inst.GetOpcode()));
+	}
+	state.builder.AddFunction(spv::OpStore, pointer, result);
+	static std::atomic_bool logged = false;
+	if (!logged.exchange(true, std::memory_order_relaxed)) {
+		Log::WriteToConsoleAndLog("Shader: emulated 64-bit buffer atomics without device support\n");
+	}
+	return old;
+}
+
 uint32_t EmitBufferAtomic64(ValueEmitContext& ctx, const IR::Inst& inst) {
 	const auto& mem   = ctx.Memory(inst);
 	auto&       state = ctx.state;
@@ -1271,6 +1297,9 @@ uint32_t EmitBufferAtomic64(ValueEmitContext& ctx, const IR::Inst& inst) {
 		        ConstantU64(state, 0), [&]() {
 			        const auto pointer = EmitStorageBufferElementPointer(
 			            state, resource, index, TypeStorageBufferElementPointer(state, 64));
+			        if (!g_host_features.buffer_int64_atomics) {
+				        return EmitNonAtomicBuffer64(ctx, inst, pointer);
+			        }
 			        const auto old = EmitAtomicOperation(ctx, inst, pointer, spv::ScopeDevice);
 			        EmitAtomicMemoryBarrier(state, mem.kind);
 			        return old;

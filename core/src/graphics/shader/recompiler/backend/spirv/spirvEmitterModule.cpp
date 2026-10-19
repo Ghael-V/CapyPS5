@@ -743,7 +743,8 @@ void DefineModule(EmitterState& state) {
 		state.builder.RequireCapability(spv::CapabilityPhysicalStorageBufferAddresses);
 		state.builder.RequireExtension("SPV_KHR_physical_storage_buffer");
 	}
-	if (state.program.info.buffer_int64_atomics || state.program.info.shared_int64_atomics) {
+	if ((state.program.info.buffer_int64_atomics && g_host_features.buffer_int64_atomics) ||
+	    state.program.info.shared_int64_atomics) {
 		state.builder.RequireCapability(spv::CapabilityInt64);
 		state.builder.RequireCapability(spv::CapabilityInt64Atomics);
 	}

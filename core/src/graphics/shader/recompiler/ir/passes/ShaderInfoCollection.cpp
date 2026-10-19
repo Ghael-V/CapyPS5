@@ -232,13 +232,13 @@ void CollectOutput(const Program& program, ShaderStageInputInfo input_info,
 				}
 				const auto output = DecodePositionExportComponent(
 				    input_info.vertex->pa_cl_vs_out_cntl, export_info.index, component);
-				if (output.viewport) {
+				if (output.viewport && g_host_features.output_viewport_index) {
 					AddOutput(info, StageOutputKind::ViewportIndex, 0, 0, "gl_ViewportIndex");
 				}
 				if (output.point_size) {
 					AddOutput(info, StageOutputKind::PointSize, 0, 0, "gl_PointSize");
 				}
-				if (output.layer) {
+				if (output.layer && g_host_features.output_layer) {
 					AddOutput(info, StageOutputKind::Layer, 0, 0, "gl_Layer");
 				}
 				if (output.clip_distance != UINT32_MAX && g_host_features.clip_distance) {

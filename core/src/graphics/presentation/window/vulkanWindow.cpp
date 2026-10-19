@@ -65,10 +65,7 @@ vk::PhysicalDeviceVulkan12Features WindowContext::RequiredVulkan12Features() noe
 	vk::PhysicalDeviceVulkan12Features features {};
 	features.samplerMirrorClampToEdge  = VK_TRUE;
 	features.timelineSemaphore         = VK_TRUE;
-	features.shaderOutputLayer         = VK_TRUE;
-	features.shaderOutputViewportIndex = VK_TRUE;
 	features.bufferDeviceAddress       = VK_TRUE;
-	features.shaderBufferInt64Atomics  = VK_TRUE;
 	features.storageBuffer8BitAccess   = VK_TRUE;
 	features.shaderSampledImageArrayNonUniformIndexing = VK_TRUE;
 	return features;
@@ -314,6 +311,10 @@ static void VulkanFindPhysicalDevice(vk::Instance instance, vk::SurfaceKHR surfa
 		optional_feature(device_features2.features.shaderCullDistance, "shaderCullDistance");
 		check_feature(device_features2.features.largePoints, "largePoints");
 		optional_feature(device_features2.features.multiViewport, "multiViewport");
+		// Old Adreno drivers (Adreno 740, driver 676) lack these three.
+		optional_feature(features12.shaderOutputLayer, "shaderOutputLayer");
+		optional_feature(features12.shaderOutputViewportIndex, "shaderOutputViewportIndex");
+		optional_feature(features12.shaderBufferInt64Atomics, "shaderBufferInt64Atomics");
 		optional_feature(device_features2.features.fillModeNonSolid, "fillModeNonSolid");
 		check_feature(device_features2.features.fragmentStoresAndAtomics,
 		              "fragmentStoresAndAtomics");
@@ -532,6 +533,14 @@ static vk::Device VulkanCreateDevice(GraphicContext& graphics,
 
 	auto features12 = WindowContext::RequiredVulkan12Features();
 	features12.shaderSharedInt64Atomics = supported_features12.shaderSharedInt64Atomics;
+	features12.shaderBufferInt64Atomics = supported_features12.shaderBufferInt64Atomics;
+	features12.shaderOutputLayer        = supported_features12.shaderOutputLayer;
+	features12.shaderOutputViewportIndex = supported_features12.shaderOutputViewportIndex;
+	ShaderRecompiler::g_host_features.buffer_int64_atomics =
+	    features12.shaderBufferInt64Atomics == VK_TRUE;
+	ShaderRecompiler::g_host_features.output_layer = features12.shaderOutputLayer == VK_TRUE;
+	ShaderRecompiler::g_host_features.output_viewport_index =
+	    features12.shaderOutputViewportIndex == VK_TRUE;
 	vk::PhysicalDeviceWorkgroupMemoryExplicitLayoutFeaturesKHR workgroup_layout {};
 	workgroup_layout.workgroupMemoryExplicitLayout =
 	    supported_workgroup_layout.workgroupMemoryExplicitLayout;
@@ -628,12 +637,16 @@ static vk::Device VulkanCreateDevice(GraphicContext& graphics,
 	ShaderRecompiler::g_host_features.clip_distance = device_features.shaderClipDistance == VK_TRUE;
 	ShaderRecompiler::g_host_features.cull_distance = device_features.shaderCullDistance == VK_TRUE;
 	LOGF("Vulkan optional features: colorWrite=%d minLod=%d depthClipControl=%d depthBounds=%d "
-	     "multiViewport=%d fillModeNonSolid=%d clipDistance=%d cullDistance=%d\n",
+	     "multiViewport=%d fillModeNonSolid=%d clipDistance=%d cullDistance=%d outputLayer=%d "
+	     "outputViewportIndex=%d bufferInt64Atomics=%d\n",
 	     graphics.color_write_enable_enabled, graphics.image_view_min_lod_enabled,
 	     graphics.depth_clip_control_enabled, graphics.depth_bounds_enabled,
 	     graphics.multi_viewport_enabled, graphics.fill_mode_non_solid_enabled,
 	     ShaderRecompiler::g_host_features.clip_distance,
-	     ShaderRecompiler::g_host_features.cull_distance);
+	     ShaderRecompiler::g_host_features.cull_distance,
+	     ShaderRecompiler::g_host_features.output_layer,
+	     ShaderRecompiler::g_host_features.output_viewport_index,
+	     ShaderRecompiler::g_host_features.buffer_int64_atomics);
 	device_features.vertexPipelineStoresAndAtomics       = VK_TRUE;
 	graphics.sample_rate_shading_enabled                 = true;
 	device_features.shaderInt64 = VK_TRUE;
