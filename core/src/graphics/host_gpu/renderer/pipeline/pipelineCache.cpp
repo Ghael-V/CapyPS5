@@ -1092,7 +1092,9 @@ PipelineCache::Pipeline* PipelineCache::GetGraphicsPipeline(
 	static Common::DebugFlags::CachedValue no_cull("debug.capy.no_cull", 0);
 	static_params.cull_back  = !rect_list && mc.cull_back && no_cull.Get() == 0;
 	static_params.cull_front = !rect_list && mc.cull_front && no_cull.Get() == 0;
-	static_params.face       = mc.face;
+	// Diagnostic winding reversal; included in the static key so it can change live.
+	static Common::DebugFlags::CachedValue flip_front("debug.capy.flip_front", 0);
+	static_params.face       = mc.face ^ (flip_front.Get() != 0);
 	static_params.provoking_vtx_last = mc.provoking_vtx_last;
 	std::memcpy(static_params.vs_scaled_images, &vs_scaled_images, sizeof(vs_scaled_images));
 	std::memcpy(static_params.ps_scaled_images, &ps_scaled_images, sizeof(ps_scaled_images));

@@ -370,6 +370,13 @@ static void UpdateGraphicsDynamicState(const CommandBuffer& buffer, DynamicState
 		viewport.minDepth =
 		    guest.zoffset - (ctx.GetClipControl().dx_clip_space ? 0.0f : guest.zscale);
 		viewport.maxDepth = guest.zscale + guest.zoffset;
+		// Diagnose guest ranges outside Vulkan's standard [0, 1] viewport depth range.
+		// This changes the depth transform and stays off until validated for the guest.
+		static Common::DebugFlags::CachedValue clamp_depth_range("debug.capy.clamp_depth_range", 0);
+		if (clamp_depth_range.Get() != 0) {
+			viewport.minDepth = std::clamp(viewport.minDepth, 0.0f, 1.0f);
+			viewport.maxDepth = std::clamp(viewport.maxDepth, 0.0f, 1.0f);
+		}
 
 		const auto final_scissor =
 		    calc_final_scissor(vp, ctx.GetScanModeControl(), framebuffer_extent, i);
@@ -438,9 +445,10 @@ static void UpdateGraphicsDynamicState(const CommandBuffer& buffer, DynamicState
 	// Bisection aid: `setprop debug.capy.no_ro_depth 1` disables depth testing for draws that
 	// test without writing (Adreno LRZ investigation).
 	static Common::DebugFlags::CachedValue no_ro_depth("debug.capy.no_ro_depth", 0);
-	dynamic_state.SetDepthTestEnabled(depth.depth_test_enable &&
+	static Common::DebugFlags::CachedValue no_depth("debug.capy.no_depth", 0);
+	dynamic_state.SetDepthTestEnabled(depth.depth_test_enable && no_depth.Get() == 0 &&
 	                                   (depth.depth_write_enable || no_ro_depth.Get() == 0));
-	dynamic_state.SetDepthWriteEnabled(depth.depth_write_enable);
+	dynamic_state.SetDepthWriteEnabled(depth.depth_write_enable && no_depth.Get() == 0);
 	dynamic_state.SetDepthCompareOp(depth.depth_compare_op);
 	if (buffer.GetGraphics().depth_bounds_enabled) {
 		dynamic_state.SetDepthBoundsTestEnabled(depth.depth_bounds_test_enable);
