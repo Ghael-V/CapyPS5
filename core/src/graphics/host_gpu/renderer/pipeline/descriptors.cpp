@@ -4,6 +4,9 @@
 #include "common/assert.h"
 #include "common/common.h"
 #include "common/debugFlags.h"
+#if defined(__ANDROID__)
+#include "android/capyps5_jni.h"
+#endif
 #include "common/emulatorConfig.h"
 #include "common/file.h"
 #include "common/logging/log.h"
@@ -695,6 +698,25 @@ TextureBinding RenderExecutor::ResolveTexture(const ShaderRecompiler::IR::ImageR
 	desc.type = storage ? TextureCache::BindingType::Storage : TextureCache::BindingType::Texture;
 
 	auto       id                  = texture_cache.FindImage(desc, shader_conversion);
+#if defined(__ANDROID__)
+	// Save one selected sampled texture after its upload, before the draw reads it.
+	static Common::DebugFlags::CachedValue dump_tex_addr("debug.capy.dump_tex_addr", 0);
+	static std::atomic<uint64_t>              dumped_address {0};
+	const auto requested = static_cast<uint64_t>(dump_tex_addr.Get());
+	if (requested == 0) {
+		dumped_address.store(0, std::memory_order_relaxed);
+	} else if (address == requested && dumped_address.exchange(requested) != requested) {
+		const auto dir = AndroidGetFilesDir() + "/watch";
+		Common::File::CreateDirectories(dir);
+		const auto path = fmt::format("{}/tex_{:x}.img", dir, address);
+		const bool ok = texture_cache.DebugSaveImageLinear(id, path);
+		__android_log_print(ANDROID_LOG_WARN, "CapyPS5-TexDump",
+		                    "addr=0x%llx %ux%u fmt=%u image=%u save=%d path=%s",
+		                    static_cast<unsigned long long>(address), width, height,
+		                    static_cast<uint32_t>(format), static_cast<uint32_t>(id.index),
+		                    ok ? 1 : 0, path.c_str());
+	}
+#endif
 	auto*      image               = &texture_cache.GetImage(id);
 	const bool stencil_association = static_cast<bool>(image->depth_id);
 	if (stencil_association) {
