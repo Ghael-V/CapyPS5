@@ -711,7 +711,14 @@ static vk::DescriptorBufferInfo NativeUpload(RenderContext&            context,
 	EXIT_IF(data.empty());
 	auto& command_buffer = context.GetCommandScheduler().Current();
 	EXIT_IF(command_buffer.IsInvalid());
-	auto&      buffer = context.GetBufferCache().GetUtilityBuffer(MemoryUsage::Stream);
+	// Guest buffer uploads can fill the shared stream ring before the GPU retires a frame.
+	// Keep per-draw descriptors in their own ring so those uploads do not stall every draw.
+	// `debug.capy.descriptor_stream 0` restores the shared ring for comparisons.
+	static Common::DebugFlags::CachedValue descriptor_stream("debug.capy.descriptor_stream", 1);
+	auto& cache = context.GetBufferCache();
+	auto& buffer = descriptor_stream.Get() != 0
+	                   ? cache.GetDescriptorBuffer()
+	                   : cache.GetUtilityBuffer(MemoryUsage::Stream);
 	const auto offset = buffer.Copy(data.data(), data.size_bytes(), 256);
 	return {buffer.Handle(), offset, data.size_bytes()};
 }

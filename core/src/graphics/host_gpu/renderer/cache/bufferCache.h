@@ -74,6 +74,7 @@ public:
 		}
 		EXIT("BufferCache: invalid utility-buffer usage\n");
 	}
+	[[nodiscard]] StreamBuffer& GetDescriptorBuffer() noexcept { return m_descriptor_buffer; }
 	[[nodiscard]] const Buffer* GetGdsBuffer() const noexcept { return &m_gds_buffer; }
 	[[nodiscard]] Buffer* GetBdaPageTableBuffer() noexcept { return &m_bda_pagetable_buffer; }
 	[[nodiscard]] Buffer* GetFaultBuffer() noexcept { return m_fault_manager.GetFaultBuffer(); }
@@ -149,6 +150,7 @@ private:
 	MemoryTracker                                     m_memory_tracker;
 	StreamBuffer                                      m_staging_buffer;
 	StreamBuffer                                      m_stream_buffer;
+	StreamBuffer                                      m_descriptor_buffer;
 	// Fresh copies served inside the current render pass, reused by later draws of the pass.
 	struct PassFreshCopy {
 		uint64_t size   = 0;
