@@ -621,6 +621,34 @@ TextureBinding RenderExecutor::ResolveTexture(const ShaderRecompiler::IR::ImageR
 	    block_bytes != 0 ? block_bytes : Prospero::NumBytesPerElement(format);
 	desc.info.samples   = samples;
 	desc.info.tile_mode = tile;
+	static Common::DebugFlags::CachedValue trace_avplayer("debug.capy.avplayer_tex", 0);
+	if (trace_avplayer.Get() != 0) {
+		const auto count = std::min<uint32_t>(
+		    Common::DebugFlags::g_avplayer_video_count.load(std::memory_order_acquire),
+		    Common::DebugFlags::g_avplayer_video_addresses.size());
+		for (uint32_t i = 0; i < count; i++) {
+			const auto start = Common::DebugFlags::g_avplayer_video_addresses[i].load(
+			    std::memory_order_acquire);
+			const auto size = Common::DebugFlags::g_avplayer_video_sizes[i].load(
+			    std::memory_order_relaxed);
+			if (start != 0 && address >= start && address - start < size) {
+				#if defined(__ANDROID__)
+				static std::atomic_uint logged {0};
+				if (logged.fetch_add(1, std::memory_order_relaxed) < 100) {
+					__android_log_print(ANDROID_LOG_WARN, "CapyPS5-AvTex",
+					                    "buffer=%u offset=0x%llx image=0x%llx fmt=%u %ux%u "
+					                    "pitch=%u tile=0x%x vkfmt=%d",
+					                    i, static_cast<unsigned long long>(address - start),
+					                    static_cast<unsigned long long>(address),
+					                    static_cast<uint32_t>(format), width, height,
+					                    TileGetTexturePitch(format, width, tile),
+					                    static_cast<uint32_t>(tile), static_cast<int>(pixel_format));
+				}
+				#endif
+				break;
+			}
+		}
+	}
 	Common::DebugFlags::FrameTrace(
 	    "  tex addr=0x%llx fmt=%u %ux%ux%u levels=%u/%u layers=%u tile=0x%x read=%d written=%d",
 	    static_cast<unsigned long long>(address), static_cast<uint32_t>(format), width, height, depth,

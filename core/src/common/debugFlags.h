@@ -157,6 +157,19 @@ private:
 	int64_t              m_fallback;
 };
 
+// Guest video allocations watched by the optional AvPlayer texture diagnostic.
+inline std::array<std::atomic<uint64_t>, 16> g_avplayer_video_addresses {};
+inline std::array<std::atomic<uint64_t>, 16> g_avplayer_video_sizes {};
+inline std::atomic<uint32_t> g_avplayer_video_count {0};
+
+inline void RegisterAvPlayerVideoBuffer(uint64_t address, uint64_t size) {
+	const auto index = g_avplayer_video_count.fetch_add(1, std::memory_order_relaxed);
+	if (index < g_avplayer_video_addresses.size()) {
+		g_avplayer_video_sizes[index].store(size, std::memory_order_relaxed);
+		g_avplayer_video_addresses[index].store(address, std::memory_order_release);
+	}
+}
+
 // Address being watched for writes (set automatically when a GPU wait on it times out).
 inline std::atomic<uint64_t> g_watch_addr {0};
 

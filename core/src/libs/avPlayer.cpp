@@ -1162,6 +1162,15 @@ private:
 				if (!buffer->Valid()) {
 					return false;
 				}
+				#if defined(__ANDROID__)
+				static Common::DebugFlags::CachedValue trace_texture("debug.capy.avplayer_tex", 0);
+				if (trace_texture.Get() != 0) {
+					Common::DebugFlags::RegisterAvPlayerVideoBuffer(
+					    reinterpret_cast<uint64_t>(buffer->Get()), size);
+					__android_log_print(ANDROID_LOG_WARN, "CapyPS5-AvPlayer",
+					                    "video buffer addr=%p size=%u", buffer->Get(), size);
+				}
+				#endif
 				video_buffers.Push(std::move(buffer));
 			}
 		}
