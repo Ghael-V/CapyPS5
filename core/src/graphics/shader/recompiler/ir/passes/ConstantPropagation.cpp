@@ -104,6 +104,43 @@ bool ReplaceBinaryIdentity(Inst& inst, Type type, uint64_t identity) {
 	return false;
 }
 
+// (K >> (x & 31)) & 1 with K all ones or all zeros is a lane's bit of a uniform mask: EXEC or
+// VCC after s_mov exec, -1 arrive here through phis, and every vector write was predicated on it.
+bool FoldUniformMaskBit(Inst& inst) {
+	const auto bounded_shift = [](const Value& amount) {
+		if (IsImmediate(amount, Type::U32)) {
+			return amount.U32() < 32u;
+		}
+		const auto* mask = amount.TryInstruction();
+		if (mask == nullptr || mask->GetOpcode() != ValueOpcode::BitwiseAnd32) {
+			return false;
+		}
+		const auto lhs = Arg(*mask, 0);
+		const auto rhs = Arg(*mask, 1);
+		return (IsImmediate(lhs, Type::U32) && lhs.U32() < 32u) ||
+		       (IsImmediate(rhs, Type::U32) && rhs.U32() < 32u);
+	};
+	for (size_t index = 0; index < 2; index++) {
+		const auto one     = Arg(inst, index);
+		const auto shifted = Arg(inst, 1 - index);
+		if (!IsImmediate(one, Type::U32) || one.U32() != 1u || shifted.IsImmediate()) {
+			continue;
+		}
+		const auto* shift = shifted.TryInstruction();
+		if (shift == nullptr || shift->GetOpcode() != ValueOpcode::ShiftRightLogical32) {
+			continue;
+		}
+		const auto mask = Arg(*shift, 0);
+		if (!IsImmediate(mask, Type::U32) || (mask.U32() != 0u && mask.U32() != 0xffffffffu) ||
+		    !bounded_shift(Arg(*shift, 1))) {
+			continue;
+		}
+		Replace(inst, Value(mask.U32() & 1u));
+		return true;
+	}
+	return false;
+}
+
 bool FoldSelect(Inst& inst) {
 	const auto condition   = Arg(inst, 0);
 	const auto true_value  = Arg(inst, 1);
@@ -510,8 +547,9 @@ void FoldInstruction(Block& block, Block::iterator instruction,
 			});
 			return;
 		case ValueOpcode::BitwiseAnd32:
-			if (!FoldU32(inst, [](uint32_t a, uint32_t b) { return a & b; })) {
-				ReplaceBinaryIdentity(inst, Type::U32, 0xffffffffu);
+			if (!FoldU32(inst, [](uint32_t a, uint32_t b) { return a & b; }) &&
+			    !ReplaceBinaryIdentity(inst, Type::U32, 0xffffffffu)) {
+				FoldUniformMaskBit(inst);
 			}
 			return;
 		case ValueOpcode::BitwiseAnd64:

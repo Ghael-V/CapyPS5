@@ -210,6 +210,22 @@ uint32_t EmitCompositeExtractU32x2(EmitterState& state, uint32_t arg0, IR::Value
 }
 
 uint32_t EmitPackFloat2x16Rtz(EmitterState& state, uint32_t arg0, uint32_t arg1) {
+	if (!ExactDenormEmulation()) {
+		// Native packing rounds to nearest instead of toward zero (at most one F16 ulp apart).
+		// Clamping first keeps round-toward-zero's overflow to the largest finite value; NaN,
+		// which NClamp would replace, is kept.
+		const auto clamp = [&](uint32_t value) {
+			const auto clamped =
+			    EmitExt(state, TypeF32(state), GLSLstd450NClamp,
+			            {value, ConstantF32(state, 0xc77fe000u), ConstantF32(state, 0x477fe000u)});
+			return Select(state, TypeF32(state), Unary(state, spv::OpIsNan, TypeBool(state), value),
+			              value, clamped);
+		};
+		const auto pair = state.builder.AllocateId();
+		state.builder.AddFunction(spv::OpCompositeConstruct, TypeF32Vector(state, 2), pair,
+		                          clamp(arg0), clamp(arg1));
+		return EmitPackHalf2x16(state, pair);
+	}
 	const auto low  = EmitF32ToF16RtzBits(state, arg0);
 	const auto high = Binary(state, spv::OpShiftLeftLogical, TypeU32(state),
 	                         EmitF32ToF16RtzBits(state, arg1), ConstantU32(state, 16));

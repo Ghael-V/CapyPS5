@@ -199,7 +199,18 @@ uint32_t EmitMinMaxF32Value(EmitterState& state, uint32_t lhs, uint32_t rhs, boo
 	return EmitBitcastU32ToF32(state, result_bits);
 }
 
+// RDNA flushes F32 denormal inputs; emulating it costs a compare and a select per operand,
+// and only inputs below 2^-126 notice. `setprop debug.capy.exact_denorm 1` restores the flush
+// (and the exact round-toward-zero F16 packing).
+bool ExactDenormEmulation() {
+	static Common::DebugFlags::CachedValue exact_denorm("debug.capy.exact_denorm", 0);
+	return exact_denorm.Get() != 0;
+}
+
 uint32_t EmitFlushF32DenormToSignedZero(EmitterState& state, uint32_t value) {
+	if (!ExactDenormEmulation()) {
+		return value;
+	}
 	const auto bits      = state.builder.AllocateId();
 	const auto abs_bits  = state.builder.AllocateId();
 	const auto sign_bits = state.builder.AllocateId();
