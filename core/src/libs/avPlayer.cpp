@@ -2052,6 +2052,40 @@ Bool KYTY_SYSV_ABI AvPlayerGetVideoData(AvPlayerInternal* h, AvPlayerFrameInfo* 
 		pump_warnings(h);
 		return 0;
 	}
+	#if defined(__ANDROID__)
+	static Common::DebugFlags::CachedValue trace_video("debug.capy.avplayer_tex", 0);
+	if (trace_video.Get() != 0) {
+		static std::atomic_uint logged {0};
+		if (logged.fetch_add(1, std::memory_order_relaxed) < 12) {
+			__android_log_print(ANDROID_LOG_WARN, "CapyPS5-AvPlayer",
+			                    "GetVideoData basic ptr=%p %ux%u pitch=%u timestamp=%llu", ex.data,
+			                    ex.details.video.width, ex.details.video.height,
+			                    ex.details.video.pitch,
+			                    static_cast<unsigned long long>(ex.time_stamp));
+		}
+	}
+	#endif
+	// The basic API has no pitch field. Compact the NV12 planes only when explicitly requested;
+	// the Ex API continues to expose the padded layout and its pitch.
+	static Common::DebugFlags::CachedValue compact_video("debug.capy.avplayer_compact", 0);
+	if (compact_video.Get() != 0) {
+		const auto width  = ex.details.video.width;
+		const auto height = ex.details.video.height;
+		const auto pitch  = ex.details.video.pitch;
+		if (ex.data != nullptr && width > 0 && width <= pitch && height > 0 && pitch != width) {
+			auto* bytes = static_cast<uint8_t*>(ex.data);
+			for (uint32_t row = 0; row < height; row++) {
+				std::memmove(bytes + static_cast<size_t>(row) * width,
+				             bytes + static_cast<size_t>(row) * pitch, width);
+			}
+			const auto chroma_source = static_cast<size_t>(pitch) * height;
+			const auto chroma_target = static_cast<size_t>(width) * height;
+			for (uint32_t row = 0; row < height / 2; row++) {
+				std::memmove(bytes + chroma_target + static_cast<size_t>(row) * width,
+				             bytes + chroma_source + static_cast<size_t>(row) * pitch, width);
+			}
+		}
+	}
 	std::memset(video_info, 0, sizeof(*video_info));
 	video_info->data                       = ex.data;
 	video_info->time_stamp                 = ex.time_stamp;
@@ -2068,6 +2102,19 @@ Bool KYTY_SYSV_ABI AvPlayerGetVideoDataEx(AvPlayerInternal* h, AvPlayerFrameInfo
 		return 0;
 	}
 	auto ok = h->source->Video(video_info) ? 1 : 0;
+	#if defined(__ANDROID__)
+	static Common::DebugFlags::CachedValue trace_video("debug.capy.avplayer_tex", 0);
+	if (ok && trace_video.Get() != 0) {
+		static std::atomic_uint logged {0};
+		if (logged.fetch_add(1, std::memory_order_relaxed) < 12) {
+			__android_log_print(ANDROID_LOG_WARN, "CapyPS5-AvPlayer",
+			                    "GetVideoDataEx ptr=%p %ux%u pitch=%u timestamp=%llu",
+			                    video_info->data, video_info->details.video.width,
+			                    video_info->details.video.height, video_info->details.video.pitch,
+			                    static_cast<unsigned long long>(video_info->time_stamp));
+		}
+	}
+	#endif
 	pump_warnings(h);
 	return ok;
 }
