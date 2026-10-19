@@ -689,6 +689,25 @@ static bool KytyExceptionHandler(const Common::HostException::ExceptionInfo& exc
 			case CoreAccess::Unknown: return false;
 		}
 #if defined(__ANDROID__)
+		// A pending video probe must be released even if its switch was turned off meanwhile.
+		auto probe_page = Common::DebugFlags::g_video_read_probe_page.load(std::memory_order_acquire);
+		if (probe_page != 0 && info->access_violation_vaddr >= probe_page &&
+		    info->access_violation_vaddr - probe_page < 4096 &&
+		    Common::DebugFlags::g_video_read_probe_page.compare_exchange_strong(probe_page, 0)) {
+			if (Libs::LibKernel::Memory::ProtectGuestHostMemory(probe_page, 4096,
+			        Common::VirtualMemory::Mode::ReadWrite)) {
+				const auto rip = Cpu::GuestRipFromHostPc(info->exception_address);
+				if (rip != 0) {
+					Common::DebugFlags::g_video_read_probe_done.store(true, std::memory_order_release);
+				}
+				__android_log_print(ANDROID_LOG_WARN, "CapyPS5-VideoProbe",
+				                    "NV12 access page=0x%llx access=%u guest_rip=0x%llx host_pc=0x%llx",
+				                    static_cast<unsigned long long>(probe_page), static_cast<unsigned>(access),
+				                    static_cast<unsigned long long>(rip),
+				                    static_cast<unsigned long long>(info->exception_address));
+				return true;
+			}
+		}
 		if (access == GpuAccess::Write && Common::DebugFlags::VideoProbeEnabled()) {
 			const auto start = Common::DebugFlags::g_video_probe_address.load(std::memory_order_acquire);
 			const auto size = Common::DebugFlags::g_video_probe_size.load(std::memory_order_relaxed);

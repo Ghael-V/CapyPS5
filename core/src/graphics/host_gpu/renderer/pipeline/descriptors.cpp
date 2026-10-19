@@ -863,6 +863,36 @@ void RenderExecutor::FindBuffers(std::span<PreparedBindings* const> stages) {
 		EXIT_IF(prepared.runtime == nullptr || !*prepared.runtime);
 		const auto& program  = *prepared.runtime->program;
 		const auto& snapshot = *prepared.runtime->resources;
+#if defined(__ANDROID__)
+		static std::atomic_uint video_buffer_logs {0};
+		if (Common::DebugFlags::VideoProbeEnabled() && video_buffer_logs.load() < 8) {
+			bool video_input = false;
+			const auto count = std::min<uint32_t>(Common::DebugFlags::g_avplayer_video_count.load(),
+			    Common::DebugFlags::g_avplayer_video_addresses.size());
+			for (const auto& value: snapshot.buffers) {
+				const auto descriptor = DecodeNativeDescriptor<ShaderBufferResource>(value);
+				for (uint32_t i = 0; i < count; i++) {
+					const auto start = Common::DebugFlags::g_avplayer_video_addresses[i].load();
+					const auto size = Common::DebugFlags::g_avplayer_video_sizes[i].load();
+					video_input |= start != 0 && descriptor.Base48() < start + size &&
+					    start < descriptor.Base48() + descriptor.GetSize();
+				}
+			}
+			if (video_input && video_buffer_logs.fetch_add(1) < 8) {
+				__android_log_print(ANDROID_LOG_WARN, "CapyPS5-VideoProbe",
+				    "NV12 shader stage=%u hash=0x%llx", static_cast<uint32_t>(program.stage),
+				    static_cast<unsigned long long>(program.shader_hash));
+				for (uint32_t i = 0; i < snapshot.buffers.size(); i++) {
+					const auto descriptor = DecodeNativeDescriptor<ShaderBufferResource>(snapshot.buffers[i]);
+					__android_log_print(ANDROID_LOG_WARN, "CapyPS5-VideoProbe",
+					    "  buffer[%u] addr=0x%llx size=%llu read=%d written=%d", i,
+					    static_cast<unsigned long long>(descriptor.Base48()),
+					    static_cast<unsigned long long>(descriptor.GetSize()),
+					    program.info.buffers[i].read ? 1 : 0, program.info.buffers[i].written ? 1 : 0);
+				}
+			}
+		}
+#endif
 		const auto& layout = program.bindings;
 		prepared.buffer_sources.resize(layout.descriptor_counts[static_cast<size_t>(BindingKind::Buffers)]);
 		if (layout.descriptor_counts[static_cast<size_t>(BindingKind::Buffers)] == 0) {
