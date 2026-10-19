@@ -18,6 +18,8 @@
 #include <algorithm>
 #include <chrono>
 #include <dlfcn.h>
+#include <string>
+#include <unwind.h>
 #include <pthread.h>
 #include <cinttypes>
 #include <cstring>
@@ -334,7 +336,8 @@ void BufferCache::ReadMemory(uint64_t vaddr, uint64_t size, bool is_write) {
 	// `setprop debug.capy.fault_log 1`: log every CPU access that forces a GPU readback (tag
 	// CapyPS5-Readback) with the accessing thread and how long it waited.
 	static Common::DebugFlags::CachedValue fault_log("debug.capy.fault_log", 0);
-	const bool log_fault = fault_log.Get() != 0 && !GuestGpu::IsGpuThread();
+	// `fault_log 2` also logs the GPU thread, with the host frames that touched the memory.
+	const bool log_fault = fault_log.Get() == 2 || (fault_log.Get() != 0 && !GuestGpu::IsGpuThread());
 	const auto fault_start = log_fault ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point {};
 #endif
 	m_scheduler.Context().GetGpu().SendCommandSync([this, vaddr, size, is_write] {
@@ -406,10 +409,38 @@ void BufferCache::ReadMemory(uint64_t vaddr, uint64_t size, bool is_write) {
 		const auto waited = std::chrono::duration_cast<std::chrono::microseconds>(
 		                        std::chrono::steady_clock::now() - fault_start)
 		                        .count();
+		std::string frames;
+		if (fault_log.Get() == 2) {
+			struct Trace {
+				uintptr_t frames[16];
+				int       count;
+			} trace {{}, 0};
+			_Unwind_Backtrace(
+			    [](_Unwind_Context* context, void* arg) {
+				    auto* t = static_cast<Trace*>(arg);
+				    if (t->count >= 16) {
+					    return _URC_END_OF_STACK;
+				    }
+				    t->frames[t->count++] = _Unwind_GetIP(context);
+				    return _URC_NO_REASON;
+			    },
+			    &trace);
+			for (int i = 0; i < trace.count; i++) {
+				Dl_info info {};
+				const auto base = dladdr(reinterpret_cast<void*>(trace.frames[i]), &info) != 0
+				                      ? reinterpret_cast<uintptr_t>(info.dli_fbase)
+				                      : 0;
+				char frame[24];
+				std::snprintf(frame, sizeof(frame), " +0x%llx",
+				              static_cast<unsigned long long>(trace.frames[i] - base));
+				frames += frame;
+			}
+		}
 		__android_log_print(ANDROID_LOG_WARN, "CapyPS5-Readback",
-		                    "%s %s 0x%llx size=%llu waited %lld us", name, is_write ? "write" : "read",
+		                    "%s %s 0x%llx size=%llu waited %lld us%s", name, is_write ? "write" : "read",
 		                    static_cast<unsigned long long>(vaddr),
-		                    static_cast<unsigned long long>(size), static_cast<long long>(waited));
+		                    static_cast<unsigned long long>(size), static_cast<long long>(waited),
+		                    frames.c_str());
 	}
 #endif
 }
