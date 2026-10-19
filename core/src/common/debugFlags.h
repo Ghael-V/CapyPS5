@@ -224,7 +224,11 @@ inline bool FrameTracing() {
 }
 
 inline void FrameTrace(const char* fmt, ...) {
-	if (!FrameTracing() || g_trace_lines.fetch_add(1, std::memory_order_relaxed) >= 20000) {
+	// Skip early draws when diagnosing a late pass in a draw-heavy frame.
+	static CachedValue trace_from("debug.capy.trace_from", 0);
+	if (!FrameTracing() ||
+	    g_trace_draws.load(std::memory_order_relaxed) < static_cast<uint32_t>(std::max<int64_t>(0, trace_from.Get())) ||
+	    g_trace_lines.fetch_add(1, std::memory_order_relaxed) >= 20000) {
 		return;
 	}
 #if defined(__ANDROID__)
@@ -250,7 +254,10 @@ inline void FrameTraceOnFlip() {
 		g_trace_state.store(1, std::memory_order_relaxed);
 		FrameTrace("---- frame begin ----");
 	} else if (state == 1) {
-		FrameTrace("---- frame end ----");
+		const auto draws = g_trace_draws.load(std::memory_order_relaxed);
+#if defined(__ANDROID__)
+		__android_log_print(ANDROID_LOG_WARN, "CapyPS5-Frame", "frame end: %u draws", draws);
+#endif
 		g_trace_state.store(2, std::memory_order_relaxed);
 	}
 }
