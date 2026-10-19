@@ -1,4 +1,5 @@
 #include "common/common.h"
+#include "common/debugFlags.h"
 #include "cpu/cpuBackend.h"
 #include "common/file.h"
 #include "common/logging/log.h"
@@ -25,6 +26,11 @@
 #include <string>
 #include <string_view>
 #include <utility>
+
+#if defined(__ANDROID__)
+#include <android/log.h>
+#include "android/capyps5_jni.h"
+#endif
 
 extern "C" {
 #include <libavcodec/avcodec.h>
@@ -1579,6 +1585,31 @@ private:
 		info->details.video.crop_bottom_offset =
 		    static_cast<uint32_t>(src->crop_bottom + (h - src->height));
 		info->details.video.pitch = pitch;
+#if defined(__ANDROID__)
+		static Common::DebugFlags::CachedValue dump_frame("debug.capy.avplayer_dump", 0);
+		static std::atomic_uint frame_number = 0;
+		if (dump_frame.Get() != 0) {
+			const auto number = ++frame_number;
+			if (number == 1 || number == 30) {
+				const auto path = AndroidGetFilesDir() + "/avplayer_frame_" +
+				                  std::to_string(number) + ".nv12";
+				if (auto* file = std::fopen(path.c_str(), "wb")) {
+					const auto written = std::fwrite(dst, 1, static_cast<size_t>(size), file);
+					std::fclose(file);
+					__android_log_print(ANDROID_LOG_WARN, "CapyPS5-AvPlayer",
+					                    "frame=%u source=%dx%d format=%d output=%ux%u pitch=%u "
+					                    "timestamp=%llu bytes=%zu/%llu path=%s",
+					                    number, src->width, src->height, src->format,
+					                    info->details.video.width, info->details.video.height, pitch,
+					                    static_cast<unsigned long long>(info->time_stamp), written,
+					                    static_cast<unsigned long long>(size), path.c_str());
+				} else {
+					__android_log_print(ANDROID_LOG_WARN, "CapyPS5-AvPlayer",
+					                    "could not open frame dump: %s", path.c_str());
+				}
+			}
+		}
+#endif
 		if (tmp) {
 			av_frame_free(&tmp);
 		}
