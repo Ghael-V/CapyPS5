@@ -1035,6 +1035,13 @@ void TextureCache::InitializeImage(ImageId id) {
 		return;
 	}
 	const bool upload = image.IsBufferModified() || image.IsCpuDirty();
+	if (Common::DebugFlags::VideoProbeEnabled() && image.info.extent.width == 1920 &&
+	    image.info.extent.height == 1080 && image.info.guest_format == Prospero::BufferFormat::k8_8_8_8UNorm) {
+		Common::DebugFlags::NoteOnce("CapyPS5-VideoProbe", image.info.data.address ^ 1u,
+		    "initialize image=0x%llx upload=%d cpu_dirty=%d buffer_modified=%d",
+		    static_cast<unsigned long long>(image.info.data.address), upload ? 1 : 0,
+		    image.IsCpuDirty() ? 1 : 0, image.IsBufferModified() ? 1 : 0);
+	}
 	if (upload) {
 		const auto [source, source_offset] =
 		    m_buffer_cache.ObtainBufferForImage(image.info.data.address, image.info.data.size);
@@ -1456,6 +1463,11 @@ void TextureCache::MarkGpuWritten(ImageId id) {
 }
 
 void TextureCache::CommitGpuWrite(Image& image) {
+	if (Common::DebugFlags::VideoProbeEnabled() && image.info.extent.width == 1920 &&
+	    image.info.extent.height == 1080 && image.info.guest_format == Prospero::BufferFormat::k8_8_8_8UNorm) {
+		Common::DebugFlags::NoteOnce("CapyPS5-VideoProbe", image.info.data.address ^ 2u,
+		    "GPU write image=0x%llx", static_cast<unsigned long long>(image.info.data.address));
+	}
 	if (!image.depth_id && image.backing.image == nullptr) {
 		EXIT("TextureCache: GPU writes require a native image or stencil association\n");
 	}

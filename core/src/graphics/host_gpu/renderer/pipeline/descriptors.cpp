@@ -697,6 +697,18 @@ TextureBinding RenderExecutor::ResolveTexture(const ShaderRecompiler::IR::ImageR
 	desc.view_info.base_level = view_base;
 	desc.type = storage ? TextureCache::BindingType::Storage : TextureCache::BindingType::Texture;
 
+	if (Common::DebugFlags::VideoProbeEnabled() && width == 1920 && height == 1080 &&
+	    format == Prospero::BufferFormat::k8_8_8_8UNorm) {
+		Common::DebugFlags::g_video_probe_size.store(desc.info.data.size, std::memory_order_relaxed);
+		const auto previous = Common::DebugFlags::g_video_probe_address.exchange(address);
+		if (previous != address) {
+			Common::DebugFlags::NoteOnce("CapyPS5-VideoProbe", address,
+			    "sample image=0x%llx size=%llu pitch=%u tile=0x%x",
+			    static_cast<unsigned long long>(address),
+			    static_cast<unsigned long long>(desc.info.data.size), desc.info.pitch,
+			    static_cast<uint32_t>(tile));
+		}
+	}
 	auto       id                  = texture_cache.FindImage(desc, shader_conversion);
 #if defined(__ANDROID__)
 	// Save one selected sampled texture after its upload, before the draw reads it.

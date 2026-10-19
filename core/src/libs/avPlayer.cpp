@@ -2083,7 +2083,7 @@ Bool KYTY_SYSV_ABI AvPlayerGetVideoDataEx(AvPlayerInternal* h, AvPlayerFrameInfo
 	auto ok = h->source->Video(video_info) ? 1 : 0;
 	#if defined(__ANDROID__)
 	static Common::DebugFlags::CachedValue trace_video("debug.capy.avplayer_tex", 0);
-	if (ok && trace_video.Get() != 0) {
+	if (ok && (trace_video.Get() != 0 || Common::DebugFlags::VideoProbeEnabled())) {
 		static std::atomic_uint logged {0};
 		if (logged.fetch_add(1, std::memory_order_relaxed) < 12) {
 			__android_log_print(ANDROID_LOG_WARN, "CapyPS5-AvPlayer",

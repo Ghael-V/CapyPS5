@@ -157,6 +157,14 @@ private:
 	int64_t              m_fallback;
 };
 
+// Optional provenance probe for the 1080p RGBA image sampled by Unity's video overlay.
+inline std::atomic<uint64_t> g_video_probe_address {0};
+inline std::atomic<uint64_t> g_video_probe_size {0};
+inline bool VideoProbeEnabled() {
+	static CachedValue property("debug.capy.video_probe", 0);
+	return property.Get() != 0;
+}
+
 // Guest video allocations watched by the optional AvPlayer texture diagnostic.
 inline std::array<std::atomic<uint64_t>, 16> g_avplayer_video_addresses {};
 inline std::array<std::atomic<uint64_t>, 16> g_avplayer_video_sizes {};
