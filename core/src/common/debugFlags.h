@@ -160,8 +160,6 @@ private:
 // Optional provenance probe for the 1080p RGBA image sampled by Unity's video overlay.
 inline std::atomic<uint64_t> g_video_probe_address {0};
 inline std::atomic<uint64_t> g_video_probe_size {0};
-inline std::atomic<uint64_t> g_video_read_probe_page {0};
-inline std::atomic<bool> g_video_read_probe_done {false};
 inline bool VideoProbeEnabled() {
 	static CachedValue property("debug.capy.video_probe", 0);
 	return property.Get() != 0;

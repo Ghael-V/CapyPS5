@@ -4,7 +4,6 @@
 #include "common/file.h"
 #include "common/logging/log.h"
 #include "kernel/fileSystem.h"
-#include "kernel/memory.h"
 #include "kernel/pthread.h"
 #include "libs/audio.h"
 #include "libs/libs.h"
@@ -2082,29 +2081,14 @@ Bool KYTY_SYSV_ABI AvPlayerGetVideoDataEx(AvPlayerInternal* h, AvPlayerFrameInfo
 		return 0;
 	}
 	auto ok = h->source->Video(video_info) ? 1 : 0;
-#if defined(__ANDROID__)
-	// Trap the first guest read of an output page to locate Unity's video consumer.
-	if (ok && Common::DebugFlags::VideoProbeEnabled() &&
-	    !Common::DebugFlags::g_video_read_probe_done.load(std::memory_order_acquire)) {
-		static std::atomic_uint attempts {0};
-		const auto page = reinterpret_cast<uint64_t>(video_info->data);
-		uint64_t empty = 0;
-		if (page != 0 && (page & 4095u) == 0 && attempts.load() < 32 &&
-		    Common::DebugFlags::g_video_read_probe_page.compare_exchange_strong(empty, page)) {
-			attempts.fetch_add(1);
-			if (!LibKernel::Memory::ProtectGuestHostMemory(page, 4096, Common::VirtualMemory::Mode::NoAccess)) {
-				Common::DebugFlags::g_video_read_probe_page.store(0, std::memory_order_release);
-			}
-		}
-	}
-#endif
 	#if defined(__ANDROID__)
 	static Common::DebugFlags::CachedValue trace_video("debug.capy.avplayer_tex", 0);
 	if (ok && (trace_video.Get() != 0 || Common::DebugFlags::VideoProbeEnabled())) {
 		static std::atomic_uint logged {0};
 		if (logged.fetch_add(1, std::memory_order_relaxed) < 12) {
 			__android_log_print(ANDROID_LOG_WARN, "CapyPS5-AvPlayer",
-			                    "GetVideoDataEx ptr=%p %ux%u pitch=%u timestamp=%llu",
+			                    "GetVideoDataEx caller=0x%llx info=%p ptr=%p %ux%u pitch=%u timestamp=%llu",
+			                    static_cast<unsigned long long>(Cpu::GuestReturnAddress()), video_info,
 			                    video_info->data, video_info->details.video.width,
 			                    video_info->details.video.height, video_info->details.video.pitch,
 			                    static_cast<unsigned long long>(video_info->time_stamp));
