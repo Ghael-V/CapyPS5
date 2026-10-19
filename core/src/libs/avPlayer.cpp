@@ -984,8 +984,22 @@ public:
 		if (!frame) {
 			return false;
 		}
+		static Common::DebugFlags::CachedValue retire_video("debug.capy.avplayer_retire", 0);
 		if (current_video) {
-			video_buffers.Push(std::move(current_video->buffer));
+			if (retire_video.Get() != 0) {
+				retired_video.push_back(std::move(current_video->buffer));
+				// Keep a free buffer for the decoder, even when every frame is delivered.
+				if (retired_video.size() >= static_cast<size_t>(std::max(1, max_video_buffers - 2))) {
+					video_buffers.Push(std::move(retired_video.front()));
+					retired_video.pop_front();
+				}
+			} else {
+				video_buffers.Push(std::move(current_video->buffer));
+				while (!retired_video.empty()) {
+					video_buffers.Push(std::move(retired_video.front()));
+					retired_video.pop_front();
+				}
+			}
 		}
 		current_video = std::move(*frame);
 		*out          = current_video->info;
@@ -1063,6 +1077,7 @@ private:
 		video_buffers.Clear();
 		audio_buffers.Clear();
 		if (!retain_output_buffers) {
+			retired_video.clear();
 			current_video.reset();
 			current_audio.reset();
 		}
@@ -1156,7 +1171,7 @@ private:
 	bool AllocateBuffers() {
 		if (video_id) {
 			auto size     = VideoBufferSize(fmt->streams[video_id.value()]);
-			auto retained = current_video ? 1u : 0u;
+			auto retained = retired_video.size() + (current_video ? 1u : 0u);
 			for (size_t i = retained; i < static_cast<size_t>(max_video_buffers); i++) {
 				auto buffer = std::make_unique<GuestBuffer>(mem, 0x100, size, true);
 				if (!buffer->Valid()) {
@@ -1711,6 +1726,7 @@ private:
 	WorkQueue<ReadyFrame>                    video_frames;
 	WorkQueue<ReadyFrame>                    audio_frames;
 	std::optional<ReadyFrame>                current_video;
+	std::deque<std::unique_ptr<GuestBuffer>> retired_video;
 	std::optional<ReadyFrame>                current_audio;
 	LibKernel::Pthread                       demux_thread = nullptr;
 	LibKernel::Pthread                       video_thread = nullptr;
@@ -2065,27 +2081,6 @@ Bool KYTY_SYSV_ABI AvPlayerGetVideoData(AvPlayerInternal* h, AvPlayerFrameInfo* 
 		}
 	}
 	#endif
-	// The basic API has no pitch field. Compact the NV12 planes only when explicitly requested;
-	// the Ex API continues to expose the padded layout and its pitch.
-	static Common::DebugFlags::CachedValue compact_video("debug.capy.avplayer_compact", 0);
-	if (compact_video.Get() != 0) {
-		const auto width  = ex.details.video.width;
-		const auto height = ex.details.video.height;
-		const auto pitch  = ex.details.video.pitch;
-		if (ex.data != nullptr && width > 0 && width <= pitch && height > 0 && pitch != width) {
-			auto* bytes = static_cast<uint8_t*>(ex.data);
-			for (uint32_t row = 0; row < height; row++) {
-				std::memmove(bytes + static_cast<size_t>(row) * width,
-				             bytes + static_cast<size_t>(row) * pitch, width);
-			}
-			const auto chroma_source = static_cast<size_t>(pitch) * height;
-			const auto chroma_target = static_cast<size_t>(width) * height;
-			for (uint32_t row = 0; row < height / 2; row++) {
-				std::memmove(bytes + chroma_target + static_cast<size_t>(row) * width,
-				             bytes + chroma_source + static_cast<size_t>(row) * pitch, width);
-			}
-		}
-	}
 	std::memset(video_info, 0, sizeof(*video_info));
 	video_info->data                       = ex.data;
 	video_info->time_stamp                 = ex.time_stamp;
