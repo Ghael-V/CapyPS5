@@ -1,5 +1,7 @@
 #include "graphics/shader/recompiler/frontend/translate/Translator.h"
 
+#include "common/debugFlags.h"
+
 #include <array>
 #include <utility>
 
@@ -24,7 +26,10 @@ void Translator::PackedFloat16(const Decoder::Instruction& inst, IR::ValueOpcode
 	raw.omod    = 0u;
 	raw.clamp   = false;
 	auto result = PackHalf2x16(translate_lane(false), translate_lane(true));
-	if (quiet_snan) {
+	// Quieting a signaling-NaN input costs ~40 instructions per packed min/max, for inputs games
+	// do not produce; it follows `debug.capy.exact_minmax` like the F32 min/max emulation.
+	static Common::DebugFlags::CachedValue exact_minmax("debug.capy.exact_minmax", 0);
+	if (quiet_snan && exact_minmax.Get() != 0) {
 		const auto quiet_snan_lane = [&](const Decoder::Operand& operand, bool high) {
 			const auto bits     = ReadU16LaneAsU32(operand, high, false);
 			const auto exponent = ir.BitwiseAnd(bits, IR::U32(IR::Value(0x7c00u)));
