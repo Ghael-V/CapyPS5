@@ -1518,9 +1518,7 @@ private:
 	                  AvPlayerFrameInfoEx* info) {
 		auto*    s     = fmt->streams[video_id.value()];
 		uint32_t h     = Height(s);
-		// Keep the allocation large enough for either layout so this can be toggled while playing.
-		static Common::DebugFlags::CachedValue packed_video("debug.capy.avplayer_packed", 0);
-		uint32_t pitch = packed_video.Get() != 0 ? Width(s) : VideoPitch(s);
+		uint32_t pitch = VideoPitch(s);
 		uint64_t size  = static_cast<uint64_t>(pitch) * h * 3 / 2;
 		if (buffer == nullptr || src->width <= 0 || src->height <= 0 ||
 		    static_cast<uint32_t>(src->width) > pitch || static_cast<uint32_t>(src->height) > h ||
