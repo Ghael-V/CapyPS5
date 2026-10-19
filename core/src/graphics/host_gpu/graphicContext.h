@@ -36,6 +36,13 @@ struct GraphicContext {
 	bool                               depth_color_copy_enabled               = false;
 	bool                               supports_block_texel_view              = false;
 	bool                                      mesh_shader_enabled                   = false;
+	// Optional features: some mobile GPUs (Mali) lack them, so the renderer falls back.
+	bool                               color_write_enable_enabled            = false;
+	bool                               image_view_min_lod_enabled            = false;
+	bool                               depth_clip_control_enabled            = false;
+	bool                               depth_bounds_enabled                  = false;
+	bool                               multi_viewport_enabled                = false;
+	bool                               fill_mode_non_solid_enabled           = false;
 	vk::PhysicalDeviceMeshShaderPropertiesEXT mesh_shader_properties                = {};
 	uint32_t                           subgroup_size                         = 0;
 	uint32_t                           min_subgroup_size                     = 0;

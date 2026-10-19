@@ -14,6 +14,7 @@
 #include "graphics/host_gpu/renderer/render.h"
 #include "graphics/host_gpu/renderer/renderContext.h"
 #include "graphics/host_gpu/vulkanCommon.h"
+#include "graphics/shader/recompiler/HostFeatures.h"
 
 #if defined(__ANDROID__) || defined(ANDROID) || defined(KYTY_PLATFORM_ANDROID)
 #include <android/native_window.h>
@@ -260,16 +261,15 @@ static void VulkanFindPhysicalDevice(vk::Instance instance, vk::SurfaceKHR surfa
 			}
 		};
 
-#if defined(__APPLE__)
-		if (color_write_ext.colorWriteEnable != VK_TRUE) {
-			LOGF("colorWriteEnable is not supported\n");
-		}
-#else
-		check_feature(color_write_ext.colorWriteEnable, "colorWriteEnable");
-#endif
-		check_feature(image_view_min_lod.minLod, "image view minLod");
-
-		check_feature(depth_clip_control.depthClipControl, "depthClipControl");
+		// The renderer falls back when these are missing (Mali lacks most of them).
+		const auto optional_feature = [&](vk::Bool32 supported, const char* name) {
+			if (supported != VK_TRUE) {
+				LOGF("%s is not supported; using a fallback\n", name);
+			}
+		};
+		optional_feature(color_write_ext.colorWriteEnable, "colorWriteEnable");
+		optional_feature(image_view_min_lod.minLod, "image view minLod");
+		optional_feature(depth_clip_control.depthClipControl, "depthClipControl");
 #if defined(__APPLE__)
 		if (depth_clip_enable.depthClipEnable != VK_TRUE) {
 			LOGF("depthClipEnable is not supported\n");
@@ -310,23 +310,17 @@ static void VulkanFindPhysicalDevice(vk::Instance instance, vk::SurfaceKHR surfa
 		              required_features13.synchronization2);
 		check_feature(device_features2.features.sampleRateShading, "sampleRateShading");
 		check_feature(device_features2.features.depthBiasClamp, "depthBiasClamp");
-		check_feature(device_features2.features.shaderClipDistance, "shaderClipDistance");
-		check_feature(device_features2.features.shaderCullDistance, "shaderCullDistance");
+		optional_feature(device_features2.features.shaderClipDistance, "shaderClipDistance");
+		optional_feature(device_features2.features.shaderCullDistance, "shaderCullDistance");
 		check_feature(device_features2.features.largePoints, "largePoints");
-		check_feature(device_features2.features.multiViewport, "multiViewport");
-		check_feature(device_features2.features.fillModeNonSolid, "fillModeNonSolid");
+		optional_feature(device_features2.features.multiViewport, "multiViewport");
+		optional_feature(device_features2.features.fillModeNonSolid, "fillModeNonSolid");
 		check_feature(device_features2.features.fragmentStoresAndAtomics,
 		              "fragmentStoresAndAtomics");
 
 		check_feature(device_features2.features.samplerAnisotropy, "samplerAnisotropy");
 		check_feature(device_features2.features.robustBufferAccess, "robustBufferAccess");
-#if defined(__APPLE__)
-		if (device_features2.features.depthBounds != VK_TRUE) {
-			LOGF("depthBounds is not supported\n");
-		}
-#else
-		check_feature(device_features2.features.depthBounds, "depthBounds");
-#endif
+		optional_feature(device_features2.features.depthBounds, "depthBounds");
 		check_feature(device_features2.features.shaderStorageImageWriteWithoutFormat,
 		              "shaderStorageImageWriteWithoutFormat");
 
@@ -336,7 +330,7 @@ static void VulkanFindPhysicalDevice(vk::Instance instance, vk::SurfaceKHR surfa
 		check_feature(device_features2.features.independentBlend, "independentBlend");
 		check_feature(device_features2.features.tessellationShader, "tessellationShader");
 
-		if (!skip_device) {
+		{
 			auto available_extensions = EnumerateVulkan<vk::ExtensionProperties>(
 			    "vkEnumerateDeviceExtensionProperties",
 			    [&](uint32_t* count, vk::ExtensionProperties* values) {
@@ -344,13 +338,15 @@ static void VulkanFindPhysicalDevice(vk::Instance instance, vk::SurfaceKHR surfa
 			    });
 			EXIT_NOT_IMPLEMENTED(available_extensions.empty());
 
+			bool extensions_missing = false;
 			for (const char* ext: device_extensions) {
 				if (!HasExtension(available_extensions, ext)) {
 					reject(fmt::format("{} is not supported", ext));
+					extensions_missing = true;
 				}
 			}
 
-			if (skip_device) {
+			if (extensions_missing) {
 				for (const auto& ext: available_extensions) {
 					LOGF("Vulkan available extension: %s, version = %u\n", ext.extensionName.data(),
 					     ext.specVersion);
@@ -440,24 +436,42 @@ static vk::Device VulkanCreateDevice(GraphicContext& graphics,
 	queue_create_info.queueCount       = 1;
 	queue_create_info.pQueuePriorities = &queue_priority;
 
+	// Optional extension features: chain only the ones whose extension is enabled and whose
+	// feature is supported (MoltenVK and Mali lack several of them; the renderer falls back).
 	vk::PhysicalDeviceColorWriteEnableFeaturesEXT color_write_ext {};
-	color_write_ext.colorWriteEnable = VK_TRUE;
-
-	vk::PhysicalDeviceDepthClipEnableFeaturesEXT depth_clip_enable {};
-	depth_clip_enable.pNext = &color_write_ext;
-	depth_clip_enable.depthClipEnable = VK_TRUE;
-
+	vk::PhysicalDeviceDepthClipEnableFeaturesEXT  depth_clip_enable {};
 	vk::PhysicalDeviceDepthClipControlFeaturesEXT depth_clip_control {};
 	vk::PhysicalDeviceImageViewMinLodFeaturesEXT  image_view_min_lod {};
-	image_view_min_lod.minLod = VK_TRUE;
-	depth_clip_control.pNext  = &image_view_min_lod;
-	// MoltenVK lacks VK_EXT_depth_clip_enable and VK_EXT_color_write_enable, so drop those
-	// feature structs from the chain on macOS (the renderer falls back to default depth
-	// clipping and static color-write masks).
-#if !defined(__APPLE__)
-	image_view_min_lod.pNext = &depth_clip_enable;
-#endif
-	depth_clip_control.depthClipControl = VK_TRUE;
+	void*                                         optional_chain = nullptr;
+	{
+		const auto query = [&](auto& feature, const char* extension) {
+			if (HasExtension(device_extensions, extension)) {
+				feature.pNext  = optional_chain;
+				optional_chain = &feature;
+			}
+		};
+		query(color_write_ext, VK_EXT_COLOR_WRITE_ENABLE_EXTENSION_NAME);
+		query(depth_clip_enable, VK_EXT_DEPTH_CLIP_ENABLE_EXTENSION_NAME);
+		query(depth_clip_control, VK_EXT_DEPTH_CLIP_CONTROL_EXTENSION_NAME);
+		query(image_view_min_lod, VK_EXT_IMAGE_VIEW_MIN_LOD_EXTENSION_NAME);
+		vk::PhysicalDeviceFeatures2 supported {};
+		supported.pNext = optional_chain;
+		physical_device.getFeatures2(&supported);
+		optional_chain = nullptr;
+		const auto enable = [&](auto& feature, vk::Bool32 supported_feature) {
+			if (supported_feature == VK_TRUE) {
+				feature.pNext  = optional_chain;
+				optional_chain = &feature;
+			}
+		};
+		enable(color_write_ext, color_write_ext.colorWriteEnable);
+		enable(depth_clip_enable, depth_clip_enable.depthClipEnable);
+		enable(depth_clip_control, depth_clip_control.depthClipControl);
+		enable(image_view_min_lod, image_view_min_lod.minLod);
+	}
+	graphics.color_write_enable_enabled = color_write_ext.colorWriteEnable == VK_TRUE;
+	graphics.depth_clip_control_enabled = depth_clip_control.depthClipControl == VK_TRUE;
+	graphics.image_view_min_lod_enabled = image_view_min_lod.minLod == VK_TRUE;
 
 	const bool workgroup_layout_extension =
 	    HasExtension(device_extensions, VK_KHR_WORKGROUP_MEMORY_EXPLICIT_LAYOUT_EXTENSION_NAME);
@@ -521,9 +535,9 @@ static vk::Device VulkanCreateDevice(GraphicContext& graphics,
 	vk::PhysicalDeviceWorkgroupMemoryExplicitLayoutFeaturesKHR workgroup_layout {};
 	workgroup_layout.workgroupMemoryExplicitLayout =
 	    supported_workgroup_layout.workgroupMemoryExplicitLayout;
-	workgroup_layout.pNext = &depth_clip_control;
+	workgroup_layout.pNext = optional_chain;
 	features12.pNext = workgroup_layout_extension ? static_cast<void*>(&workgroup_layout)
-	                                             : static_cast<void*>(&depth_clip_control);
+	                                             : optional_chain;
 	auto features11 = WindowContext::RequiredVulkan11Features();
 	features11.pNext = features12.pNext;
 	features12.pNext = &features11;
@@ -591,8 +605,9 @@ static vk::Device VulkanCreateDevice(GraphicContext& graphics,
 	device_features.fragmentStoresAndAtomics = VK_TRUE;
 	device_features.samplerAnisotropy        = VK_TRUE;
 	device_features.robustBufferAccess       = VK_TRUE;
+	// Unsupported by MoltenVK and Mali.
+	device_features.depthBounds = supported_features2.features.depthBounds;
 #if !defined(__APPLE__)
-	device_features.depthBounds = VK_TRUE; // unsupported by MoltenVK
 	device_features.depthClamp  = VK_TRUE;
 #endif
 	device_features.shaderStorageImageWriteWithoutFormat = VK_TRUE;
@@ -602,11 +617,23 @@ static vk::Device VulkanCreateDevice(GraphicContext& graphics,
 	device_features.tessellationShader                   = VK_TRUE;
 	device_features.sampleRateShading                    = VK_TRUE;
 	device_features.depthBiasClamp                       = VK_TRUE;
-	device_features.shaderClipDistance                   = VK_TRUE;
-	device_features.shaderCullDistance                   = VK_TRUE;
+	device_features.shaderClipDistance = supported_features2.features.shaderClipDistance;
+	device_features.shaderCullDistance = supported_features2.features.shaderCullDistance;
 	device_features.largePoints                          = VK_TRUE;
-	device_features.multiViewport                        = VK_TRUE;
-	device_features.fillModeNonSolid                      = VK_TRUE;
+	device_features.multiViewport    = supported_features2.features.multiViewport;
+	device_features.fillModeNonSolid = supported_features2.features.fillModeNonSolid;
+	graphics.depth_bounds_enabled        = device_features.depthBounds == VK_TRUE;
+	graphics.multi_viewport_enabled      = device_features.multiViewport == VK_TRUE;
+	graphics.fill_mode_non_solid_enabled = device_features.fillModeNonSolid == VK_TRUE;
+	ShaderRecompiler::g_host_features.clip_distance = device_features.shaderClipDistance == VK_TRUE;
+	ShaderRecompiler::g_host_features.cull_distance = device_features.shaderCullDistance == VK_TRUE;
+	LOGF("Vulkan optional features: colorWrite=%d minLod=%d depthClipControl=%d depthBounds=%d "
+	     "multiViewport=%d fillModeNonSolid=%d clipDistance=%d cullDistance=%d\n",
+	     graphics.color_write_enable_enabled, graphics.image_view_min_lod_enabled,
+	     graphics.depth_clip_control_enabled, graphics.depth_bounds_enabled,
+	     graphics.multi_viewport_enabled, graphics.fill_mode_non_solid_enabled,
+	     ShaderRecompiler::g_host_features.clip_distance,
+	     ShaderRecompiler::g_host_features.cull_distance);
 	device_features.vertexPipelineStoresAndAtomics       = VK_TRUE;
 	graphics.sample_rate_shading_enabled                 = true;
 	device_features.shaderInt64 = VK_TRUE;
@@ -1027,8 +1054,7 @@ void WindowContext::CreateVulkan() {
 	surface = CreatePlatformSurface(graphic_ctx.instance, window);
 
 	std::vector<const char*> device_extensions = {
-	    VK_KHR_SWAPCHAIN_EXTENSION_NAME, VK_EXT_DEPTH_CLIP_CONTROL_EXTENSION_NAME,
-	    VK_EXT_IMAGE_VIEW_MIN_LOD_EXTENSION_NAME, VK_KHR_PUSH_DESCRIPTOR_EXTENSION_NAME,
+	    VK_KHR_SWAPCHAIN_EXTENSION_NAME, VK_KHR_PUSH_DESCRIPTOR_EXTENSION_NAME,
 	    "VK_KHR_maintenance1"};
 
 #if defined(__APPLE__)
@@ -1038,10 +1064,8 @@ void WindowContext::CreateVulkan() {
 	device_extensions.push_back("VK_KHR_portability_subset");
 #elif defined(__ANDROID__) || defined(ANDROID) || defined(KYTY_PLATFORM_ANDROID)
 	device_extensions.push_back(VK_EXT_DEPTH_CLIP_ENABLE_EXTENSION_NAME);
-	device_extensions.push_back(VK_EXT_COLOR_WRITE_ENABLE_EXTENSION_NAME);
 #else
 	device_extensions.push_back(VK_EXT_DEPTH_CLIP_ENABLE_EXTENSION_NAME);
-	device_extensions.push_back(VK_EXT_COLOR_WRITE_ENABLE_EXTENSION_NAME);
 	device_extensions.push_back(VK_KHR_FRAGMENT_SHADER_BARYCENTRIC_EXTENSION_NAME);
 #endif
 
@@ -1101,7 +1125,10 @@ void WindowContext::CreateVulkan() {
 		                             VK_EXT_PROVOKING_VERTEX_EXTENSION_NAME,
 		                             VK_EXT_MESH_SHADER_EXTENSION_NAME,
 		                             VK_KHR_WORKGROUP_MEMORY_EXPLICIT_LAYOUT_EXTENSION_NAME,
-		                             VK_EXT_DEPTH_RANGE_UNRESTRICTED_EXTENSION_NAME}) {
+		                             VK_EXT_DEPTH_RANGE_UNRESTRICTED_EXTENSION_NAME,
+		                             VK_EXT_DEPTH_CLIP_CONTROL_EXTENSION_NAME,
+		                             VK_EXT_IMAGE_VIEW_MIN_LOD_EXTENSION_NAME,
+		                             VK_EXT_COLOR_WRITE_ENABLE_EXTENSION_NAME}) {
 			if (HasExtension(available_extensions, extension)) {
 				device_extensions.push_back(extension);
 			}

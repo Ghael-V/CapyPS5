@@ -1083,6 +1083,10 @@ PipelineCache::Pipeline* PipelineCache::GetGraphicsPipeline(
 	std::memcpy(static_params.ps_scaled_images, &ps_scaled_images, sizeof(ps_scaled_images));
 	static_params.polygon_mode =
 	    ResolvePolygonMode(mc, static_params.cull_front, static_params.cull_back);
+	if (!m_graphics.fill_mode_non_solid_enabled) {
+		// Wireframe and point fill need fillModeNonSolid (missing on Mali); draw solid instead.
+		static_params.polygon_mode = vk::PolygonMode::eFill;
+	}
 
 	if (vs_input_info.stage.program->stage != ShaderType::Mesh) {
 		EXIT_IF(vs_input_info.buffers_num < 0 ||

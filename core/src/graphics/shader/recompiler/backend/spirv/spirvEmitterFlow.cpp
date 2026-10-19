@@ -1,6 +1,7 @@
 #include "graphics/shader/recompiler/backend/spirv/spirvEmitterInstructions.h"
 
 #include "common/logging/log.h"
+#include "graphics/shader/recompiler/HostFeatures.h"
 
 #include <algorithm>
 #include <atomic>
@@ -401,7 +402,11 @@ void EmitAuxPositionExport(ValueEmitContext& ctx, uint32_t data, const IR::Expor
 			continue;
 		}
 		auto StoreDistance = [&](IR::StageOutputKind kind, uint32_t variable, uint32_t index) {
-			if (index == UINT32_MAX) {
+			// Without device support the output is not declared and the distance is dropped.
+			const bool supported = kind == IR::StageOutputKind::ClipDistance
+			                           ? g_host_features.clip_distance
+			                           : g_host_features.cull_distance;
+			if (index == UINT32_MAX || !supported) {
 				return;
 			}
 			uint32_t pointer;

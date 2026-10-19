@@ -2,6 +2,7 @@
 
 #include "common/assert.h"
 #include "common/logging/log.h"
+#include "graphics/shader/recompiler/HostFeatures.h"
 #include "graphics/shader/recompiler/ir/ShaderIR.h"
 
 #include <algorithm>
@@ -240,11 +241,11 @@ void CollectOutput(const Program& program, ShaderStageInputInfo input_info,
 				if (output.layer) {
 					AddOutput(info, StageOutputKind::Layer, 0, 0, "gl_Layer");
 				}
-				if (output.clip_distance != UINT32_MAX) {
+				if (output.clip_distance != UINT32_MAX && g_host_features.clip_distance) {
 					AddOutput(info, StageOutputKind::ClipDistance, output.clip_distance, 0,
 					          "gl_ClipDistance");
 				}
-				if (output.cull_distance != UINT32_MAX) {
+				if (output.cull_distance != UINT32_MAX && g_host_features.cull_distance) {
 					AddOutput(info, StageOutputKind::CullDistance, output.cull_distance, 0,
 					          "gl_CullDistance");
 				}

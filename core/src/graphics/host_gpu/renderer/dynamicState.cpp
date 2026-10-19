@@ -28,15 +28,15 @@ void DynamicState::Commit(const GraphicContext& graphics, vk::CommandBuffer cmdb
 	}
 	if (dirty_state.depth_bounds_test_enabled) {
 		dirty_state.depth_bounds_test_enabled = false;
-#if !defined(__APPLE__)
-		cmdbuf.setDepthBoundsTestEnable(depth_bounds_test_enabled);
-#endif
+		if (graphics.depth_bounds_enabled) {
+			cmdbuf.setDepthBoundsTestEnable(depth_bounds_test_enabled);
+		}
 	}
 	if (depth_bounds_test_enabled && dirty_state.depth_bounds) {
 		dirty_state.depth_bounds = false;
-#if !defined(__APPLE__)
-		cmdbuf.setDepthBounds(depth_bounds_min, depth_bounds_max);
-#endif
+		if (graphics.depth_bounds_enabled) {
+			cmdbuf.setDepthBounds(depth_bounds_min, depth_bounds_max);
+		}
 	}
 	if (dirty_state.depth_bias_enabled) {
 		dirty_state.depth_bias_enabled = false;
@@ -131,11 +131,9 @@ void DynamicState::Commit(const GraphicContext& graphics, vk::CommandBuffer cmdb
 	}
 	if (dirty_state.color_write_enables) {
 		dirty_state.color_write_enables = false;
-#if !defined(__APPLE__)
-		if (num_color_write_enables != 0) {
+		if (num_color_write_enables != 0 && graphics.color_write_enable_enabled) {
 			cmdbuf.setColorWriteEnableEXT(num_color_write_enables, color_write_enables.data());
 		}
-#endif
 	}
 	if (dirty_state.line_width) {
 		dirty_state.line_width = false;

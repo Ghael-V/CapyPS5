@@ -342,7 +342,9 @@ static void UpdateGraphicsDynamicState(const CommandBuffer& buffer, DynamicState
 	constexpr uint32_t viewport_slots = std::size(HW::ScreenViewport {}.viewports);
 	std::array<vk::Viewport, viewport_slots> viewports {};
 	std::array<vk::Rect2D, viewport_slots>   scissors {};
-	const uint32_t viewport_count = indexed_viewports ? viewport_slots : 1;
+	// Without multiViewport only viewport 0 exists; a shader-selected index then lands there.
+	const uint32_t viewport_count =
+	    indexed_viewports && buffer.GetGraphics().multi_viewport_enabled ? viewport_slots : 1;
 	// PA_SU_VTX_CNTL.PIX_CENTER = 0 puts pixel centers at integer coordinates (D3D9 style), while
 	// Vulkan samples at +0.5. Moving the geometry half a pixel right/down makes Vulkan sample the
 	// same spot. `debug.capy.pix_center`: 0 = follow the register, 1 = never shift, 2 = always.
@@ -440,12 +442,12 @@ static void UpdateGraphicsDynamicState(const CommandBuffer& buffer, DynamicState
 	                                   (depth.depth_write_enable || no_ro_depth.Get() == 0));
 	dynamic_state.SetDepthWriteEnabled(depth.depth_write_enable);
 	dynamic_state.SetDepthCompareOp(depth.depth_compare_op);
-#if !defined(__APPLE__)
-	dynamic_state.SetDepthBoundsTestEnabled(depth.depth_bounds_test_enable);
-	if (depth.depth_bounds_test_enable) {
-		dynamic_state.SetDepthBounds(ctx.GetDepthBoundsMin(), ctx.GetDepthBoundsMax());
+	if (buffer.GetGraphics().depth_bounds_enabled) {
+		dynamic_state.SetDepthBoundsTestEnabled(depth.depth_bounds_test_enable);
+		if (depth.depth_bounds_test_enable) {
+			dynamic_state.SetDepthBounds(ctx.GetDepthBoundsMin(), ctx.GetDepthBoundsMax());
+		}
 	}
-#endif
 
 	const auto& mode              = ctx.GetModeControl();
 	const auto& poly_offset       = ctx.GetPolyOffset();
@@ -486,16 +488,15 @@ static void UpdateGraphicsDynamicState(const CommandBuffer& buffer, DynamicState
 		dynamic_state.SetStencilReferences(front.reference, back.reference);
 	}
 
-#if defined(__APPLE__)
-	// MoltenVK has no VK_EXT_color_write_enable; the pipeline is created without the
+	// Without VK_EXT_color_write_enable (MoltenVK, Mali) the pipeline is created without the
 	// eColorWriteEnableEXT dynamic state and relies on the static colorWriteMask instead.
-#else
-	vk::Bool32 enable[RENDER_COLOR_ATTACHMENTS_MAX] = {};
-	for (uint32_t slot = 0; slot < rendering.num_color_attachments; slot++) {
-		enable[slot] = rendering.color_attachments[slot].image_view != nullptr;
+	if (buffer.GetGraphics().color_write_enable_enabled) {
+		vk::Bool32 enable[RENDER_COLOR_ATTACHMENTS_MAX] = {};
+		for (uint32_t slot = 0; slot < rendering.num_color_attachments; slot++) {
+			enable[slot] = rendering.color_attachments[slot].image_view != nullptr;
+		}
+		dynamic_state.SetColorWriteEnables(std::span {enable}.first(rendering.num_color_attachments));
 	}
-	dynamic_state.SetColorWriteEnables(std::span {enable}.first(rendering.num_color_attachments));
-#endif
 }
 
 static bool DrawHasValidVertexShader(const HW::Shader& sh_ctx) {
