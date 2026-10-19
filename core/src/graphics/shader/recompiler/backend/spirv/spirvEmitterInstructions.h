@@ -20,7 +20,35 @@ EMIT_NATIVE(BitCastF64U64, OpBitcast, F64, uint32_t)
 uint32_t              EmitConvertU16U32(EmitterState& state, uint32_t arg0);
 uint32_t              EmitConvertU8U32(EmitterState& state, uint32_t arg0);
 uint32_t              EmitConvertF16F32(EmitterState& state, uint32_t arg0);
-inline constexpr auto EmitConvertF32F16 = EmitF16BitsToF32;
+// A 16-bit lane read is BitFieldUExtract(x, 0|16, 16) -> ConvertU16U32 -> BitCastF16U16.
+// Unpacking the whole register and taking the lane's component gives both lanes of a register
+// one shared UnpackHalf2x16, which packed F16 code (Guri's sort: ~6500 unpacks) leans on.
+inline uint32_t EmitConvertF32F16(ValueEmitContext& ctx, const IR::Inst& inst) {
+	const auto producer = [](const IR::Value& value, IR::ValueOpcode opcode) -> const IR::Inst* {
+		if (value.IsImmediate()) {
+			return nullptr;
+		}
+		const auto* producing = value.Resolve().TryInstruction();
+		return producing != nullptr && producing->GetOpcode() == opcode ? producing : nullptr;
+	};
+	const auto* bitcast = producer(inst.Arg(0), IR::ValueOpcode::BitCastF16U16);
+	const auto* narrow  = bitcast != nullptr ? producer(bitcast->Arg(0), IR::ValueOpcode::ConvertU16U32)
+	                                         : nullptr;
+	const auto* extract = narrow != nullptr ? producer(narrow->Arg(0), IR::ValueOpcode::BitFieldUExtract)
+	                                        : nullptr;
+	if (extract != nullptr && extract->Arg(1).IsImmediate() && extract->Arg(2).IsImmediate() &&
+	    extract->Arg(2).U32() == 16u && (extract->Arg(1).U32() == 0u || extract->Arg(1).U32() == 16u)) {
+		auto&      state    = ctx.state;
+		const auto unpacked = state.builder.AllocateId();
+		const auto ret      = state.builder.AllocateId();
+		state.builder.AddFunction(spv::OpExtInst, TypeF32Vector(state, 2), unpacked,
+		                          GlslStd450(state), GLSLstd450UnpackHalf2x16, ctx.Arg(*extract, 0));
+		state.builder.AddFunction(spv::OpCompositeExtract, TypeF32(state), ret, unpacked,
+		                          extract->Arg(1).U32() / 16u);
+		return ret;
+	}
+	return EmitF16BitsToF32(ctx.state, ctx.Arg(inst, 0));
+}
 uint32_t              EmitConvertS32F32(EmitterState& state, uint32_t arg0);
 uint32_t              EmitConvertU32F32(EmitterState& state, uint32_t arg0);
 EMIT_NATIVE(ConvertF32S32, OpConvertSToF, F32, uint32_t)

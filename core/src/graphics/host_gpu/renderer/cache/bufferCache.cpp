@@ -314,7 +314,8 @@ bool BufferCache::FillMemory(uint64_t vaddr, uint64_t size, uint32_t value) {
 		return false;
 	}
 	std::vector<uint32_t> words(size / sizeof(uint32_t), value);
-	m_memory_tracker.UnmarkRegionAsGpuModified(vaddr, size);
+	// The fill supersedes earlier GPU writes to the range; none may be downloaded over it.
+	DiscardGpuWrites(vaddr, size);
 	if (!LibKernel::Memory::TryWriteBacking(vaddr, words.data(), size)) {
 		EXIT("BufferCache: failed to fill guest memory 0x%016" PRIx64 "\n", vaddr);
 	}

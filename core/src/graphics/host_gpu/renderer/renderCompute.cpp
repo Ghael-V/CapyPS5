@@ -199,9 +199,17 @@ bool RenderExecutor::TryConsumeComputeImageClear(const ShaderComputeInputInfo& i
 		// the GPU made the next CPU read of those keys wait for the GPU to go idle.
 		// `setprop debug.capy.cpu_fill 0` runs these fills on the GPU again.
 		static Common::DebugFlags::CachedValue cpu_fill("debug.capy.cpu_fill", 1);
+		// UE transient memory aliases the metadata keys with large dead images, which kept these
+		// fills on the GPU and made every later metadata read wait for it (Guri, EDF). The fill
+		// still runs in command order, so an image only aliasing the range loses nothing it
+		// still needs. `setprop debug.capy.cpu_fill_alias 0` keeps such fills on the GPU.
+		static Common::DebugFlags::CachedValue cpu_fill_alias("debug.capy.cpu_fill_alias", 1);
 		constexpr uint64_t MaxCpuFill = 16ull << 20u;
-		if (cpu_fill.Get() == 0 || size > MaxCpuFill || cache.HasImagesInRegion(descriptor.Base48(), size) ||
-		    !command.GetContext().GetBufferCache().FillMemory(descriptor.Base48(), size, packed_clear)) {
+		auto& buffers = command.GetContext().GetBufferCache();
+		if (cpu_fill.Get() == 0 || size > MaxCpuFill ||
+		    (cpu_fill_alias.Get() == 0 && cache.HasImagesInRegion(descriptor.Base48(), size)) ||
+		    buffers.HasAsyncDownloadIn(descriptor.Base48(), size) ||
+		    !buffers.FillMemory(descriptor.Base48(), size, packed_clear)) {
 			return false;
 		}
 		Common::DebugFlags::FrameTrace("    -> filled on the CPU");
@@ -465,7 +473,13 @@ void RenderExecutor::DispatchDirect(uint64_t submit_id, CommandBuffer& buffer,
 		GpuProfiler::BeginDispatch(m_context.GetGraphics(), vk_buffer, sh_ctx.GetCs().cs_regs.data_addr,
 		                           thread_group_x * thread_group_y * thread_group_z);
 	}
-	vk_buffer.dispatch(thread_group_x, thread_group_y, thread_group_z);
+	// Bisection aid: `setprop debug.capy.skip_cs 0x<address>` drops dispatches of that shader,
+	// which measures its real cost where Adreno timestamps misattribute work.
+	static Common::DebugFlags::CachedValue skip_cs("debug.capy.skip_cs", 0);
+	if (skip_cs.Get() == 0 ||
+	    static_cast<uint64_t>(skip_cs.Get()) != sh_ctx.GetCs().cs_regs.data_addr) {
+		vk_buffer.dispatch(thread_group_x, thread_group_y, thread_group_z);
+	}
 	if (profile) {
 		GpuProfiler::EndScope(vk_buffer);
 	}
