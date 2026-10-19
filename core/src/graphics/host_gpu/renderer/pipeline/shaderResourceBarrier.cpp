@@ -1,6 +1,7 @@
 #include "graphics/host_gpu/renderer/pipeline/shaderResourceBarrier.h"
 
 #include "common/assert.h"
+#include "common/debugFlags.h"
 #include "graphics/shader/shader.h"
 #include "graphics/shader/shaderBindings.h"
 
@@ -114,6 +115,12 @@ bool HasShaderBufferWrites(const ShaderStageRuntime& runtime) {
 
 void ShaderAccessBarrier(vk::CommandBuffer vk_buffer, vk::PipelineStageFlags source_stages) {
 	EXIT_IF(vk_buffer == nullptr || !source_stages);
+	// Diagnostic ablation only: bit 0 preserves the pre-write hazard barrier,
+	// bit 1 preserves the post-dispatch dependency. Keep both for correct ordering.
+	static Common::DebugFlags::CachedValue compute_barriers("debug.capy.compute_barriers", 3);
+	if (!(compute_barriers.Get() & 2)) {
+		return;
+	}
 	const auto barrier = MakeShaderAccessDependency();
 	vk_buffer.pipelineBarrier(source_stages, vk::PipelineStageFlagBits::eAllCommands,
 	                          vk::DependencyFlags {}, 1, &barrier, 0, nullptr, 0, nullptr);
@@ -122,6 +129,12 @@ void ShaderAccessBarrier(vk::CommandBuffer vk_buffer, vk::PipelineStageFlags sou
 void ShaderWriteHazardBarrier(vk::CommandBuffer      vk_buffer,
                               vk::PipelineStageFlags destination_stages) {
 	EXIT_IF(vk_buffer == nullptr || !destination_stages);
+	// Diagnostic ablation only: bit 0 preserves the pre-write hazard barrier,
+	// bit 1 preserves the post-dispatch dependency. Keep both for correct ordering.
+	static Common::DebugFlags::CachedValue compute_barriers("debug.capy.compute_barriers", 3);
+	if (!(compute_barriers.Get() & 1)) {
+		return;
+	}
 	const auto barrier = MakeShaderWriteHazardDependency();
 	vk_buffer.pipelineBarrier(vk::PipelineStageFlagBits::eAllCommands, destination_stages,
 	                          vk::DependencyFlags {}, 1, &barrier, 0, nullptr, 0, nullptr);
