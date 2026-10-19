@@ -126,8 +126,19 @@ void BeginDispatch(GraphicContext& graphics, vk::CommandBuffer command, uint64_t
                    uint32_t groups) {
 	std::lock_guard lock(g_mutex);
 	char label[64];
-	std::snprintf(label, sizeof(label), "dispatch cs=0x%llx", static_cast<unsigned long long>(compute_shader));
-	(void)groups;
+	std::snprintf(label, sizeof(label), "dispatch cs=0x%llx groups=%u",
+	              static_cast<unsigned long long>(compute_shader), groups);
+	// `debug.capy.gpu_profile 3`: drain the queue before each dispatch. Adreno does not hold
+	// bottom-of-pipe timestamps behind earlier work, so without this a dispatch absorbs the
+	// tail of whatever ran before it.
+	static Common::DebugFlags::CachedValue mode("debug.capy.gpu_profile", 0);
+	if (mode.Get() == 3) {
+		vk::MemoryBarrier barrier {};
+		barrier.srcAccessMask = vk::AccessFlagBits::eMemoryWrite;
+		barrier.dstAccessMask = vk::AccessFlagBits::eMemoryRead | vk::AccessFlagBits::eMemoryWrite;
+		command.pipelineBarrier(vk::PipelineStageFlagBits::eAllCommands,
+		                        vk::PipelineStageFlagBits::eAllCommands, {}, barrier, {}, {});
+	}
 	(void)Begin(graphics, command, label);
 }
 

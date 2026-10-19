@@ -179,6 +179,14 @@ void DumpShaderOriginal(const char* stage_name, uint64_t shader_hash,
 	// `setprop debug.capy.dump_shaders 1` before a shader is first compiled writes its
 	// disassembly to <files>/shaders/<stage>_<guest address>.txt.
 	static Common::DebugFlags::CachedValue dump_text("debug.capy.dump_shaders", 0);
+	// With `debug.capy.dump_spirv 1`, log which guest address (as shown by gpu_profile) each
+	// dumped <stage>_<hash>.spv belongs to.
+	static Common::DebugFlags::CachedValue dump_spirv("debug.capy.dump_spirv", 0);
+	if (dump_spirv.Get() != 0 && !code.empty()) {
+		__android_log_print(ANDROID_LOG_INFO, "CapyPS5-Shader", "%s 0x%llx -> %016llx", stage_name,
+		                    static_cast<unsigned long long>(reinterpret_cast<uintptr_t>(code.data())),
+		                    static_cast<unsigned long long>(shader_hash));
+	}
 	if (dump_text.Get() != 0 && !code.empty()) {
 		ShaderRecompiler::Decoder::Program program;
 		ShaderRecompiler::Decoder::DecodeProgram(code, program);
