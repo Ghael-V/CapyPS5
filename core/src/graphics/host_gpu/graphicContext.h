@@ -43,6 +43,7 @@ struct GraphicContext {
 	bool                               depth_bounds_enabled                  = false;
 	bool                               multi_viewport_enabled                = false;
 	bool                               fill_mode_non_solid_enabled           = false;
+	bool                               draw_indirect_first_instance_enabled  = false;
 	vk::PhysicalDeviceMeshShaderPropertiesEXT mesh_shader_properties                = {};
 	uint32_t                           subgroup_size                         = 0;
 	uint32_t                           min_subgroup_size                     = 0;

@@ -212,6 +212,9 @@ enum class StageInputKind {
 	LocalInvocationIndex,
 	GlobalInvocationId,
 	Parameter,
+	// Vulkan draw parameters, read by vertex shaders of GPU-side indirect draws.
+	BaseVertex,
+	BaseInstance,
 };
 
 enum class StageOutputKind {

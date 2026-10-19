@@ -1394,10 +1394,30 @@ IR::Program TranslateProgram(const Decoder::Program& decoded, const CFG::Graph& 
 			                      IR::U32(IR::Value(options.wave_size << 12u)));
 			entry_ir.SetScalarReg(static_cast<IR::ScalarReg>(3),
 			                      entry_ir.BitwiseOr(vertex_count, IR::U32(IR::Value(1u << 28u))));
-			entry_ir.SetVectorReg(static_cast<IR::VectorReg>(5),
-			                      builtin(IR::StageInputKind::VertexIndex));
-			entry_ir.SetVectorReg(static_cast<IR::VectorReg>(8),
-			                      builtin(IR::StageInputKind::InstanceIndex));
+			auto        vertex_index   = builtin(IR::StageInputKind::VertexIndex);
+			auto        instance_index = builtin(IR::StageInputKind::InstanceIndex);
+			const auto& vertex_input   = *options.input_info.vertex;
+			if (vertex_input.indirect_vertex_sgpr != UINT32_MAX) {
+				// GPU-side indirect draw: Vulkan applies the guest's offsets itself. The offset
+				// SGPRs come from the draw parameters, and native fetches, which add those SGPRs
+				// themselves, see indices without them as on the CPU-read path.
+				const auto base_vertex   = builtin(IR::StageInputKind::BaseVertex);
+				const auto base_instance = builtin(IR::StageInputKind::BaseInstance);
+				if (vertex_input.indirect_vertex_sgpr != ShaderVertexInputInfo::IndirectNoSgpr) {
+					entry_ir.SetScalarReg(
+					    static_cast<IR::ScalarReg>(vertex_input.indirect_vertex_sgpr), base_vertex);
+				}
+				if (vertex_input.indirect_instance_sgpr != ShaderVertexInputInfo::IndirectNoSgpr) {
+					entry_ir.SetScalarReg(
+					    static_cast<IR::ScalarReg>(vertex_input.indirect_instance_sgpr), base_instance);
+				}
+				if (!vertex_input.fetch_embedded) {
+					vertex_index   = entry_ir.ISub(vertex_index, base_vertex);
+					instance_index = entry_ir.ISub(instance_index, base_instance);
+				}
+			}
+			entry_ir.SetVectorReg(static_cast<IR::VectorReg>(5), vertex_index);
+			entry_ir.SetVectorReg(static_cast<IR::VectorReg>(8), instance_index);
 		}
 	}
 	const bool flush_f32_inputs = options.stage == ShaderType::Compute &&

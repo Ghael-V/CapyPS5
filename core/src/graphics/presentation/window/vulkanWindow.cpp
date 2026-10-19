@@ -480,7 +480,9 @@ static vk::Device VulkanCreateDevice(GraphicContext& graphics,
 	vk::PhysicalDeviceVulkan12Features supported_features12 {};
 	supported_features12.pNext = workgroup_layout_extension ? &supported_workgroup_layout : nullptr;
 	vk::PhysicalDeviceVulkan13Features supported_features13 {};
-	supported_features13.pNext = &supported_features12;
+	vk::PhysicalDeviceVulkan11Features supported_features11 {};
+	supported_features11.pNext = &supported_features12;
+	supported_features13.pNext = &supported_features11;
 
 	const auto robustness2_ext_enabled =
 	    HasExtension(device_extensions, VK_EXT_ROBUSTNESS_2_EXTENSION_NAME);
@@ -548,6 +550,9 @@ static vk::Device VulkanCreateDevice(GraphicContext& graphics,
 	features12.pNext = workgroup_layout_extension ? static_cast<void*>(&workgroup_layout)
 	                                             : optional_chain;
 	auto features11 = WindowContext::RequiredVulkan11Features();
+	features11.shaderDrawParameters = supported_features11.shaderDrawParameters;
+	ShaderRecompiler::g_host_features.draw_parameters =
+	    supported_features11.shaderDrawParameters == VK_TRUE;
 	features11.pNext = features12.pNext;
 	features12.pNext = &features11;
 	if (!features12.shaderSharedInt64Atomics || !workgroup_layout.workgroupMemoryExplicitLayout) {
@@ -634,6 +639,9 @@ static vk::Device VulkanCreateDevice(GraphicContext& graphics,
 	graphics.depth_bounds_enabled        = device_features.depthBounds == VK_TRUE;
 	graphics.multi_viewport_enabled      = device_features.multiViewport == VK_TRUE;
 	graphics.fill_mode_non_solid_enabled = device_features.fillModeNonSolid == VK_TRUE;
+	device_features.drawIndirectFirstInstance = supported_features2.features.drawIndirectFirstInstance;
+	graphics.draw_indirect_first_instance_enabled =
+	    device_features.drawIndirectFirstInstance == VK_TRUE;
 	ShaderRecompiler::g_host_features.clip_distance = device_features.shaderClipDistance == VK_TRUE;
 	ShaderRecompiler::g_host_features.cull_distance = device_features.shaderCullDistance == VK_TRUE;
 	LOGF("Vulkan optional features: colorWrite=%d minLod=%d depthClipControl=%d depthBounds=%d "

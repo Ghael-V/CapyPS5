@@ -716,6 +716,8 @@ void BuildStageStaticKey(const ShaderVertexInputInfo& info, std::vector<uint32_t
 	key.push_back(info.wave_size);
 	key.push_back(info.scratch_size_dwords);
 	key.push_back(info.pa_cl_vs_out_cntl);
+	key.push_back(info.indirect_vertex_sgpr);
+	key.push_back(info.indirect_instance_sgpr);
 	key.push_back(static_cast<uint32_t>(info.clip_space.enabled));
 	if (info.clip_space.enabled) {
 		for (const float value: info.clip_space.scale) {
@@ -810,6 +812,17 @@ void BuildStageStaticKey(const ShaderComputeInputInfo& info, std::vector<uint32_
 		key.push_back(static_cast<uint32_t>(info.group_id[i]));
 	}
 	key.push_back(static_cast<uint32_t>(info.tg_size_en));
+}
+
+bool VertexProgramUsesMesh(const HW::VertexShaderInfo& regs, const HW::Context& context,
+                           bool mesh_shader_enabled) {
+	if ((context.GetShaderStages() & 0x20u) != 0) {
+		return true;
+	}
+	const auto [data, hash] = ShaderGetMappedData(regs.es_regs.data_addr, "VertexProgramUsesMesh():");
+	(void)hash;
+	return mesh_shader_enabled && data.type == Prospero::ShaderBinaryType::kGs &&
+	       regs.gs_regs.rsrc2.lds_size != 0;
 }
 
 ShaderParams PrepareProgram(const HW::VertexShaderInfo& regs, const HW::Context& context,

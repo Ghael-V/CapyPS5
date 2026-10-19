@@ -30,6 +30,9 @@ void BuildStageStaticKey(const ShaderVertexInputInfo& input_info, std::vector<ui
 void BuildStageStaticKey(const ShaderPixelInputInfo& input_info, std::vector<uint32_t>& key);
 void BuildStageStaticKey(const ShaderComputeInputInfo& input_info, std::vector<uint32_t>& key);
 
+// Whether PrepareProgram turns this vertex stage into a (native or emulated) mesh program.
+bool VertexProgramUsesMesh(const HW::VertexShaderInfo& regs, const HW::Context& context,
+                           bool mesh_shader_enabled);
 ShaderParams PrepareProgram(const HW::VertexShaderInfo& regs, const HW::Context& context,
                             const HW::UserConfig& user_config, ShaderVertexInputInfo& input_info,
                             bool mesh_shader_enabled = true, bool emulate_merged_gs = false);

@@ -158,6 +158,8 @@ void AddBuiltinInput(ShaderInfo& info, StageInputKind kind) {
 		case StageInputKind::InstanceIndex:
 			AddInput(info, kind, 0, 1, "gl_InstanceIndex");
 			break;
+		case StageInputKind::BaseVertex: AddInput(info, kind, 0, 1, "gl_BaseVertex"); break;
+		case StageInputKind::BaseInstance: AddInput(info, kind, 0, 1, "gl_BaseInstance"); break;
 		case StageInputKind::InvocationId:
 			AddInput(info, kind, 0, 1, "gl_InvocationID");
 			break;
@@ -483,6 +485,8 @@ void Visit(Program& program, ShaderStageInputInfo input_info, InputUsage& inputs
 				case StageInputKind::InvocationId:
 				case StageInputKind::PrimitiveId:
 				case StageInputKind::InstanceIndex:
+				case StageInputKind::BaseVertex:
+				case StageInputKind::BaseInstance:
 				case StageInputKind::FrontFacing:
 				case StageInputKind::LocalInvocationIndex:
 					if (component != 0u) {

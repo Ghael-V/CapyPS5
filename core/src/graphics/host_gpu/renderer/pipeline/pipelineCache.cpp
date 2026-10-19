@@ -794,7 +794,8 @@ PipelineCache::GraphicsPrograms PipelineCache::GetGraphicsPrograms(
     const HW::VertexShaderInfo& vertex_regs, const HW::PixelShaderInfo& pixel_regs,
     const HW::ShaderRegisters& sh, const HW::Context& context, const HW::UserConfig& user_config,
     std::span<const Prospero::ColorComponentMapping, 8> target_export_mapping, bool pixel_active,
-    std::array<ShaderVertexInputInfo, 3>& vertex_info, ShaderPixelInputInfo& pixel_info) {
+    std::array<ShaderVertexInputInfo, 3>& vertex_info, ShaderPixelInputInfo& pixel_info,
+    uint32_t indirect_vertex_sgpr, uint32_t indirect_instance_sgpr) {
 	const bool tess_active = user_config.GetPrimType() == Prospero::PrimitiveType::kPatch;
 	std::array<ShaderParams, 3> vertex_params;
 	if (tess_active) {
@@ -805,6 +806,12 @@ PipelineCache::GraphicsPrograms PipelineCache::GetGraphicsPrograms(
 		                   true);
 	}
 	const bool mesh_active = vertex_info[0].logical_stage == ShaderType::Mesh;
+	if (indirect_vertex_sgpr != UINT32_MAX) {
+		// The command processor only sends plain vertex stages down the GPU indirect path.
+		EXIT_IF(mesh_active || tess_active);
+		vertex_info[0].indirect_vertex_sgpr   = indirect_vertex_sgpr;
+		vertex_info[0].indirect_instance_sgpr = indirect_instance_sgpr;
+	}
 	if (mesh_active && vertex_info[0].mesh.emulate) {
 		// Same subgroup choice as guest compute shaders, which the dispatch also mirrors.
 		auto& mesh              = vertex_info[0].mesh;

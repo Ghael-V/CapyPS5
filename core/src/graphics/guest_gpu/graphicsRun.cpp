@@ -24,7 +24,9 @@
 #include "graphics/host_gpu/regionDefinitions.h"
 #include "graphics/presentation/videoOut.h"
 #include "graphics/presentation/window.h"
+#include "graphics/shader/recompiler/HostFeatures.h"
 #include "graphics/shader/shader.h"
+#include "graphics/shader/shaderCompiler.h"
 #include "kernel/memory.h"
 #include "libs/agc.h"
 #include "libs/errno.h"
@@ -1325,6 +1327,108 @@ static void PatchIndirectDrawOffsets(CommandProcessor& cp, IndirectDrawRegisters
 	write(registers.index_offset, first_index);
 }
 
+// UE renders GPU-driven: compute shaders write the indexed draw arguments. Reading them on the
+// CPU waited for the GPU every frame (Born of Bread: ~95 ms), so when the arguments are still
+// GPU-written, Vulkan reads them instead. The guest layout matches VkDrawIndexedIndirectCommand;
+// the vertex shader takes the offset SGPRs from gl_BaseVertex/gl_BaseInstance.
+// `setprop debug.capy.gpu_indirect 0` reads the arguments on the CPU again.
+bool CommandProcessor::TryGpuIndirectDraw(uint64_t args_addr, uint32_t draw_count,
+                                          uint32_t stride_in_bytes, IndirectDrawRegisters registers,
+                                          bool indexed, uint64_t index_size) {
+	static Common::DebugFlags::CachedValue gpu_indirect("debug.capy.gpu_indirect", 1);
+	auto& graphics = m_renderer.GetGraphics();
+	const auto reject = [&](uint64_t reason) {
+		Common::DebugFlags::NoteOnce("CapyPS5-Indirect", 0x494e4400ull + reason,
+		                             "GPU indirect draw rejected: reason %llu indexed=%d count=%u "
+		                             "vo=0x%x io=0x%x xo=0x%x prim=%u",
+		                             static_cast<unsigned long long>(reason), indexed ? 1 : 0,
+		                             draw_count, registers.vertex_offset, registers.instance_offset,
+		                             registers.index_offset,
+		                             static_cast<uint32_t>(CurrentBuffer().GetUserConfig().GetPrimType()));
+		return false;
+	};
+	if (gpu_indirect.Get() == 0) {
+		return false;
+	}
+	if (!ShaderRecompiler::g_host_features.draw_parameters) {
+		return reject(10);
+	}
+	if (!graphics.draw_indirect_first_instance_enabled) {
+		return reject(11);
+	}
+	if (draw_count == 0 || args_addr % 4 != 0) {
+		return reject(12);
+	}
+	if (indexed && ((index_size != 2 && index_size != 4) || m_index_buffer_size == 0)) {
+		return reject(13);
+	}
+	if (registers.index_offset != Pm4::SH_NOP) {
+		return reject(14);
+	}
+	const uint64_t span = static_cast<uint64_t>(draw_count - 1u) * stride_in_bytes +
+	                      (indexed ? sizeof(DrawIndexedIndirectArgs) : sizeof(DrawIndirectArgs));
+	// Arguments the CPU can read without waiting keep the CPU path.
+	if (!m_renderer.GetBufferCache().IsRegionGpuModified(args_addr, span)) {
+		return reject(2);
+	}
+	switch (CurrentBuffer().GetUserConfig().GetPrimType()) {
+		// Rect lists draw as 3-vertex patches with the same vertex count.
+		case Prospero::PrimitiveType::kRectList:
+		case Prospero::PrimitiveType::kPointList:
+		case Prospero::PrimitiveType::kLineList:
+		case Prospero::PrimitiveType::kLineStrip:
+		case Prospero::PrimitiveType::kTriList:
+		case Prospero::PrimitiveType::kTriStrip: break;
+		default: return reject(3);
+	}
+	// The offsets must land in the vertex stage's user SGPRs, which start at s8.
+	const auto user_sgpr = [](uint32_t location) {
+		if (location == Pm4::SH_NOP) {
+			return ShaderVertexInputInfo::IndirectNoSgpr;
+		}
+		return location >= Pm4::SPI_SHADER_USER_DATA_GS_0 && location <= Pm4::SPI_SHADER_USER_DATA_GS_31
+		           ? 8u + (location - Pm4::SPI_SHADER_USER_DATA_GS_0)
+		           : UINT32_MAX;
+	};
+	const auto vertex_sgpr   = user_sgpr(registers.vertex_offset);
+	const auto instance_sgpr = user_sgpr(registers.instance_offset);
+	if (vertex_sgpr == UINT32_MAX || instance_sgpr == UINT32_MAX) {
+		return reject(4);
+	}
+	auto& buffer = CurrentBuffer();
+	if (VertexProgramUsesMesh(buffer.GetShaders().GetVs(), buffer.GetRegisters(),
+	                          graphics.mesh_shader_enabled)) {
+		return reject(5);
+	}
+	m_num_instances = 1;
+	if (!indexed) {
+		DrawAutoArgs args {};
+		args.vertex_count           = 1;
+		args.instance_count         = 1;
+		args.offset_source          = DrawOffsetSource::IndirectArgs;
+		args.indirect_args          = args_addr;
+		args.indirect_count         = draw_count;
+		args.indirect_stride        = stride_in_bytes;
+		args.indirect_vertex_sgpr   = vertex_sgpr;
+		args.indirect_instance_sgpr = instance_sgpr;
+		DrawIndexAuto(args);
+		return true;
+	}
+	DrawIndexArgs args {};
+	args.index_count            = m_index_buffer_size;
+	args.index_addr             = reinterpret_cast<const void*>(m_index_base_addr);
+	args.instance_count         = 1;
+	args.offset_source          = DrawOffsetSource::IndirectArgs;
+	args.indirect_args          = args_addr;
+	args.indirect_count         = draw_count;
+	args.indirect_stride        = stride_in_bytes;
+	args.indirect_vertex_sgpr   = vertex_sgpr;
+	args.indirect_instance_sgpr = instance_sgpr;
+	m_num_instances             = 1;
+	DrawIndex(args);
+	return true;
+}
+
 void CommandProcessor::DrawIndirect(uint32_t data_offset, IndirectDrawRegisters registers,
                                     uint32_t draw_initiator, bool indexed) {
 	const auto args_size = indexed ? sizeof(DrawIndexedIndirectArgs) : sizeof(DrawIndirectArgs);
@@ -1369,6 +1473,10 @@ void CommandProcessor::DrawIndirectMulti(uint32_t data_offset, uint32_t max_coun
 		}
 	}
 
+	if (TryGpuIndirectDraw(m_draw_indirect_args_base_addr + data_offset, draw_count,
+	                       stride_in_bytes, registers, indexed, index_size)) {
+		return;
+	}
 	for (uint32_t i = 0; i < draw_count; i++) {
 		const auto args_addr = m_draw_indirect_args_base_addr + data_offset +
 		                       static_cast<uint64_t>(i) * stride_in_bytes;

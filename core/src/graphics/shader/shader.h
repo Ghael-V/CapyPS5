@@ -146,6 +146,12 @@ struct ShaderVertexInputInfo {
 	ShaderTessellationInputInfo tess;
 	bool                    fetch_external      = false;
 	bool                    fetch_embedded      = false;
+	// GPU-side indirect draws: these user SGPRs take gl_BaseVertex/gl_BaseInstance instead of
+	// values patched from CPU-read arguments, and native fetches see indices without them.
+	// UINT32_MAX: not a GPU indirect draw; IndirectNoSgpr: one without that offset register.
+	static constexpr uint32_t IndirectNoSgpr = UINT32_MAX - 1u;
+	uint32_t                indirect_vertex_sgpr   = UINT32_MAX;
+	uint32_t                indirect_instance_sgpr = UINT32_MAX;
 };
 
 struct ShaderComputeInputInfo: ShaderWorkgroupInputInfo {

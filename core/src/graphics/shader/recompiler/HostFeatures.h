@@ -10,6 +10,8 @@ struct HostFeatures {
 	bool output_layer = true;
 	bool output_viewport_index = true;
 	bool buffer_int64_atomics = true;
+	// gl_BaseVertex/gl_BaseInstance, needed for GPU-side indirect draws.
+	bool draw_parameters = false;
 };
 
 inline HostFeatures g_host_features;

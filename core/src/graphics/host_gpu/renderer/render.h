@@ -65,6 +65,13 @@ struct DrawIndexArgs {
 	uint32_t         first_instance             = 0;
 	DrawOffsetSource offset_source              = DrawOffsetSource::DrawState;
 	uint32_t         render_target_slice_offset = 0;
+	// GPU-side indirect draw: the arguments stay in guest memory (written by the GPU) and
+	// Vulkan reads them; index_count then covers the whole index buffer.
+	uint64_t         indirect_args              = 0;
+	uint32_t         indirect_count             = 0;
+	uint32_t         indirect_stride            = 0;
+	uint32_t         indirect_vertex_sgpr       = UINT32_MAX;
+	uint32_t         indirect_instance_sgpr     = UINT32_MAX;
 };
 
 struct DrawAutoArgs {
@@ -74,6 +81,12 @@ struct DrawAutoArgs {
 	uint32_t         first_instance             = 0;
 	DrawOffsetSource offset_source              = DrawOffsetSource::DrawState;
 	uint32_t         render_target_slice_offset = 0;
+	// GPU-side indirect draw, as in DrawIndexArgs; vertex_count is then a placeholder.
+	uint64_t         indirect_args              = 0;
+	uint32_t         indirect_count             = 0;
+	uint32_t         indirect_stride            = 0;
+	uint32_t         indirect_vertex_sgpr       = UINT32_MAX;
+	uint32_t         indirect_instance_sgpr     = UINT32_MAX;
 };
 
 struct SubmitInfo {

@@ -526,6 +526,8 @@ struct DrawCallInfo {
 	uint32_t             index_count    = 0;
 	uint32_t             instance_count = 0;
 	uint32_t             first_instance = 0;
+	uint32_t             indirect_vertex_sgpr   = UINT32_MAX;
+	uint32_t             indirect_instance_sgpr = UINT32_MAX;
 
 	[[nodiscard]] bool IsIndexed() const { return debug_op == CommandBufferDebugOp::DrawIndex; }
 	[[nodiscard]] const char* Name() const { return IsIndexed() ? "DrawIndex" : "DrawIndexAuto"; }
@@ -785,6 +787,10 @@ struct DrawEmitInfo {
 	int32_t  vertex_offset = 0;
 	uint32_t first_vertex  = 0;
 	uint32_t first_instance = 0;
+	// GPU-side indirect draw arguments in guest memory (DrawIndexArgs::indirect_args).
+	uint64_t indirect_args   = 0;
+	uint32_t indirect_count  = 0;
+	uint32_t indirect_stride = 0;
 };
 
 struct DrawIndexBufferSource {
@@ -1093,7 +1099,8 @@ static void RefreshShaders(CommandBuffer& buffer, const DrawCallInfo& draw,
 	}
 	state.programs = pipeline_cache.GetGraphicsPrograms(
 	    vertex_shader_info, pixel_shader_info, shader_regs, ctx, buffer.GetUserConfig(),
-	    target_export_mapping, state.ps_active, state.vertex_info, state.ps_input_info);
+	    target_export_mapping, state.ps_active, state.vertex_info, state.ps_input_info,
+	    draw.indirect_vertex_sgpr, draw.indirect_instance_sgpr);
 }
 
 bool RenderExecutor::PrepareDrawRenderState(CommandBuffer& buffer, const DrawCallInfo& draw,
@@ -1234,7 +1241,21 @@ static void LogDrawStateIfNeeded(const CommandBuffer& buffer, const DrawCallInfo
 }
 
 static void EmitDrawPrimitives(const HW::UserConfig& ucfg, vk::CommandBuffer vk_buffer,
-                               const DrawCallInfo& draw, const DrawEmitInfo& emit) {
+                               const DrawCallInfo& draw, const DrawEmitInfo& emit,
+                               vk::Buffer indirect_buffer = nullptr,
+                               vk::DeviceSize indirect_offset = 0) {
+	if (indirect_buffer != nullptr) {
+		// One command per draw: a stride above the argument size needs no multiDrawIndirect.
+		for (uint32_t i = 0; i < emit.indirect_count; i++) {
+			const auto offset = indirect_offset + static_cast<vk::DeviceSize>(i) * emit.indirect_stride;
+			if (draw.IsIndexed()) {
+				vk_buffer.drawIndexedIndirect(indirect_buffer, offset, 1, 0);
+			} else {
+				vk_buffer.drawIndirect(indirect_buffer, offset, 1, 0);
+			}
+		}
+		return;
+	}
 	switch (ucfg.GetPrimType()) {
 		case Prospero::PrimitiveType::kPointList:
 		case Prospero::PrimitiveType::kLineList:
@@ -1577,6 +1598,18 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 		vertex_bindings = AcquireVertexBuffers(buffer, state.vertex_info[0]);
 		index_binding   = PrepareIndexBuffer(buffer, index_source);
 	}
+	vk::Buffer     indirect_buffer = nullptr;
+	vk::DeviceSize indirect_offset = 0;
+	if (emit.indirect_args != 0) {
+		EXIT_IF(mesh_active || emit.indirect_count == 0);
+		const uint64_t span = static_cast<uint64_t>(emit.indirect_count - 1u) * emit.indirect_stride +
+		                      (draw.IsIndexed() ? 5u : 4u) * sizeof(uint32_t);
+		// Compute writes reach indirect reads through the barrier that follows every dispatch.
+		auto [args_buffer, args_offset] =
+		    buffer.GetContext().GetBufferCache().ObtainBuffer(emit.indirect_args, span, false);
+		indirect_buffer = args_buffer->Handle();
+		indirect_offset = args_offset;
+	}
 	if (draw.IsIndexed()) {
 		LogDrawPhase(draw.Name(), "CreatePipeline");
 	}
@@ -1899,7 +1932,7 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 	} else if (mesh_active) {
 		vk_buffer.drawMeshTasksEXT(mesh_groups, draw.instance_count, 1);
 	} else {
-		EmitDrawPrimitives(ucfg, vk_buffer, draw, emit);
+		EmitDrawPrimitives(ucfg, vk_buffer, draw, emit, indirect_buffer, indirect_offset);
 	}
 	if (clear_depth_probe && clear_depth_pre.Get() == 0) {
 		probe_clear_depth();
@@ -2178,7 +2211,8 @@ void RenderExecutor::DrawIndex(uint64_t submit_id, CommandBuffer& buffer,
 	}
 
 	const DrawCallInfo draw {CommandBufferDebugOp::DrawIndex, args.index_count,
-	                        args.instance_count, args.first_instance};
+	                        args.instance_count, args.first_instance,
+	                        args.indirect_vertex_sgpr, args.indirect_instance_sgpr};
 	DrawRenderState state {};
 	if (!PrepareDrawRenderState(buffer, draw, args.render_target_slice_offset, state)) {
 		Common::DebugFlags::FrameTrace("  skipped: no render state");
@@ -2199,6 +2233,9 @@ void RenderExecutor::DrawIndex(uint64_t submit_id, CommandBuffer& buffer,
 	const bool native_indirect = indirect && !state.vertex_info[0].fetch_embedded;
 	emit.vertex_offset  = native_indirect ? 0 : vertex_offset + args.base_vertex;
 	emit.first_instance = native_indirect ? 0 : instance_offset;
+	emit.indirect_args   = args.indirect_args;
+	emit.indirect_count  = args.indirect_count;
+	emit.indirect_stride = args.indirect_stride;
 
 	ExecutePreparedDraw(submit_id, buffer, draw, state, topology, emit, index_source,
 	                    primitive_restart);
@@ -2253,7 +2290,8 @@ void RenderExecutor::DrawAuto(uint64_t submit_id, CommandBuffer& buffer, const D
 	hw_check(buffer);
 
 	const DrawCallInfo draw {CommandBufferDebugOp::DrawIndexAuto,
-	                         args.vertex_count, args.instance_count, args.first_instance};
+	                         args.vertex_count, args.instance_count, args.first_instance,
+	                         args.indirect_vertex_sgpr, args.indirect_instance_sgpr};
 
 	vk::PrimitiveTopology topology = vk::PrimitiveTopology::ePointList;
 	if (!GetDrawTopology(ucfg, topology)) {
@@ -2291,6 +2329,9 @@ void RenderExecutor::DrawAuto(uint64_t submit_id, CommandBuffer& buffer, const D
 	emit.first_vertex = native_indirect ? 0 :
 	    static_cast<uint32_t>(vertex_offset + static_cast<int32_t>(args.first_vertex));
 	emit.first_instance = native_indirect ? 0 : instance_offset;
+	emit.indirect_args   = args.indirect_args;
+	emit.indirect_count  = args.indirect_count;
+	emit.indirect_stride = args.indirect_stride;
 
 	DrawIndexBufferSource index_source {};
 	ExecutePreparedDraw(submit_id, buffer, draw, state, topology, emit, index_source, false);
