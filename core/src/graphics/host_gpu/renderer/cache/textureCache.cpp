@@ -1545,6 +1545,14 @@ bool TextureCache::ClearImageFromBuffer(CommandBuffer& command, uint64_t address
 		                               clear.color.float32[1], clear.color.float32[2],
 		                               clear.color.float32[3]);
 	} else {
+		// D16 buffer fills must clear the Vulkan image as well as its guest backing.
+		// debug.capy.d16_clear=0 restores the fallback fill for diagnosis.
+		static Common::DebugFlags::CachedValue d16_clear("debug.capy.d16_clear", 1);
+		if (aspect == vk::ImageAspectFlagBits::eDepth &&
+		    DepthAspectTransferFormat(image.info.pixel_format) == vk::Format::eD16Unorm &&
+		    d16_clear.Get() == 0) {
+			return false;
+		}
 		uint8_t stencil_clear = 0;
 		if ((aspect == vk::ImageAspectFlagBits::eDepth &&
 		     !DecodePackedDepthClear(image.info.pixel_format, packed_clear, clear.depthStencil.depth)) ||

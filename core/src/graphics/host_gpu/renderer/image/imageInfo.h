@@ -509,6 +509,15 @@ inline constexpr std::array<VideoOutFormatPolicy, 7> VIDEO_OUT_FORMAT_POLICIES {
 }
 
 [[nodiscard]] inline bool DecodePackedDepthClear(vk::Format format, uint32_t packed, float& clear) {
+	if (DepthAspectTransferFormat(format) == vk::Format::eD16Unorm) {
+		// A DWORD fill contains two depth texels. Only equal halfwords are a uniform clear.
+		const uint32_t depth = packed & 0xffffu;
+		if ((packed >> 16u) != depth) {
+			return false;
+		}
+		clear = static_cast<float>(depth) / 65535.0f;
+		return true;
+	}
 	if (format != vk::Format::eD32Sfloat && format != vk::Format::eD32SfloatS8Uint) {
 		return false;
 	}
