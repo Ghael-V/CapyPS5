@@ -126,6 +126,8 @@ struct ShaderTessellationInputInfo {
 	uint32_t output_control_points = 0;
 	uint32_t ls_stride             = 0;
 	uint32_t hs_stride             = 0;
+	uint32_t patch_base            = 0;
+	uint32_t patch_size            = 0;
 	uint32_t domain                = 0;
 	uint32_t partitioning          = 0;
 	uint32_t output_topology       = 0;
