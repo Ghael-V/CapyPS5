@@ -42,6 +42,7 @@ import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import androidx.compose.ui.res.stringResource
 
 /** Launcher: game library and settings. Each game runs in GameActivity, in its own process. */
 class MainActivity : CapyActivity() {
@@ -145,7 +146,7 @@ class MainActivity : CapyActivity() {
         val dir = File(filesDir, "_PipelineCache")
         val files = dir.listFiles()?.filter { titleId == null || it.name == "$titleId.bin" } ?: emptyList()
         val removed = files.count { it.delete() }
-        return if (removed == 0) "No había caché de shaders" else "Caché de shaders borrada"
+        return getString(if (removed == 0) R.string.shader_cache_empty else R.string.shader_cache_cleared)
     }
 
     /** Games of every library folder, by name; a game found in two folders shows once. */
@@ -191,9 +192,10 @@ class MainActivity : CapyActivity() {
 private fun CrashDialog(report: String, onSaveLog: () -> String?, onClose: () -> Unit) {
     var savedPath by remember { mutableStateOf<String?>(null) }
     var focused by remember { mutableIntStateOf(0) }
+    val failedText = stringResource(R.string.log_save_failed)
     val actions = listOf(
-        "Guardar log" to { savedPath = onSaveLog() ?: "No se pudo guardar el log" },
-        "Cerrar" to onClose,
+        stringResource(R.string.save_log) to { savedPath = onSaveLog() ?: failedText },
+        stringResource(R.string.close) to onClose,
     )
     OnNavKey { key ->
         when (key) {
@@ -212,7 +214,7 @@ private fun CrashDialog(report: String, onSaveLog: () -> String?, onClose: () ->
                 .padding(22.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            Text("El juego se cerró por un error", style = MaterialTheme.typography.titleLarge, color = Capy.Bad)
+            Text(stringResource(R.string.crash_title), style = MaterialTheme.typography.titleLarge, color = Capy.Bad)
             Text(
                 report.trim(),
                 style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
@@ -220,7 +222,7 @@ private fun CrashDialog(report: String, onSaveLog: () -> String?, onClose: () ->
                 modifier = Modifier.heightIn(max = 220.dp).verticalScroll(rememberScrollState()),
             )
             savedPath?.let {
-                Text("Log guardado en:\n$it", style = MaterialTheme.typography.bodySmall, color = Capy.TextPrimary)
+                Text(stringResource(R.string.log_saved_in_multiline, it), style = MaterialTheme.typography.bodySmall, color = Capy.TextPrimary)
             }
             Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                 actions.forEachIndexed { i, (label, action) ->

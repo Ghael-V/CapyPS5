@@ -41,7 +41,9 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.platform.LocalContext
 import org.capyps5.emulator.ButtonLayout
+import androidx.compose.ui.res.stringResource
 import org.capyps5.emulator.GpuDrivers
+import org.capyps5.emulator.R
 import org.capyps5.emulator.CoreOption
 import org.capyps5.emulator.OverlayMode
 import org.capyps5.emulator.Settings
@@ -86,34 +88,35 @@ fun SettingsScreen(
         val values = option.choices.map { it.first }
         val current = settings.coreOption(option)
         return SettingItem(
-            option.title, option.description, option.label(current),
+            option.title(context), option.description(context), option.label(context, current),
             onStep = { settings.updateCoreOption(option, cycle(values, current, it)) },
         )
     }
 
     val categories = remember(optionsVersion, settings.libraryPaths, message, driverMessage) {
         listOf(
-            SettingsCategory("Gráficos", Icons.Outlined.Image) {
+            SettingsCategory(context.getString(R.string.category_graphics), Icons.Outlined.Image) {
                 val drivers = GpuDrivers.list(context)
                 val ids = listOf("") + drivers.map { it.id }
                 val current = settings.gpuDriver().takeIf { id -> id in ids }.orEmpty()
                 listOf(
                     coreItem(CoreOption.ResolutionScale),
                     SettingItem(
-                        "Driver de GPU",
-                        "Turnip (Adreno) o PanVK (Mali) importados; Sistema usa el del fabricante",
-                        drivers.firstOrNull { it.id == current }?.label ?: "Sistema",
+                        context.getString(R.string.gpu_driver),
+                        context.getString(R.string.gpu_driver_desc),
+                        drivers.firstOrNull { it.id == current }?.label ?: context.getString(R.string.gpu_driver_system),
                         onStep = { settings.updateGpuDriver(cycle(ids, current, it)) },
                     ),
                     SettingItem(
-                        "Importar driver (.zip)",
-                        "Paquetes de AdrenoTools: meta.json + librería .so",
+                        context.getString(R.string.gpu_driver_import),
+                        context.getString(R.string.gpu_driver_import_desc),
                         onConfirm = onImportDriver,
                     ),
                 ) + listOfNotNull(
                     drivers.firstOrNull { it.id == current }?.let { driver ->
                         SettingItem(
-                            "Borrar ${driver.label}", "Los juegos volverán al driver del sistema", danger = true,
+                            context.getString(R.string.gpu_driver_delete, driver.label),
+                            context.getString(R.string.gpu_driver_delete_desc), danger = true,
                             onConfirm = {
                                 GpuDrivers.delete(context, driver.id)
                                 settings.updateGpuDriver("")
@@ -123,76 +126,84 @@ fun SettingsScreen(
                     driverMessage?.let { SettingItem(it) },
                 )
             },
-            SettingsCategory("Rendimiento", Icons.Outlined.Speed) {
+            SettingsCategory(context.getString(R.string.category_performance), Icons.Outlined.Speed) {
                 listOf(
                     coreItem(CoreOption.AsyncShaders),
                     SettingItem(
-                        "Monitor de rendimiento", "FPS, CPU, GPU, RAM y temperaturas en pantalla",
-                        settings.overlayMode.label,
+                        context.getString(R.string.perf_overlay), context.getString(R.string.perf_overlay_desc),
+                        settings.overlayMode.label(context),
                         onStep = { settings.updateOverlayMode(cycle(OverlayMode.entries, settings.overlayMode, it)) },
                     ),
                 )
             },
-            SettingsCategory("Controles", Icons.Outlined.SportsEsports) {
+            SettingsCategory(context.getString(R.string.category_controls), Icons.Outlined.SportsEsports) {
                 listOf(
                     SettingItem(
-                        "Controles táctiles", "En automático se ocultan si hay un mando físico",
-                        settings.touchControls.label,
+                        context.getString(R.string.touch_controls), context.getString(R.string.touch_controls_desc),
+                        settings.touchControls.label(context),
                         onStep = {
                             settings.updateTouchControls(cycle(TouchControlsMode.entries, settings.touchControls, it))
                         },
                     ),
                     SettingItem(
-                        "Touchpad en pantalla",
-                        "Automático: con los controles táctiles · Siempre: también con un mando físico",
-                        settings.touchpadOverlay.label,
+                        context.getString(R.string.touchpad_overlay),
+                        context.getString(R.string.touchpad_overlay_desc),
+                        settings.touchpadOverlay.label(context),
                         onStep = {
                             settings.updateTouchpadOverlay(cycle(TouchControlsMode.entries, settings.touchpadOverlay, it))
                         },
                     ),
                     SettingItem(
-                        "Distribución de botones",
-                        "Nintendo intercambia A↔B y X↔Y en los juegos (mandos como el de la Odin)",
-                        settings.buttonLayout.label,
+                        context.getString(R.string.button_layout),
+                        context.getString(R.string.button_layout_desc),
+                        settings.buttonLayout.label(context),
                         onStep = { settings.updateButtonLayout(cycle(ButtonLayout.entries, settings.buttonLayout, it)) },
                     ),
                     SettingItem(
-                        "Opacidad de los controles", null, "%.0f %%".format(settings.controlsOpacity * 100),
+                        context.getString(R.string.controls_opacity), null, "%.0f %%".format(settings.controlsOpacity * 100),
                         onStep = { settings.updateControlsOpacity((settings.controlsOpacity + it * 0.1f).coerceIn(0.1f, 1f)) },
                     ),
                 )
             },
-            SettingsCategory("Carpetas de juegos", Icons.Outlined.Folder) {
+            SettingsCategory(context.getString(R.string.category_folders), Icons.Outlined.Folder) {
                 settings.libraryPaths.map { path ->
                     SettingItem(
                         path,
-                        if (settings.libraryPaths.size > 1) "Ⓐ quitar esta carpeta" else "Carpeta principal",
+                        context.getString(
+                            if (settings.libraryPaths.size > 1) R.string.folder_remove else R.string.folder_main,
+                        ),
                         onConfirm = if (settings.libraryPaths.size > 1) ({ settings.removeLibraryPath(path) }) else null,
                     )
-                } + SettingItem("Añadir carpeta", "Se buscan juegos en todas las carpetas", onConfirm = onAddFolder)
+                } + SettingItem(
+                    context.getString(R.string.folder_add), context.getString(R.string.folder_add_desc),
+                    onConfirm = onAddFolder,
+                )
             },
-            SettingsCategory("Sistema", Icons.Outlined.Settings) {
+            SettingsCategory(context.getString(R.string.category_system), Icons.Outlined.Settings) {
                 listOf(
                     SettingItem(
-                        "Borrar caché de shaders", "Se vuelven a compilar al jugar", danger = true,
+                        context.getString(R.string.clear_shader_cache), context.getString(R.string.clear_shader_cache_desc),
+                        danger = true,
                         onConfirm = { message = onClearShaderCache() },
                     ),
                     SettingItem(
-                        "Guardar log", "En la carpeta logs de tu carpeta principal",
-                        onConfirm = { message = onSaveLog()?.let { "Log guardado en $it" } ?: "No se pudo guardar el log" },
+                        context.getString(R.string.save_log), context.getString(R.string.save_log_desc),
+                        onConfirm = {
+                            message = onSaveLog()?.let { context.getString(R.string.log_saved_in, it) }
+                                ?: context.getString(R.string.log_save_failed)
+                        },
                     ),
                 ) + listOfNotNull(message?.let { SettingItem(it) })
             },
-            SettingsCategory("Acerca de", Icons.Outlined.Info) {
+            SettingsCategory(context.getString(R.string.category_about), Icons.Outlined.Info) {
                 listOf(
                     SettingItem("CapyPS5", versionText),
                     SettingItem(
-                        "Licencia",
-                        "Software libre bajo GPL v2. Incluye Kyty (GPL-2.0), FEX (MIT), SDL (zlib), FFmpeg " +
-                            "(LGPL-2.1), libadrenotools (BSD-2) y otros componentes de código abierto. No incluye software ni claves de Sony.",
+                        context.getString(R.string.license),
+                        context.getString(R.string.license_desc),
                     ),
                     SettingItem(
-                        "Dispositivo",
+                        context.getString(R.string.device),
                         "${android.os.Build.MANUFACTURER} ${android.os.Build.MODEL} · ${android.os.Build.SOC_MODEL} · " +
                             "Android ${android.os.Build.VERSION.RELEASE}",
                     ),
@@ -236,7 +247,7 @@ fun SettingsScreen(
             Modifier.width(260.dp).fillMaxHeight().background(Capy.Surface).padding(vertical = 22.dp),
             verticalArrangement = Arrangement.spacedBy(2.dp),
         ) {
-            Text("Ajustes", style = MaterialTheme.typography.headlineSmall, modifier = Modifier.padding(start = 24.dp, bottom = 14.dp))
+            Text(stringResource(R.string.settings), style = MaterialTheme.typography.headlineSmall, modifier = Modifier.padding(start = 24.dp, bottom = 14.dp))
             categories.forEachIndexed { i, entry ->
                 val selected = i == category
                 Row(
@@ -258,7 +269,7 @@ fun SettingsScreen(
             }
             Spacer(Modifier.weight(1f))
             Text(
-                "Ⓑ Volver",
+                stringResource(R.string.hint_back_b),
                 style = MaterialTheme.typography.labelLarge,
                 color = Capy.TextSecondary,
                 modifier = Modifier.clickable(onClick = onClose).padding(horizontal = 24.dp, vertical = 8.dp),

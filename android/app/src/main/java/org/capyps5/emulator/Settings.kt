@@ -2,6 +2,7 @@ package org.capyps5.emulator
 
 import android.content.Context
 import android.os.Environment
+import androidx.annotation.StringRes
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
@@ -9,47 +10,63 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import java.io.File
 
-enum class OverlayMode(val label: String) { Off("Desactivado"), Compact("Compacto"), Full("Completo") }
+enum class OverlayMode(@StringRes val labelRes: Int) {
+    Off(R.string.overlay_off), Compact(R.string.overlay_compact), Full(R.string.overlay_full);
 
-enum class TouchControlsMode(val label: String) { Auto("Automático"), Always("Siempre"), Never("Nunca") }
+    fun label(context: Context) = context.getString(labelRes)
+}
+
+enum class TouchControlsMode(@StringRes val labelRes: Int) {
+    Auto(R.string.mode_auto), Always(R.string.mode_always), Never(R.string.mode_never);
+
+    fun label(context: Context) = context.getString(labelRes)
+}
 
 /** Face buttons of a physical pad. Nintendo-labelled pads (AYN Odin) report A/B and X/Y by label. */
-enum class ButtonLayout(val label: String) { Standard("Estándar (Xbox)"), Nintendo("Nintendo (PS5)") }
+enum class ButtonLayout(@StringRes val labelRes: Int) {
+    Standard(R.string.layout_standard), Nintendo(R.string.layout_nintendo);
+
+    fun label(context: Context) = context.getString(labelRes)
+}
 
 /**
  * Emulator core option, passed to the core as its debug.capy.* property before a game starts.
  * Each has a global value and an optional per-game override.
  */
 enum class CoreOption(
-    val title: String,
-    val description: String,
+    @StringRes val titleRes: Int,
+    @StringRes val descriptionRes: Int,
     val property: String,
-    val choices: List<Pair<Long, String>>,
+    val choices: List<Pair<Long, Int>>,
     val default: Long,
 ) {
     ResolutionScale(
-        "Resolución interna",
-        "Por eje: un juego 4K al 50 % se dibuja a 1080p (un cuarto del trabajo). " +
-            "Menos resolución alivia la GPU; algunos juegos no la admiten",
+        R.string.option_resolution,
+        R.string.option_resolution_desc,
         "debug.capy.res_scale",
         listOf(
-            1000L to "Nativa",
-            750L to "75 % (4K → 1620p)",
-            500L to "50 % (4K → 1080p)",
-            250L to "25 % (4K → 540p)",
+            1000L to R.string.resolution_native,
+            750L to R.string.resolution_75,
+            500L to R.string.resolution_50,
+            250L to R.string.resolution_25,
         ),
         1000L,
     ),
     AsyncShaders(
-        "Compilar shaders en segundo plano",
-        "Evita tirones; un objeto puede tardar un instante en aparecer",
+        R.string.option_async_shaders,
+        R.string.option_async_shaders_desc,
         "debug.capy.async_pipelines",
-        listOf(1L to "Activado", 0L to "Desactivado"),
+        listOf(1L to R.string.enabled, 0L to R.string.disabled),
         1L,
     ),
     ;
 
-    fun label(value: Long) = choices.firstOrNull { it.first == value }?.second ?: value.toString()
+    fun title(context: Context) = context.getString(titleRes)
+
+    fun description(context: Context) = context.getString(descriptionRes)
+
+    fun label(context: Context, value: Long) =
+        choices.firstOrNull { it.first == value }?.second?.let(context::getString) ?: value.toString()
 }
 
 /** User preferences backed by SharedPreferences and exposed as Compose state. */

@@ -1,0 +1,126 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Español. El inglés (por defecto) está en values/strings.xml; mantener ambos al día. -->
+<resources>
+    <!-- Común -->
+    <string name="settings">Ajustes</string>
+    <string name="play">Jugar</string>
+    <string name="resume">Reanudar</string>
+    <string name="exit">Salir</string>
+    <string name="close">Cerrar</string>
+    <string name="close_b">Cerrar  Ⓑ</string>
+    <string name="enabled">Activado</string>
+    <string name="disabled">Desactivado</string>
+    <string name="global_value">Global (%1$s)</string>
+
+    <!-- Ayudas del mando -->
+    <string name="hint_back">Volver</string>
+    <string name="hint_back_b">Ⓑ Volver</string>
+    <string name="hint_change">Cambiar</string>
+    <string name="hint_choose">Elegir</string>
+    <string name="hint_accept">Aceptar</string>
+    <string name="hint_back_to_game">Volver al juego</string>
+    <string name="hint_toggle">Activar/apagar</string>
+    <string name="hint_enable_all">Activar todo</string>
+
+    <!-- Inicio -->
+    <string name="tab_games">Juegos</string>
+    <string name="tab_library">Biblioteca</string>
+    <string name="tabs">Pestañas</string>
+    <string name="game_options">Opciones del juego</string>
+    <string name="game_options_of">Opciones de este juego · %1$s</string>
+    <string name="library_empty">Tu biblioteca está vacía</string>
+    <string name="library_empty_desc">Copia cada juego como carpeta (con eboot.bin y sce_sys/) dentro de\n%1$s\no añade otra carpeta donde ya los tengas.</string>
+    <string name="open_executable">Abrir un ejecutable</string>
+
+    <!-- Categorías de ajustes -->
+    <string name="category_graphics">Gráficos</string>
+    <string name="category_performance">Rendimiento</string>
+    <string name="category_controls">Controles</string>
+    <string name="category_folders">Carpetas de juegos</string>
+    <string name="category_system">Sistema</string>
+    <string name="category_about">Acerca de</string>
+
+    <!-- Opciones del núcleo -->
+    <string name="option_resolution">Resolución interna</string>
+    <string name="option_resolution_desc">Por eje: un juego 4K al 50 % se dibuja a 1080p (un cuarto del trabajo). Menos resolución alivia la GPU; algunos juegos no la admiten</string>
+    <string name="resolution_native">Nativa</string>
+    <string name="resolution_75">75 % (4K → 1620p)</string>
+    <string name="resolution_50">50 % (4K → 1080p)</string>
+    <string name="resolution_25">25 % (4K → 540p)</string>
+    <string name="option_async_shaders">Compilar shaders en segundo plano</string>
+    <string name="option_async_shaders_desc">Evita tirones; un objeto puede tardar un instante en aparecer</string>
+
+    <!-- Driver de GPU -->
+    <string name="gpu_driver">Driver de GPU</string>
+    <string name="gpu_driver_desc">Turnip (Adreno) o PanVK (Mali) importados; Sistema usa el del fabricante</string>
+    <string name="gpu_driver_game_desc">Driver Vulkan para este juego</string>
+    <string name="gpu_driver_system">Sistema</string>
+    <string name="gpu_driver_import">Importar driver (.zip)</string>
+    <string name="gpu_driver_import_desc">Paquetes de AdrenoTools: meta.json + librería .so</string>
+    <string name="gpu_driver_delete">Borrar %1$s</string>
+    <string name="gpu_driver_delete_desc">Los juegos volverán al driver del sistema</string>
+    <string name="gpu_driver_installed">Instalado %1$s</string>
+    <string name="gpu_driver_import_failed">No se pudo importar: %1$s</string>
+    <string name="driver_error_open">No se pudo abrir el archivo</string>
+    <string name="driver_error_no_library">El zip no contiene un driver (.so) o meta.json no indica cuál es</string>
+    <string name="driver_error_missing">Falta %1$s en el zip</string>
+    <string name="driver_error_unreadable">Driver instalado pero ilegible</string>
+
+    <!-- Rendimiento -->
+    <string name="perf_overlay">Monitor de rendimiento</string>
+    <string name="perf_overlay_desc">FPS, CPU, GPU, RAM y temperaturas en pantalla</string>
+    <string name="overlay_off">Desactivado</string>
+    <string name="overlay_compact">Compacto</string>
+    <string name="overlay_full">Completo</string>
+
+    <!-- Controles -->
+    <string name="touch_controls">Controles táctiles</string>
+    <string name="touch_controls_desc">En automático se ocultan si hay un mando físico</string>
+    <string name="touchpad_overlay">Touchpad en pantalla</string>
+    <string name="touchpad_overlay_desc">Automático: con los controles táctiles · Siempre: también con un mando físico</string>
+    <string name="mode_auto">Automático</string>
+    <string name="mode_always">Siempre</string>
+    <string name="mode_never">Nunca</string>
+    <string name="button_layout">Distribución de botones</string>
+    <string name="button_layout_desc">Nintendo intercambia A↔B y X↔Y en los juegos (mandos como el de la Odin)</string>
+    <string name="layout_standard">Estándar (Xbox)</string>
+    <string name="layout_nintendo">Nintendo (PS5)</string>
+    <string name="controls_opacity">Opacidad de los controles</string>
+
+    <!-- Carpetas -->
+    <string name="folder_add">Añadir carpeta</string>
+    <string name="folder_add_a">Añadir carpeta  Ⓐ</string>
+    <string name="folder_add_desc">Se buscan juegos en todas las carpetas</string>
+    <string name="folder_remove">Ⓐ quitar esta carpeta</string>
+    <string name="folder_main">Carpeta principal</string>
+
+    <!-- Sistema -->
+    <string name="clear_shader_cache">Borrar caché de shaders</string>
+    <string name="clear_game_shader_cache">Borrar caché de shaders de este juego</string>
+    <string name="clear_shader_cache_desc">Se vuelven a compilar al jugar</string>
+    <string name="shader_cache_empty">No había caché de shaders</string>
+    <string name="shader_cache_cleared">Caché de shaders borrada</string>
+    <string name="save_log">Guardar log</string>
+    <string name="save_log_desc">En la carpeta logs de tu carpeta principal</string>
+    <string name="log_saved_in">Log guardado en %1$s</string>
+    <string name="log_saved_in_multiline">Log guardado en:\n%1$s</string>
+    <string name="log_save_failed">No se pudo guardar el log</string>
+
+    <!-- Acerca de -->
+    <string name="license">Licencia</string>
+    <string name="license_desc">Software libre bajo GPL v2. Incluye Kyty (GPL-2.0), FEX (MIT), SDL (zlib), FFmpeg (LGPL-2.1), libadrenotools (BSD-2) y otros componentes de código abierto. No incluye software ni claves de Sony.</string>
+    <string name="device">Dispositivo</string>
+
+    <!-- En juego -->
+    <string name="layers">Capas</string>
+    <string name="layers_desc">Pasadas de dibujo del último fotograma, en orden. Apaga una y mira qué desaparece.</string>
+    <string name="layer_pass">Pasada %1$d</string>
+    <string name="layer_draws">%1$d draws</string>
+    <string name="layer_not_drawn">no se dibuja ahora</string>
+    <string name="layer_targets">%1$d destinos</string>
+    <string name="error_start_title">No se pudo arrancar</string>
+    <string name="error_elf_missing">No se encontró el ejecutable:\n%1$s</string>
+    <string name="error_elf_start">No se pudo iniciar el ejecutable. Revisa logcat (CapyPS5-*).</string>
+    <string name="back_to_home_a">Volver al inicio  Ⓐ</string>
+    <string name="crash_title">El juego se cerró por un error</string>
+</resources>

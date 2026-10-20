@@ -35,6 +35,8 @@ import org.capyps5.emulator.ui.NavKey
 import org.capyps5.emulator.ui.OnNavKey
 import org.capyps5.emulator.ui.screens.HintBar
 import org.capyps5.emulator.ui.theme.Capy
+import org.capyps5.emulator.R
+import androidx.compose.ui.res.stringResource
 
 /** One pixel shader seen in recent frames (see core/src/common/passInspector.h). */
 private data class RenderPass(
@@ -123,16 +125,16 @@ fun LayersPanel(onClose: () -> Unit, modifier: Modifier = Modifier) {
         verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Text("Capas", style = MaterialTheme.typography.titleLarge, modifier = Modifier.weight(1f))
+            Text(stringResource(R.string.layers), style = MaterialTheme.typography.titleLarge, modifier = Modifier.weight(1f))
             Text(
-                "Cerrar  Ⓑ",
+                stringResource(R.string.close_b),
                 style = MaterialTheme.typography.labelLarge,
                 color = Capy.TextSecondary,
                 modifier = Modifier.clickable(onClick = onClose).padding(6.dp),
             )
         }
         Text(
-            "Pasadas de dibujo del último fotograma, en orden. Apaga una y mira qué desaparece.",
+            stringResource(R.string.layers_desc),
             style = MaterialTheme.typography.bodySmall,
             color = Capy.TextSecondary,
         )
@@ -148,7 +150,13 @@ fun LayersPanel(onClose: () -> Unit, modifier: Modifier = Modifier) {
                 }
             }
         }
-        HintBar(listOf("Ⓐ" to "Activar/apagar", "Ⓨ" to "Activar todo", "Ⓑ" to "Cerrar"))
+        HintBar(
+            listOf(
+                "Ⓐ" to stringResource(R.string.hint_toggle),
+                "Ⓨ" to stringResource(R.string.hint_enable_all),
+                "Ⓑ" to stringResource(R.string.close),
+            ),
+        )
     }
 }
 
@@ -165,14 +173,18 @@ private fun PassRow(index: Int, pass: RenderPass, focused: Boolean, onClick: () 
     ) {
         Column(Modifier.weight(1f)) {
             Text(
-                "Pasada ${index + 1}" + if (pass.width > 0) "  ·  ${pass.width}×${pass.height}" else "",
+                stringResource(R.string.layer_pass, index + 1) +
+                    if (pass.width > 0) "  ·  ${pass.width}×${pass.height}" else "",
                 style = MaterialTheme.typography.titleSmall,
                 color = if (pass.seen) Capy.TextPrimary else Capy.TextMuted,
             )
+            val drawsText = if (pass.seen) stringResource(R.string.layer_draws, pass.draws)
+            else stringResource(R.string.layer_not_drawn)
+            val targetsText = stringResource(R.string.layer_targets, pass.targets)
             Text(
                 buildString {
-                    append(if (pass.seen) "${pass.draws} draws" else "no se dibuja ahora")
-                    if (pass.targets > 1) append(" · ${pass.targets} destinos")
+                    append(drawsText)
+                    if (pass.targets > 1) append(" · $targetsText")
                     append(" · ps 0x%x".format(pass.shader))
                 },
                 style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),

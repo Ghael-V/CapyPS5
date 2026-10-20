@@ -69,6 +69,8 @@ import org.capyps5.emulator.ui.components.SettingsPanel
 import org.capyps5.emulator.ui.components.TouchpadOverlay
 import org.capyps5.emulator.ui.components.VirtualGamepad
 import org.capyps5.emulator.ui.theme.Capy
+import org.capyps5.emulator.R
+import androidx.compose.ui.res.stringResource
 
 private fun hasPhysicalGamepad(): Boolean = InputDevice.getDeviceIds().any { id ->
     val device = InputDevice.getDevice(id) ?: return@any false
@@ -140,11 +142,11 @@ fun EmulationScreen(
                             if (started) return
                             started = true
                             if (!java.io.File(game.elfPath).exists()) {
-                                loadError = "No se encontrÃ³ el ejecutable:\n${game.elfPath}"
+                                loadError = context.getString(R.string.error_elf_missing, game.elfPath)
                                 return
                             }
                             if (!NativeBridge.nativeStartGame(game.directoryPath, game.elfPath)) {
-                                loadError = "No se pudo iniciar el ejecutable. Revisa logcat (CapyPS5-*)."
+                                loadError = context.getString(R.string.error_elf_start)
                             }
                         }
 
@@ -251,10 +253,10 @@ private fun PauseMenu(
     onExit: () -> Unit,
 ) {
     val entries = listOf(
-        Triple("Reanudar", Icons.Filled.PlayArrow, onResume),
-        Triple("Ajustes", Icons.Outlined.Tune, onSettings),
-        Triple("Capas", Icons.Outlined.Layers, onLayers),
-        Triple("Salir", Icons.AutoMirrored.Outlined.Logout, onExit),
+        Triple(stringResource(R.string.resume), Icons.Filled.PlayArrow, onResume),
+        Triple(stringResource(R.string.settings), Icons.Outlined.Tune, onSettings),
+        Triple(stringResource(R.string.layers), Icons.Outlined.Layers, onLayers),
+        Triple(stringResource(R.string.exit), Icons.AutoMirrored.Outlined.Logout, onExit),
     )
     var focused by remember { mutableIntStateOf(0) }
     OnNavKey { key ->
@@ -314,7 +316,13 @@ private fun PauseMenu(
                     }
                 }
             }
-            HintBar(listOf("◀ ▶" to "Elegir", "Ⓐ" to "Aceptar", "Ⓑ" to "Volver al juego"))
+            HintBar(
+                listOf(
+                    "◀ ▶" to stringResource(R.string.hint_choose),
+                    "Ⓐ" to stringResource(R.string.hint_accept),
+                    "Ⓑ" to stringResource(R.string.hint_back_to_game),
+                ),
+            )
         }
     }
 }
@@ -330,10 +338,10 @@ private fun ErrorCard(message: String, onExit: () -> Unit) {
                 .padding(22.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            Text("No se pudo arrancar", style = MaterialTheme.typography.titleLarge, color = Capy.Bad)
+            Text(stringResource(R.string.error_start_title), style = MaterialTheme.typography.titleLarge, color = Capy.Bad)
             Text(message, style = MaterialTheme.typography.bodyMedium, color = Capy.TextSecondary)
             Text(
-                "Volver al inicio  â’¶",
+                stringResource(R.string.back_to_home_a),
                 style = MaterialTheme.typography.labelLarge,
                 color = Color.White,
                 modifier = Modifier

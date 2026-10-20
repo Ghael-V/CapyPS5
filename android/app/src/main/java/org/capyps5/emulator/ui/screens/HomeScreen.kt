@@ -75,6 +75,7 @@ import org.capyps5.emulator.ui.NavKey
 import org.capyps5.emulator.ui.OnNavKey
 import org.capyps5.emulator.ui.rememberImage
 import org.capyps5.emulator.ui.theme.Capy
+import androidx.compose.ui.res.stringResource
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -117,9 +118,9 @@ fun HomeScreen(
             driverMessage = org.capyps5.emulator.GpuDrivers.import(context, it).fold(
                 onSuccess = { driver ->
                     settings.updateGpuDriver(driver.id)
-                    "Instalado ${driver.label}"
+                    context.getString(R.string.gpu_driver_installed, driver.label)
                 },
-                onFailure = { error -> "No se pudo importar: ${error.message}" },
+                onFailure = { error -> context.getString(R.string.gpu_driver_import_failed, error.message.orEmpty()) },
             )
         }
     }
@@ -194,8 +195,13 @@ fun HomeScreen(
             }
             Spacer(Modifier.height(12.dp))
             HintBar(
-                if (games.isEmpty()) listOf("Start" to "Ajustes")
-                else listOf("Ⓐ" to "Jugar", "Ⓨ" to "Opciones del juego", "Start" to "Ajustes", "L1 / R1" to "Pestañas")
+                if (games.isEmpty()) listOf("Start" to stringResource(R.string.settings))
+                else listOf(
+                    "Ⓐ" to stringResource(R.string.play),
+                    "Ⓨ" to stringResource(R.string.game_options),
+                    "Start" to stringResource(R.string.settings),
+                    "L1 / R1" to stringResource(R.string.tabs),
+                )
             )
         }
 
@@ -257,7 +263,7 @@ private fun TopBar(tab: Int, onTab: (Int) -> Unit, onAdd: () -> Unit, onRefresh:
         }
     }
     Row(verticalAlignment = Alignment.CenterVertically) {
-        listOf("Juegos", "Biblioteca").forEachIndexed { i, label ->
+        listOf(stringResource(R.string.tab_games), stringResource(R.string.tab_library)).forEachIndexed { i, label ->
             Text(
                 label,
                 style = MaterialTheme.typography.titleLarge,
@@ -390,12 +396,12 @@ private fun GameDetails(game: GameItem, onPlay: () -> Unit, onOptions: () -> Uni
             ) {
                 Icon(Icons.Filled.PlayArrow, null, Modifier.size(20.dp), tint = Color.Black)
                 Spacer(Modifier.width(6.dp))
-                Text("Jugar", style = MaterialTheme.typography.titleMedium, color = Color.Black)
+                Text(stringResource(R.string.play), style = MaterialTheme.typography.titleMedium, color = Color.Black)
             }
             Box(
                 Modifier.clip(RoundedCornerShape(50)).background(Color(0x33FFFFFF)).clickable(onClick = onOptions).padding(11.dp),
             ) {
-                Icon(Icons.Filled.MoreHoriz, "Opciones del juego", Modifier.size(20.dp), tint = Capy.TextPrimary)
+                Icon(Icons.Filled.MoreHoriz, stringResource(R.string.game_options), Modifier.size(20.dp), tint = Capy.TextPrimary)
             }
         }
     }
@@ -420,11 +426,11 @@ private fun GameOptionsPanel(
         // null = follow the global driver, "" = system driver.
         val driverChoices: List<String?> = listOf<String?>(null, "") + drivers.map { it.id }
         val driverOverride = settings.gameGpuDriver(game.titleId)?.takeIf { id -> id in driverChoices }
-        val driverName = { id: String -> drivers.firstOrNull { it.id == id }?.label ?: "Sistema" }
+        val driverName = { id: String -> drivers.firstOrNull { it.id == id }?.label ?: context.getString(R.string.gpu_driver_system) }
         val driverItem = SettingItem(
-            "Driver de GPU",
-            "Driver Vulkan para este juego",
-            driverOverride?.let(driverName) ?: "Global (${driverName(settings.gpuDriver())})",
+            context.getString(R.string.gpu_driver),
+            context.getString(R.string.gpu_driver_game_desc),
+            driverOverride?.let(driverName) ?: context.getString(R.string.global_value, driverName(settings.gpuDriver())),
             onStep = { settings.updateGameGpuDriver(game.titleId, cycle(driverChoices, driverOverride, it)) },
         )
         listOf(driverItem) + CoreOption.entries.map { option ->
@@ -432,17 +438,19 @@ private fun GameOptionsPanel(
             val choices: List<Long?> = listOf<Long?>(null) + option.choices.map { it.first }
             val override = settings.gameOption(game.titleId, option)
             SettingItem(
-                option.title,
-                option.description,
-                override?.let { option.label(it) } ?: "Global (${option.label(settings.coreOption(option))})",
+                option.title(context),
+                option.description(context),
+                override?.let { option.label(context, it) }
+                    ?: context.getString(R.string.global_value, option.label(context, settings.coreOption(option))),
                 onStep = { settings.updateGameOption(game.titleId, option, cycle(choices, override, it)) },
             )
         } + listOf(
             SettingItem(
-                "Borrar caché de shaders de este juego", "Se vuelven a compilar al jugar", danger = true,
+                context.getString(R.string.clear_game_shader_cache), context.getString(R.string.clear_shader_cache_desc),
+                danger = true,
                 onConfirm = { message = onClearShaderCache() },
             ),
-            SettingItem("Jugar", null, onConfirm = onPlay),
+            SettingItem(context.getString(R.string.play), null, onConfirm = onPlay),
         ) + listOfNotNull(message?.let { SettingItem(it) })
     }
     if (row >= items.size) row = items.size - 1
@@ -471,14 +479,20 @@ private fun GameOptionsPanel(
         ) {
             Text(game.titleName, style = MaterialTheme.typography.titleLarge, maxLines = 1, overflow = TextOverflow.Ellipsis)
             Text(
-                "Opciones de este juego · ${game.titleId}",
+                stringResource(R.string.game_options_of, game.titleId),
                 style = MaterialTheme.typography.bodySmall,
                 color = Capy.TextSecondary,
             )
             Spacer(Modifier.height(8.dp))
             items.forEachIndexed { i, item -> SettingRowView(item, focused = i == row) { row = i } }
             Spacer(Modifier.weight(1f))
-            HintBar(listOf("◀ ▶" to "Cambiar", "Ⓐ" to "Elegir", "Ⓑ" to "Volver"))
+            HintBar(
+                listOf(
+                    "◀ ▶" to stringResource(R.string.hint_change),
+                    "Ⓐ" to stringResource(R.string.hint_choose),
+                    "Ⓑ" to stringResource(R.string.hint_back),
+                ),
+            )
         }
     }
 }
@@ -486,15 +500,15 @@ private fun GameOptionsPanel(
 @Composable
 private fun EmptyLibrary(libraryPath: String, onAddFolder: () -> Unit, onBrowse: () -> Unit) {
     Column(Modifier.widthIn(max = 560.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        Text("Tu biblioteca está vacía", style = MaterialTheme.typography.displaySmall)
+        Text(stringResource(R.string.library_empty), style = MaterialTheme.typography.displaySmall)
         Text(
-            "Copia cada juego como carpeta (con eboot.bin y sce_sys/) dentro de\n$libraryPath\no añade otra carpeta donde ya los tengas.",
+            stringResource(R.string.library_empty_desc, libraryPath),
             style = MaterialTheme.typography.bodyMedium,
             color = Capy.TextSecondary,
         )
         Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            PillButton("Añadir carpeta", Icons.Filled.Add, primary = true, onClick = onAddFolder)
-            PillButton("Abrir un ejecutable", null, primary = false, onClick = onBrowse)
+            PillButton(stringResource(R.string.folder_add), Icons.Filled.Add, primary = true, onClick = onAddFolder)
+            PillButton(stringResource(R.string.open_executable), null, primary = false, onClick = onBrowse)
         }
     }
 }

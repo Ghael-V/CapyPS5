@@ -42,7 +42,8 @@ object GpuDrivers {
     fun import(context: Context, uri: Uri): Result<GpuDriver> = runCatching {
         val staging = File(context.cacheDir, "driver_import").apply { deleteRecursively(); mkdirs() }
         try {
-            val input = context.contentResolver.openInputStream(uri) ?: error("No se pudo abrir el archivo")
+            val input = context.contentResolver.openInputStream(uri)
+                ?: error(context.getString(R.string.driver_error_open))
             ZipInputStream(input.buffered()).use { zip ->
                 generateSequence { zip.nextEntry }.forEach { entry ->
                     // Flatten: packages keep their files at the top level; ignore any folders.
@@ -56,8 +57,8 @@ object GpuDrivers {
             val libraries = staging.listFiles().orEmpty().filter { it.name.endsWith(".so") }
             val library = meta?.optString("libraryName")?.takeIf { it.isNotBlank() }
                 ?: libraries.singleOrNull()?.name
-                ?: error("El zip no contiene un driver (.so) o meta.json no indica cuál es")
-            if (!File(staging, library).isFile) error("Falta $library en el zip")
+                ?: error(context.getString(R.string.driver_error_no_library))
+            if (!File(staging, library).isFile) error(context.getString(R.string.driver_error_missing, library))
             val name = meta?.optString("name")?.takeIf { it.isNotBlank() } ?: library.removeSuffix(".so")
             val version = meta?.optString("driverVersion").orEmpty()
             val id = "$name $version".trim().replace(Regex("[^A-Za-z0-9._-]+"), "_")
@@ -70,7 +71,7 @@ object GpuDrivers {
                 JSONObject().put("name", name).put("libraryName", library)
                     .let { File(target, META).writeText(it.toString()) }
             }
-            read(target) ?: error("Driver instalado pero ilegible")
+            read(target) ?: error(context.getString(R.string.driver_error_unreadable))
         } finally {
             staging.deleteRecursively()
         }

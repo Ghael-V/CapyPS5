@@ -35,6 +35,8 @@ import org.capyps5.emulator.TouchControlsMode
 import org.capyps5.emulator.ui.NavKey
 import org.capyps5.emulator.ui.OnNavKey
 import org.capyps5.emulator.ui.theme.Capy
+import org.capyps5.emulator.R
+import androidx.compose.ui.res.stringResource
 
 /** Side panel with emulator preferences; fully usable with touch or a controller. */
 @Composable
@@ -80,28 +82,31 @@ fun SettingsPanel(
         verticalArrangement = Arrangement.spacedBy(14.dp),
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Text("Ajustes", style = MaterialTheme.typography.titleLarge, modifier = Modifier.weight(1f))
+            Text(stringResource(R.string.settings), style = MaterialTheme.typography.titleLarge, modifier = Modifier.weight(1f))
             Text(
-                "Cerrar  Ⓑ",
+                stringResource(R.string.close_b),
                 style = MaterialTheme.typography.labelLarge,
                 color = Capy.TextSecondary,
                 modifier = Modifier.clickable(onClick = onClose).padding(6.dp),
             )
         }
 
-        SettingRow("Monitor de rendimiento", "FPS, CPU, GPU, RAM y temperaturas en pantalla", focused == 0) {
-            Segmented(OverlayMode.entries.map { it.label }, OverlayMode.entries.indexOf(settings.overlayMode)) {
+        SettingRow(stringResource(R.string.perf_overlay), stringResource(R.string.perf_overlay_desc), focused == 0) {
+            Segmented(OverlayMode.entries.map { stringResource(it.labelRes) }, OverlayMode.entries.indexOf(settings.overlayMode)) {
                 focused = 0
                 settings.updateOverlayMode(OverlayMode.entries[it])
             }
         }
-        SettingRow("Controles táctiles", "En automático se ocultan si hay un mando físico", focused == 1) {
-            Segmented(TouchControlsMode.entries.map { it.label }, TouchControlsMode.entries.indexOf(settings.touchControls)) {
+        SettingRow(stringResource(R.string.touch_controls), stringResource(R.string.touch_controls_desc), focused == 1) {
+            Segmented(
+                TouchControlsMode.entries.map { stringResource(it.labelRes) },
+                TouchControlsMode.entries.indexOf(settings.touchControls),
+            ) {
                 focused = 1
                 settings.updateTouchControls(TouchControlsMode.entries[it])
             }
         }
-        SettingRow("Opacidad de controles", "%.0f%%".format(settings.controlsOpacity * 100), focused == 2) {
+        SettingRow(stringResource(R.string.controls_opacity), "%.0f%%".format(settings.controlsOpacity * 100), focused == 2) {
             Slider(
                 value = settings.controlsOpacity,
                 onValueChange = {
@@ -113,7 +118,7 @@ fun SettingsPanel(
             )
         }
         if (onPickLibrary != null) {
-            SettingRow("Carpetas de juegos", "Se buscan juegos en todas", focused == 3) {
+            SettingRow(stringResource(R.string.category_folders), stringResource(R.string.folder_add_desc), focused == 3) {
                 settings.libraryPaths.forEach { path ->
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Text(
@@ -145,7 +150,7 @@ fun SettingsPanel(
                         .padding(vertical = 8.dp),
                     contentAlignment = Alignment.Center,
                 ) {
-                    Text("Añadir carpeta  Ⓐ", style = MaterialTheme.typography.labelLarge, color = Color.White)
+                    Text(stringResource(R.string.folder_add_a), style = MaterialTheme.typography.labelLarge, color = Color.White)
                 }
             }
         }

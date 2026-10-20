@@ -25,7 +25,14 @@ data class GameItem(
                     titleId = json.optString("titleId", titleId)
                     version = json.optString("contentVersion").ifEmpty { null }
                     val loc = json.optJSONObject("localizedParameters")
-                    val lang = loc?.optString("defaultLanguage")?.let { loc.optJSONObject(it) }
+                    // Prefer the device language (es-ES, then any es-*), then the game's default.
+                    val device = java.util.Locale.getDefault()
+                    val lang = loc?.let { l ->
+                        l.optJSONObject(device.toLanguageTag())
+                            ?: l.keys().asSequence().firstOrNull { it.startsWith(device.language + "-") }
+                                ?.let(l::optJSONObject)
+                    }
+                        ?: loc?.optString("defaultLanguage")?.let { loc.optJSONObject(it) }
                         ?: loc?.optJSONObject("en-US")
                     titleName = lang?.optString("titleName")?.ifEmpty { null } ?: titleName
                 } catch (_: Exception) {
