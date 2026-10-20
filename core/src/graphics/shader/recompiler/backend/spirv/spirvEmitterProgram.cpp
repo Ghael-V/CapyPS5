@@ -339,13 +339,16 @@ void Invoke(Return (*emit)(Context&, Args...), ValueEmitContext& ctx, const IR::
 }
 
 void EmitDirectInstruction(ValueEmitContext& ctx, const IR::Inst& inst) {
-	if (ctx.half != 0 && (inst.GetOpcode() == IR::ValueOpcode::Ballot ||
-	                     inst.GetOpcode() == IR::ValueOpcode::ReadFirstLane)) {
-		// Both operations already combine both emulated halves into one whole-wave result.
+	using Op = IR::ValueOpcode;
+	const auto op = inst.GetOpcode();
+	if (ctx.half != 0 &&
+	    (op == Op::Ballot || op == Op::ReadFirstLane || op == Op::ReadConstBuffer ||
+	     (op == Op::LoadAddressU32 && ctx.Memory(inst).kind == IR::ResourceKind::ScalarAddress))) {
+		// Whole-wave results and SMEM loads (SGPR operands, no EXEC) are identical in both halves.
 		ctx.Define(inst, ctx.other_half->Result(inst));
 		return;
 	}
-	switch (inst.GetOpcode()) {
+	switch (op) {
 #define VALUE_OPCODE(name, ...)                                                                    \
 	case IR::ValueOpcode::name: return Invoke(Emit##name, ctx, inst);
 #include "graphics/shader/recompiler/ir/opcodes/ValueOpcodes.inc"
