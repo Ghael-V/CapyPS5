@@ -1744,12 +1744,17 @@ private:
 
 	const Inst* IndexedMaterialRead(const Inst* read, Value active,
 	                               DescriptorSource::IndirectDescriptor::SelectorRead& selector) const {
+		if (read == nullptr) return nullptr;
 		uint32_t lane = 0;
-		if (read != nullptr && read->GetOpcode() == ValueOpcode::CompositeExtractU32x2) {
-			if (!ImmediateU32(read->Arg(1), lane) || lane >= 2u) return nullptr;
+		const auto op = read->GetOpcode();
+		if (op == ValueOpcode::CompositeExtractU32x2 || op == ValueOpcode::CompositeExtractU32x3) {
+			const bool x3 = op == ValueOpcode::CompositeExtractU32x3;
+			if (!ImmediateU32(read->Arg(1), lane) || lane >= (x3 ? 3u : 2u)) return nullptr;
 			read = read->Arg(0).Resolve().TryInstruction();
-			if (read == nullptr || read->GetOpcode() != ValueOpcode::LoadBufferU32x2) return nullptr;
-		} else if (read == nullptr || read->GetOpcode() != ValueOpcode::LoadBufferU32) {
+			if (read == nullptr ||
+			    read->GetOpcode() != (x3 ? ValueOpcode::LoadBufferU32x3 : ValueOpcode::LoadBufferU32x2))
+				return nullptr;
+		} else if (op != ValueOpcode::LoadBufferU32) {
 			return nullptr;
 		}
 		const auto& memory = m_program.memory_info[read->Flags<MemoryFlags>().index];
@@ -1771,8 +1776,9 @@ private:
 		const auto* read = SelectorReadValue(selected->Arg(1), active, selector);
 		if (indexed) {
 			read = IndexedMaterialRead(read, active, selector);
-			// This optional domain is checked against the dispatch's writable buffers.
-			// Other stages and unbounded/image writes need the original heap domain.
+			// Bounded heaps fall back when the material aliases a written buffer; pointer
+			// tables rely on the renderer's specialization-read alias check. Other stages
+			// and unbounded/image writes keep the original domain.
 			if (read == nullptr || m_program.stage != ShaderType::Compute ||
 			    std::ranges::any_of(m_program.blocks, [](const Block* block) {
 				    return std::ranges::any_of(*block, [](const Inst& inst) {
@@ -3254,6 +3260,7 @@ private:
 			}
 			if (indirect.key_count.IsEmpty() &&
 			    !MatchUniformizedMaterialKey(key, handle, indirect, material_source, false) &&
+			    !MatchUniformizedMaterialKey(key, handle, indirect, material_source, true) &&
 			    !MatchReversedImageRange(key, indirect)) {
 				// A FindILsb key guarded against its sentinel (mask != 0, or key != -1 as a PS4
 				// light loop tests it) is below 32 whatever the shader writes: its image stores
