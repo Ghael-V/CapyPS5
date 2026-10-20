@@ -444,6 +444,10 @@ static vk::Device VulkanCreateDevice(GraphicContext& graphics,
 	vk::PhysicalDeviceDepthClipEnableFeaturesEXT  depth_clip_enable {};
 	vk::PhysicalDeviceDepthClipControlFeaturesEXT depth_clip_control {};
 	vk::PhysicalDeviceImageViewMinLodFeaturesEXT  image_view_min_lod {};
+	// Pixel shaders with per-vertex inputs need barycentrics. Desktop requires them; on Android
+	// the Qualcomm driver lacks them but Turnip has them, and its compiler crashes on shaders
+	// that use them without the extension enabled.
+	vk::PhysicalDeviceFragmentShaderBarycentricFeaturesKHR optional_barycentric {};
 	void*                                         optional_chain = nullptr;
 	{
 		const auto query = [&](auto& feature, const char* extension) {
@@ -456,6 +460,9 @@ static vk::Device VulkanCreateDevice(GraphicContext& graphics,
 		query(depth_clip_enable, VK_EXT_DEPTH_CLIP_ENABLE_EXTENSION_NAME);
 		query(depth_clip_control, VK_EXT_DEPTH_CLIP_CONTROL_EXTENSION_NAME);
 		query(image_view_min_lod, VK_EXT_IMAGE_VIEW_MIN_LOD_EXTENSION_NAME);
+#if defined(__ANDROID__) || defined(ANDROID) || defined(KYTY_PLATFORM_ANDROID)
+		query(optional_barycentric, VK_KHR_FRAGMENT_SHADER_BARYCENTRIC_EXTENSION_NAME);
+#endif
 		vk::PhysicalDeviceFeatures2 supported {};
 		supported.pNext = optional_chain;
 		physical_device.getFeatures2(&supported);
@@ -470,7 +477,10 @@ static vk::Device VulkanCreateDevice(GraphicContext& graphics,
 		enable(depth_clip_enable, depth_clip_enable.depthClipEnable);
 		enable(depth_clip_control, depth_clip_control.depthClipControl);
 		enable(image_view_min_lod, image_view_min_lod.minLod);
+		enable(optional_barycentric, optional_barycentric.fragmentShaderBarycentric);
 	}
+	LOGF("Vulkan fragment shader barycentrics: %s\n",
+	     optional_barycentric.fragmentShaderBarycentric == VK_TRUE ? "true" : "false");
 	graphics.color_write_enable_enabled = color_write_ext.colorWriteEnable == VK_TRUE;
 	graphics.depth_clip_control_enabled = depth_clip_control.depthClipControl == VK_TRUE;
 	graphics.image_view_min_lod_enabled = image_view_min_lod.minLod == VK_TRUE;
@@ -1175,7 +1185,11 @@ void WindowContext::CreateVulkan() {
 		                             VK_EXT_DEPTH_RANGE_UNRESTRICTED_EXTENSION_NAME,
 		                             VK_EXT_DEPTH_CLIP_CONTROL_EXTENSION_NAME,
 		                             VK_EXT_IMAGE_VIEW_MIN_LOD_EXTENSION_NAME,
-		                             VK_EXT_COLOR_WRITE_ENABLE_EXTENSION_NAME}) {
+		                             VK_EXT_COLOR_WRITE_ENABLE_EXTENSION_NAME,
+#if defined(__ANDROID__) || defined(ANDROID) || defined(KYTY_PLATFORM_ANDROID)
+		                             VK_KHR_FRAGMENT_SHADER_BARYCENTRIC_EXTENSION_NAME,
+#endif
+		                         }) {
 			if (HasExtension(available_extensions, extension)) {
 				device_extensions.push_back(extension);
 			}
