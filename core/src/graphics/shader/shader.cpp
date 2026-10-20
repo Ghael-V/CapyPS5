@@ -54,6 +54,8 @@ struct ShaderMapEntry {
 
 static std::unique_ptr<std::unordered_map<uint64_t, ShaderMapEntry>> g_shader_map;
 static std::mutex                                                      g_shader_map_mutex;
+static std::unordered_map<uint64_t, ShaderTessellationInputInfo>       g_tess_layouts;
+static std::mutex                                                      g_tess_layouts_mutex;
 
 void ShaderInit() {
 	EXIT_IF(g_shader_map != nullptr);
@@ -981,7 +983,18 @@ PrepareTessellationPrograms(const HW::VertexShaderInfo& regs, const HW::Context&
 	};
 	EXIT_IF(tess.input_control_points == 0 || tess.input_control_points > 32 ||
 	        tess.output_control_points == 0 || tess.output_control_points > 32);
-	ShaderRecompiler::AnalyzeTessellationPrograms(params[0].code, params[1].code, tess);
+	// Reflection decodes both programs; the key also covers the VGT fields cached in tess.
+	const uint64_t key[] = {local_hash, control_hash,
+	                        uint64_t {sh.m_vgtLsHsConfig & 0xfff00u} << 32u | sh.m_vgtTfParam};
+	{
+		std::scoped_lock lock(g_tess_layouts_mutex);
+		auto [entry, inserted] = g_tess_layouts.try_emplace(XXH3_64bits(key, sizeof(key)), tess);
+		if (inserted) {
+			ShaderRecompiler::AnalyzeTessellationPrograms(params[0].code, params[1].code,
+			                                              entry->second);
+		}
+		tess = entry->second;
+	}
 	for (auto& stage: input_info) {
 		stage.tess = tess;
 	}
