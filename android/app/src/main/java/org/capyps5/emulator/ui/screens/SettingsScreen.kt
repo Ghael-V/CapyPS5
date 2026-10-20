@@ -39,7 +39,9 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.platform.LocalContext
 import org.capyps5.emulator.ButtonLayout
+import org.capyps5.emulator.GpuDrivers
 import org.capyps5.emulator.CoreOption
 import org.capyps5.emulator.OverlayMode
 import org.capyps5.emulator.Settings
@@ -69,10 +71,13 @@ fun SettingsScreen(
     settings: Settings,
     versionText: String,
     onAddFolder: () -> Unit,
+    onImportDriver: () -> Unit,
+    driverMessage: String?,
     onClearShaderCache: () -> String,
     onSaveLog: () -> String?,
     onClose: () -> Unit,
 ) {
+    val context = LocalContext.current
     var message by remember { mutableStateOf<String?>(null) }
     // Read so the option rows recompose when a value changes.
     val optionsVersion = settings.coreOptionsVersion
@@ -86,10 +91,37 @@ fun SettingsScreen(
         )
     }
 
-    val categories = remember(optionsVersion, settings.libraryPaths, message) {
+    val categories = remember(optionsVersion, settings.libraryPaths, message, driverMessage) {
         listOf(
             SettingsCategory("Gráficos", Icons.Outlined.Image) {
-                listOf(coreItem(CoreOption.ResolutionScale))
+                val drivers = GpuDrivers.list(context)
+                val ids = listOf("") + drivers.map { it.id }
+                val current = settings.gpuDriver().takeIf { id -> id in ids }.orEmpty()
+                listOf(
+                    coreItem(CoreOption.ResolutionScale),
+                    SettingItem(
+                        "Driver de GPU",
+                        "Turnip (Adreno) o PanVK (Mali) importados; Sistema usa el del fabricante",
+                        drivers.firstOrNull { it.id == current }?.label ?: "Sistema",
+                        onStep = { settings.updateGpuDriver(cycle(ids, current, it)) },
+                    ),
+                    SettingItem(
+                        "Importar driver (.zip)",
+                        "Paquetes de AdrenoTools: meta.json + librería .so",
+                        onConfirm = onImportDriver,
+                    ),
+                ) + listOfNotNull(
+                    drivers.firstOrNull { it.id == current }?.let { driver ->
+                        SettingItem(
+                            "Borrar ${driver.label}", "Los juegos volverán al driver del sistema", danger = true,
+                            onConfirm = {
+                                GpuDrivers.delete(context, driver.id)
+                                settings.updateGpuDriver("")
+                            },
+                        )
+                    },
+                    driverMessage?.let { SettingItem(it) },
+                )
             },
             SettingsCategory("Rendimiento", Icons.Outlined.Speed) {
                 listOf(
@@ -157,7 +189,7 @@ fun SettingsScreen(
                     SettingItem(
                         "Licencia",
                         "Software libre bajo GPL v2. Incluye Kyty (GPL-2.0), FEX (MIT), SDL (zlib), FFmpeg " +
-                            "(LGPL-2.1) y otros componentes de código abierto. No incluye software ni claves de Sony.",
+                            "(LGPL-2.1), libadrenotools (BSD-2) y otros componentes de código abierto. No incluye software ni claves de Sony.",
                     ),
                     SettingItem(
                         "Dispositivo",

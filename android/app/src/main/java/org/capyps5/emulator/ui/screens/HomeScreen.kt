@@ -110,6 +110,19 @@ fun HomeScreen(
     val filePicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri: Uri? ->
         uri?.let { onAddGameFile(it.toString()) }
     }
+    val context = androidx.compose.ui.platform.LocalContext.current
+    var driverMessage by remember { mutableStateOf<String?>(null) }
+    val driverPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri: Uri? ->
+        uri?.let {
+            driverMessage = org.capyps5.emulator.GpuDrivers.import(context, it).fold(
+                onSuccess = { driver ->
+                    settings.updateGpuDriver(driver.id)
+                    "Instalado ${driver.label}"
+                },
+                onFailure = { error -> "No se pudo importar: ${error.message}" },
+            )
+        }
+    }
     val folderPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri: Uri? ->
         uri?.let(::treeUriToPath)?.let {
             selected = 0
@@ -201,6 +214,8 @@ fun HomeScreen(
                 settings = settings,
                 versionText = versionText,
                 onAddFolder = { folderPicker.launch(null) },
+                onImportDriver = { driverPicker.launch(arrayOf("application/zip", "application/octet-stream", "*/*")) },
+                driverMessage = driverMessage,
                 onClearShaderCache = { onClearShaderCache(null) },
                 onSaveLog = onSaveLog,
                 onClose = { showSettings = false },
@@ -399,8 +414,20 @@ private fun GameOptionsPanel(
     var row by remember { mutableIntStateOf(0) }
     // Read so the rows recompose when a value changes.
     val optionsVersion = settings.coreOptionsVersion
+    val context = androidx.compose.ui.platform.LocalContext.current
     val items = remember(optionsVersion, message) {
-        CoreOption.entries.map { option ->
+        val drivers = org.capyps5.emulator.GpuDrivers.list(context)
+        // null = follow the global driver, "" = system driver.
+        val driverChoices: List<String?> = listOf<String?>(null, "") + drivers.map { it.id }
+        val driverOverride = settings.gameGpuDriver(game.titleId)?.takeIf { id -> id in driverChoices }
+        val driverName = { id: String -> drivers.firstOrNull { it.id == id }?.label ?: "Sistema" }
+        val driverItem = SettingItem(
+            "Driver de GPU",
+            "Driver Vulkan para este juego",
+            driverOverride?.let(driverName) ?: "Global (${driverName(settings.gpuDriver())})",
+            onStep = { settings.updateGameGpuDriver(game.titleId, cycle(driverChoices, driverOverride, it)) },
+        )
+        listOf(driverItem) + CoreOption.entries.map { option ->
             // null = follow the global value.
             val choices: List<Long?> = listOf<Long?>(null) + option.choices.map { it.first }
             val override = settings.gameOption(game.titleId, option)

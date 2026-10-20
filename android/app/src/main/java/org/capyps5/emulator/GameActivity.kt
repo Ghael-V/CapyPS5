@@ -69,6 +69,12 @@ class GameActivity : CapyActivity() {
         CoreOption.entries.forEach { option ->
             NativeBridge.nativeSetOption(option.property, settings.effectiveOption(game.titleId, option))
         }
+        val driver = GpuDrivers.find(this, settings.effectiveGpuDriver(game.titleId))
+        NativeBridge.nativeSetGpuDriver(
+            nativeLibraryDir = applicationInfo.nativeLibraryDir,
+            driverDir = driver?.dir?.absolutePath.orEmpty(),
+            library = driver?.library.orEmpty(),
+        )
         val versionText = runCatching { NativeBridge.nativeGetVersion() }.getOrDefault("CapyPS5")
         setContent {
             CapyPS5Theme {

@@ -801,6 +801,11 @@ if (ANDROID)
 	)
 	target_link_options(capyps5 PRIVATE "-Wl,-Bsymbolic" "-Wl,-Bsymbolic-functions")
 	target_link_libraries(capyps5 ${kyty_emulator_link_libraries} FEXCore JemallocLibs log android ${CMAKE_DL_LIBS})
+	# Custom Vulkan drivers (Turnip, PanVK): libadrenotools loads them past the linker namespaces.
+	# Its hook libraries are packaged next to libcapyps5.so (tools/build_android.ps1).
+	add_subdirectory("${KYTY_THIRD_PARTY_DIR}/libadrenotools" EXCLUDE_FROM_ALL)
+	target_link_libraries(capyps5 adrenotools)
+	add_dependencies(capyps5 main_hook file_redirect_hook gsl_alloc_hook hook_impl)
 	target_include_directories(capyps5 PRIVATE
 		${inc_headers}
 		"${KYTY_THIRD_PARTY_DIR}/FEX/FEXCore/include"

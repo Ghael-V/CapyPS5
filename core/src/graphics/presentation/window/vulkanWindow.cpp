@@ -21,6 +21,7 @@
 #include <dlfcn.h>
 #include <vulkan/vulkan_android.h>
 #include "android/capyps5_jni.h"
+#include <adrenotools/driver.h>
 #endif
 #include "graphics/presentation/presenter.h"
 #include "graphics/presentation/systemOverlay.h"
@@ -970,7 +971,32 @@ void WindowContext::CreateVulkan() {
 	EXIT_IF(surface != nullptr);
 
 #if defined(__ANDROID__) || defined(ANDROID) || defined(KYTY_PLATFORM_ANDROID)
-	void* libvulkan = dlopen("libvulkan.so", RTLD_NOW | RTLD_LOCAL);
+	void* libvulkan = nullptr;
+	if (const auto& driver = AndroidGetGpuDriver(); !driver.library.empty()) {
+		// A user-installed driver (Turnip, PanVK) replaces the system one inside libvulkan.
+		const auto with_slash = [](std::string path) {
+			if (!path.empty() && path.back() != '/') {
+				path += '/';
+			}
+			return path;
+		};
+		const auto hook_dir   = with_slash(driver.native_library_dir);
+		const auto driver_dir = with_slash(driver.driver_dir);
+		libvulkan = adrenotools_open_libvulkan(RTLD_NOW | RTLD_LOCAL, ADRENOTOOLS_DRIVER_CUSTOM,
+		                                       nullptr, hook_dir.c_str(), driver_dir.c_str(),
+		                                       driver.library.c_str(), nullptr, nullptr);
+		if (libvulkan != nullptr) {
+			Log::WriteToConsoleAndLog(fmt::format("GPU driver: loaded custom driver {}{}\n",
+			                                      driver_dir, driver.library));
+		} else {
+			Log::WriteToConsoleAndLog(fmt::format(
+			    "WARNING: GPU driver {}{} could not be loaded; using the system driver\n",
+			    driver_dir, driver.library));
+		}
+	}
+	if (libvulkan == nullptr) {
+		libvulkan = dlopen("libvulkan.so", RTLD_NOW | RTLD_LOCAL);
+	}
 	if (libvulkan == nullptr) {
 		EXIT("Could not load libvulkan.so: %s\n", dlerror());
 	}

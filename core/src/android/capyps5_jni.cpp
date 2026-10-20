@@ -33,6 +33,7 @@ static std::thread        g_emulator_thread;
 static std::atomic<bool>  g_is_running{false};
 static std::string        g_files_dir;
 static std::string        g_cache_dir;
+static AndroidGpuDriver   g_gpu_driver;
 #if defined(__ANDROID__) && defined(__aarch64__)
 #include <malloc.h>
 #endif
@@ -152,6 +153,27 @@ JNIEXPORT void JNICALL Java_org_capyps5_emulator_NativeBridge_nativeSetOption(
 	Common::DebugFlags::SetFrontendOption(text, static_cast<int64_t>(value));
 	ALOGI("option %s = %lld", text, static_cast<long long>(value));
 	env->ReleaseStringUTFChars(name, text);
+}
+
+// Called before nativeStartGame. An empty `library` keeps the system Vulkan driver;
+// `driverDir` must be app-private storage (dlopen refuses world-writable locations).
+JNIEXPORT void JNICALL Java_org_capyps5_emulator_NativeBridge_nativeSetGpuDriver(
+    JNIEnv* env, jclass /*clazz*/, jstring nativeLibraryDir, jstring driverDir, jstring library) {
+	const auto read = [env](jstring value) {
+		std::string result;
+		if (value != nullptr) {
+			const char* text = env->GetStringUTFChars(value, nullptr);
+			result = text;
+			env->ReleaseStringUTFChars(value, text);
+		}
+		return result;
+	};
+	g_gpu_driver.native_library_dir = read(nativeLibraryDir);
+	g_gpu_driver.driver_dir         = read(driverDir);
+	g_gpu_driver.library            = read(library);
+	ALOGI("GPU driver: %s", g_gpu_driver.library.empty()
+	                           ? "system"
+	                           : (g_gpu_driver.driver_dir + "/" + g_gpu_driver.library).c_str());
 }
 
 JNIEXPORT void JNICALL Java_org_capyps5_emulator_NativeBridge_nativeStopGame(
@@ -297,4 +319,8 @@ ANativeWindow* AndroidGetNativeWindow() {
 
 const std::string& AndroidGetFilesDir() {
 	return g_files_dir;
+}
+
+const AndroidGpuDriver& AndroidGetGpuDriver() {
+	return g_gpu_driver;
 }

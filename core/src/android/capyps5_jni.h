@@ -42,6 +42,15 @@ ANativeWindow* AndroidGetNativeWindow();
 
 #include <string>
 const std::string& AndroidGetFilesDir();
+
+// GPU driver chosen by the frontend (nativeSetGpuDriver): an empty library loads the system
+// driver. The library is a file name inside driver_dir, loaded through libadrenotools.
+struct AndroidGpuDriver {
+	std::string native_library_dir;
+	std::string driver_dir;
+	std::string library;
+};
+const AndroidGpuDriver& AndroidGetGpuDriver();
 #endif
 
 #endif // CAPYPS5_ANDROID_JNI_H_

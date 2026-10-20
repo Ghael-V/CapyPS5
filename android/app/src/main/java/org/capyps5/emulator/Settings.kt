@@ -141,6 +141,25 @@ class Settings(context: Context) {
         coreOptionsVersion++
     }
 
+    /** Global GPU driver id ("" = system driver). */
+    fun gpuDriver(): String = prefs.getString("gpu_driver", "").orEmpty()
+
+    fun updateGpuDriver(id: String) {
+        prefs.edit().putString("gpu_driver", id).apply()
+        coreOptionsVersion++
+    }
+
+    /** Per-game GPU driver: null follows the global one, "" forces the system driver. */
+    fun gameGpuDriver(titleId: String): String? = prefs.getString("game_${titleId}_gpu_driver", null)
+
+    fun updateGameGpuDriver(titleId: String, id: String?) {
+        val key = "game_${titleId}_gpu_driver"
+        prefs.edit().apply { if (id == null) remove(key) else putString(key, id) }.apply()
+        coreOptionsVersion++
+    }
+
+    fun effectiveGpuDriver(titleId: String): String = gameGpuDriver(titleId) ?: gpuDriver()
+
     /** Value a game runs with. */
     fun effectiveOption(titleId: String, option: CoreOption): Long = gameOption(titleId, option) ?: coreOption(option)
 
