@@ -1809,7 +1809,9 @@ int KYTY_SYSV_ABI Ngs2SystemRender(uintptr_t system_handle, const Ngs2RenderBuff
 	const auto grain = ngs->option.num_grain_samples;
 	for (auto* voice: voices) {
 		Ngs2RenderVoice(*voice, voices, grain);
-		if (voice->rack->type != Ngs2RackType::Mastering || !voice->has_samples) {
+		const bool mastering = voice->rack->type == Ngs2RackType::Mastering ||
+		                       voice->rack->type == Ngs2RackType::CustomMastering;
+		if (!mastering || !voice->has_samples) {
 			continue;
 		}
 		EXIT_NOT_IMPLEMENTED(voice->output_id >= num_buffer_info);
@@ -2568,9 +2570,25 @@ int KYTY_SYSV_ABI Ngs2VoiceControl(uintptr_t voice_handle, const Ngs2VoiceParamH
 				voice->channels = channels[0];
 				break;
 			}
-			case 0x4003:
-				EXIT_NOT_IMPLEMENTED(voice->rack->type != Ngs2RackType::CustomMastering);
+			case 0x4003: {
+				// SceNgs2CustomMasteringVoiceSetupParam {numInputChannels, flags} or
+				// SceNgs2CustomMasteringVoiceOutputParam {outputId, reserved}.
+				EXIT_NOT_IMPLEMENTED(voice->rack->type != Ngs2RackType::CustomMastering ||
+				                     param->size != sizeof(Ngs2VoiceParamHeader) + 8u);
+				const auto* values = reinterpret_cast<const uint32_t*>(param + 1);
+				switch (param->id & 0xffffu) {
+					case 0:
+						EXIT_NOT_IMPLEMENTED(values[0] == 0 ||
+						                     values[0] > voice->rack->option.common.max_voice_channels ||
+						                     values[1] != 0);
+						voice->channels = values[0];
+						break;
+					case 1: voice->output_id = values[0]; break;
+					default:
+						EXIT("unsupported custom mastering control: 0x%08" PRIx32 "\n", param->id);
+				}
 				break;
+			}
 			default: EXIT("unknown rack_id: 0x%" PRIx32 "\n", rack_id);
 		}
 
