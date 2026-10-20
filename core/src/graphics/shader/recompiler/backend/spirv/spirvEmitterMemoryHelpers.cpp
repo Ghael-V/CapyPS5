@@ -127,7 +127,19 @@ uint32_t LdsDwordCount(const EmitterState& state) {
 	// lighting pixel shader spills 3 values with DS_*_ADDTID; a 32 KB private array per pixel ran
 	// it at a tenth of its speed on Adreno).
 	const auto dwords = state.program.info.function_lds_dwords;
-	return dwords != 0 && dwords != UINT32_MAX ? std::min(dwords, 8192u) : 8192u;
+	if (dwords != 0 && dwords != UINT32_MAX) {
+		return std::min(dwords, 8192u);
+	}
+	// Otherwise the stage can only address the LDS its registers allocate: EXTRA_LDS_SIZE for a
+	// pixel shader, the GS stage's LDS_SIZE for a vertex shader. Hardware reads zero and drops
+	// writes beyond it, as the bounds checks do (KytyPS5 fa8216c).
+	if (state.program.stage == ShaderType::Pixel && state.input_info.pixel != nullptr) {
+		return std::max(state.input_info.pixel->lds_size_dwords, 1u);
+	}
+	if (state.program.stage == ShaderType::Vertex && state.input_info.vertex != nullptr) {
+		return std::max(state.input_info.vertex->lds_size_dwords, 1u);
+	}
+	return 8192u;
 }
 
 void EnsureLdsStorage(EmitterState& state) {

@@ -640,6 +640,7 @@ static void ShaderGetStaticInputInfoPS(
 
 	ps_info = {};
 	ps_info.scratch_size_dwords = data.scratch_size_dwords;
+	ps_info.lds_size_dwords     = static_cast<uint32_t>(regs.ps_regs.rsrc2.extra_lds_size) * 128u;
 
 	// SPI_PS_IN_CONTROL: NUM_INTERP occupies bits 5:0 and PS_W32_EN is bit 15.
 	ps_info.input_num            = sh.ps_in_control & 0x3fu;
@@ -735,6 +736,7 @@ void BuildStageStaticKey(const ShaderVertexInputInfo& info, std::vector<uint32_t
 	key.push_back(info.resources_num);
 	key.push_back(info.wave_size);
 	key.push_back(info.scratch_size_dwords);
+	key.push_back(info.lds_size_dwords);
 	key.push_back(info.pa_cl_vs_out_cntl);
 	key.push_back(info.indirect_vertex_sgpr);
 	key.push_back(info.indirect_instance_sgpr);
@@ -781,6 +783,7 @@ void BuildStageStaticKey(const ShaderPixelInputInfo& info, std::vector<uint32_t>
 	EXIT_IF(info.input_num > std::size(info.interpolator_settings));
 	key.clear();
 	key.push_back(info.scratch_size_dwords);
+	key.push_back(info.lds_size_dwords);
 	key.push_back(info.input_num);
 	key.push_back(info.wave_size);
 	key.push_back(info.ps_system_input_base);
@@ -865,6 +868,7 @@ ShaderParams PrepareProgram(const HW::VertexShaderInfo& regs, const HW::Context&
 			EXIT("failed to prepare vertex shader program\n");
 		}
 		info.wave_size = (context.GetShaderStages() & 0x00400000u) != 0 ? 32u : 64u;
+		info.lds_size_dwords = static_cast<uint32_t>(regs.gs_regs.rsrc2.lds_size) * 128u;
 		return params;
 	}
 	// NGG user SGPRs start at s8; a separately compiled GS back half also receives
