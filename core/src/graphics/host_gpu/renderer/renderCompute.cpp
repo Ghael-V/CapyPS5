@@ -212,6 +212,13 @@ bool RenderExecutor::TryConsumeComputeImageClear(const ShaderComputeInputInfo& i
 		    !buffers.FillMemory(descriptor.Base48(), size, packed_clear)) {
 			return false;
 		}
+		// FillMemory writes through the backing alias, bypassing texture write faults.
+		// Invalidate overlapping images explicitly or they retain stale GPU contents.
+		// debug.capy.cpu_fill_invalidate=0 restores the old ownership behavior.
+		static Common::DebugFlags::CachedValue cpu_fill_invalidate("debug.capy.cpu_fill_invalidate", 1);
+		if (cpu_fill_invalidate.Get() != 0) {
+			cache.InvalidateMemory(descriptor.Base48(), size);
+		}
 		Common::DebugFlags::FrameTrace("    -> filled on the CPU");
 	}
 	static std::atomic<uint32_t> logged_clears {0};

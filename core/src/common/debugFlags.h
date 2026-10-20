@@ -157,6 +157,27 @@ private:
 	int64_t              m_fallback;
 };
 
+// Optional provenance probe for the 1080p RGBA image sampled by Unity's video overlay.
+inline std::atomic<uint64_t> g_video_probe_address {0};
+inline std::atomic<uint64_t> g_video_probe_size {0};
+inline bool VideoProbeEnabled() {
+	static CachedValue property("debug.capy.video_probe", 0);
+	return property.Get() != 0;
+}
+
+// Guest video allocations watched by the optional AvPlayer texture diagnostic.
+inline std::array<std::atomic<uint64_t>, 16> g_avplayer_video_addresses {};
+inline std::array<std::atomic<uint64_t>, 16> g_avplayer_video_sizes {};
+inline std::atomic<uint32_t> g_avplayer_video_count {0};
+
+inline void RegisterAvPlayerVideoBuffer(uint64_t address, uint64_t size) {
+	const auto index = g_avplayer_video_count.fetch_add(1, std::memory_order_relaxed);
+	if (index < g_avplayer_video_addresses.size()) {
+		g_avplayer_video_sizes[index].store(size, std::memory_order_relaxed);
+		g_avplayer_video_addresses[index].store(address, std::memory_order_release);
+	}
+}
+
 // Address being watched for writes (set automatically when a GPU wait on it times out).
 inline std::atomic<uint64_t> g_watch_addr {0};
 
@@ -211,7 +232,11 @@ inline bool FrameTracing() {
 }
 
 inline void FrameTrace(const char* fmt, ...) {
-	if (!FrameTracing() || g_trace_lines.fetch_add(1, std::memory_order_relaxed) >= 20000) {
+	// Skip early draws when diagnosing a late pass in a draw-heavy frame.
+	static CachedValue trace_from("debug.capy.trace_from", 0);
+	if (!FrameTracing() ||
+	    g_trace_draws.load(std::memory_order_relaxed) < static_cast<uint32_t>(std::max<int64_t>(0, trace_from.Get())) ||
+	    g_trace_lines.fetch_add(1, std::memory_order_relaxed) >= 20000) {
 		return;
 	}
 #if defined(__ANDROID__)
@@ -237,7 +262,10 @@ inline void FrameTraceOnFlip() {
 		g_trace_state.store(1, std::memory_order_relaxed);
 		FrameTrace("---- frame begin ----");
 	} else if (state == 1) {
-		FrameTrace("---- frame end ----");
+		const auto draws = g_trace_draws.load(std::memory_order_relaxed);
+#if defined(__ANDROID__)
+		__android_log_print(ANDROID_LOG_WARN, "CapyPS5-Frame", "frame end: %u draws", draws);
+#endif
 		g_trace_state.store(2, std::memory_order_relaxed);
 	}
 }

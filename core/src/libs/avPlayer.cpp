@@ -1,4 +1,5 @@
 #include "common/common.h"
+#include "common/debugFlags.h"
 #include "cpu/cpuBackend.h"
 #include "common/file.h"
 #include "common/logging/log.h"
@@ -25,6 +26,11 @@
 #include <string>
 #include <string_view>
 #include <utility>
+
+#if defined(__ANDROID__)
+#include <android/log.h>
+#include "android/capyps5_jni.h"
+#endif
 
 extern "C" {
 #include <libavcodec/avcodec.h>
@@ -1156,6 +1162,15 @@ private:
 				if (!buffer->Valid()) {
 					return false;
 				}
+				#if defined(__ANDROID__)
+				static Common::DebugFlags::CachedValue trace_texture("debug.capy.avplayer_tex", 0);
+				if (trace_texture.Get() != 0 || Common::DebugFlags::VideoProbeEnabled()) {
+					Common::DebugFlags::RegisterAvPlayerVideoBuffer(
+					    reinterpret_cast<uint64_t>(buffer->Get()), size);
+					__android_log_print(ANDROID_LOG_WARN, "CapyPS5-AvPlayer",
+					                    "video buffer addr=%p size=%u", buffer->Get(), size);
+				}
+				#endif
 				video_buffers.Push(std::move(buffer));
 			}
 		}
@@ -1579,6 +1594,31 @@ private:
 		info->details.video.crop_bottom_offset =
 		    static_cast<uint32_t>(src->crop_bottom + (h - src->height));
 		info->details.video.pitch = pitch;
+#if defined(__ANDROID__)
+		static Common::DebugFlags::CachedValue dump_frame("debug.capy.avplayer_dump", 0);
+		static std::atomic_uint frame_number = 0;
+		if (dump_frame.Get() != 0) {
+			const auto number = ++frame_number;
+			if (number == 1 || number == 30) {
+				const auto path = AndroidGetFilesDir() + "/avplayer_frame_" +
+				                  std::to_string(number) + ".nv12";
+				if (auto* file = std::fopen(path.c_str(), "wb")) {
+					const auto written = std::fwrite(dst, 1, static_cast<size_t>(size), file);
+					std::fclose(file);
+					__android_log_print(ANDROID_LOG_WARN, "CapyPS5-AvPlayer",
+					                    "frame=%u source=%dx%d format=%d output=%ux%u pitch=%u "
+					                    "timestamp=%llu bytes=%zu/%llu path=%s",
+					                    number, src->width, src->height, src->format,
+					                    info->details.video.width, info->details.video.height, pitch,
+					                    static_cast<unsigned long long>(info->time_stamp), written,
+					                    static_cast<unsigned long long>(size), path.c_str());
+				} else {
+					__android_log_print(ANDROID_LOG_WARN, "CapyPS5-AvPlayer",
+					                    "could not open frame dump: %s", path.c_str());
+				}
+			}
+		}
+#endif
 		if (tmp) {
 			av_frame_free(&tmp);
 		}
@@ -2012,6 +2052,19 @@ Bool KYTY_SYSV_ABI AvPlayerGetVideoData(AvPlayerInternal* h, AvPlayerFrameInfo* 
 		pump_warnings(h);
 		return 0;
 	}
+	#if defined(__ANDROID__)
+	static Common::DebugFlags::CachedValue trace_video("debug.capy.avplayer_tex", 0);
+	if (trace_video.Get() != 0) {
+		static std::atomic_uint logged {0};
+		if (logged.fetch_add(1, std::memory_order_relaxed) < 12) {
+			__android_log_print(ANDROID_LOG_WARN, "CapyPS5-AvPlayer",
+			                    "GetVideoData basic ptr=%p %ux%u pitch=%u timestamp=%llu", ex.data,
+			                    ex.details.video.width, ex.details.video.height,
+			                    ex.details.video.pitch,
+			                    static_cast<unsigned long long>(ex.time_stamp));
+		}
+	}
+	#endif
 	std::memset(video_info, 0, sizeof(*video_info));
 	video_info->data                       = ex.data;
 	video_info->time_stamp                 = ex.time_stamp;
@@ -2028,6 +2081,20 @@ Bool KYTY_SYSV_ABI AvPlayerGetVideoDataEx(AvPlayerInternal* h, AvPlayerFrameInfo
 		return 0;
 	}
 	auto ok = h->source->Video(video_info) ? 1 : 0;
+	#if defined(__ANDROID__)
+	static Common::DebugFlags::CachedValue trace_video("debug.capy.avplayer_tex", 0);
+	if (ok && (trace_video.Get() != 0 || Common::DebugFlags::VideoProbeEnabled())) {
+		static std::atomic_uint logged {0};
+		if (logged.fetch_add(1, std::memory_order_relaxed) < 12) {
+			__android_log_print(ANDROID_LOG_WARN, "CapyPS5-AvPlayer",
+			                    "GetVideoDataEx caller=0x%llx info=%p ptr=%p %ux%u pitch=%u timestamp=%llu",
+			                    static_cast<unsigned long long>(Cpu::GuestReturnAddress()), video_info,
+			                    video_info->data, video_info->details.video.width,
+			                    video_info->details.video.height, video_info->details.video.pitch,
+			                    static_cast<unsigned long long>(video_info->time_stamp));
+		}
+	}
+	#endif
 	pump_warnings(h);
 	return ok;
 }

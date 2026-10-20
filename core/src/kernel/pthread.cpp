@@ -533,6 +533,24 @@ static void SchedulerBackoffOnce() {
 		Sleep(0);
 	}
 #else
+#if defined(__ANDROID__)
+	// Unreal polls completion with millions of guest yields. sched_yield keeps that
+	// thread runnable; a short sleep after a burst can release the core and power budget.
+	// Opt in with debug.capy.yield_us (0 restores sched_yield, maximum 1000 us).
+	static Common::DebugFlags::CachedValue yield_us("debug.capy.yield_us", 0);
+	const auto delay = std::clamp<int64_t>(yield_us.Get(), 0, 1000);
+	if (delay != 0) {
+		static thread_local auto last_yield = std::chrono::steady_clock::time_point {};
+		static thread_local uint32_t burst = 0;
+		const auto now = std::chrono::steady_clock::now();
+		burst = now - last_yield < std::chrono::milliseconds(2) ? std::min(burst + 1, 32u) : 0;
+		last_yield = now;
+		if (burst == 32) {
+			std::this_thread::sleep_for(std::chrono::microseconds(delay));
+			return;
+		}
+	}
+#endif
 	std::this_thread::yield();
 #endif
 }

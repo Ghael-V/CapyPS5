@@ -4,6 +4,9 @@
 #include "common/assert.h"
 #include "common/common.h"
 #include "common/debugFlags.h"
+#if defined(__ANDROID__)
+#include "android/capyps5_jni.h"
+#endif
 #include "common/emulatorConfig.h"
 #include "common/file.h"
 #include "common/logging/log.h"
@@ -621,6 +624,34 @@ TextureBinding RenderExecutor::ResolveTexture(const ShaderRecompiler::IR::ImageR
 	    block_bytes != 0 ? block_bytes : Prospero::NumBytesPerElement(format);
 	desc.info.samples   = samples;
 	desc.info.tile_mode = tile;
+	static Common::DebugFlags::CachedValue trace_avplayer("debug.capy.avplayer_tex", 0);
+	if (trace_avplayer.Get() != 0) {
+		const auto count = std::min<uint32_t>(
+		    Common::DebugFlags::g_avplayer_video_count.load(std::memory_order_acquire),
+		    Common::DebugFlags::g_avplayer_video_addresses.size());
+		for (uint32_t i = 0; i < count; i++) {
+			const auto start = Common::DebugFlags::g_avplayer_video_addresses[i].load(
+			    std::memory_order_acquire);
+			const auto size = Common::DebugFlags::g_avplayer_video_sizes[i].load(
+			    std::memory_order_relaxed);
+			if (start != 0 && address >= start && address - start < size) {
+				#if defined(__ANDROID__)
+				static std::atomic_uint logged {0};
+				if (logged.fetch_add(1, std::memory_order_relaxed) < 100) {
+					__android_log_print(ANDROID_LOG_WARN, "CapyPS5-AvTex",
+					                    "buffer=%u offset=0x%llx image=0x%llx fmt=%u %ux%u "
+					                    "pitch=%u tile=0x%x vkfmt=%d",
+					                    i, static_cast<unsigned long long>(address - start),
+					                    static_cast<unsigned long long>(address),
+					                    static_cast<uint32_t>(format), width, height,
+					                    TileGetTexturePitch(format, width, tile),
+					                    static_cast<uint32_t>(tile), static_cast<int>(pixel_format));
+				}
+				#endif
+				break;
+			}
+		}
+	}
 	Common::DebugFlags::FrameTrace(
 	    "  tex addr=0x%llx fmt=%u %ux%ux%u levels=%u/%u layers=%u tile=0x%x read=%d written=%d",
 	    static_cast<unsigned long long>(address), static_cast<uint32_t>(format), width, height, depth,
@@ -666,7 +697,38 @@ TextureBinding RenderExecutor::ResolveTexture(const ShaderRecompiler::IR::ImageR
 	desc.view_info.base_level = view_base;
 	desc.type = storage ? TextureCache::BindingType::Storage : TextureCache::BindingType::Texture;
 
+	if (Common::DebugFlags::VideoProbeEnabled() && width == 1920 && height == 1080 &&
+	    format == Prospero::BufferFormat::k8_8_8_8UNorm) {
+		Common::DebugFlags::g_video_probe_size.store(desc.info.data.size, std::memory_order_relaxed);
+		const auto previous = Common::DebugFlags::g_video_probe_address.exchange(address);
+		if (previous != address) {
+			Common::DebugFlags::NoteOnce("CapyPS5-VideoProbe", address,
+			    "sample image=0x%llx size=%llu pitch=%u tile=0x%x",
+			    static_cast<unsigned long long>(address),
+			    static_cast<unsigned long long>(desc.info.data.size), desc.info.pitch,
+			    static_cast<uint32_t>(tile));
+		}
+	}
 	auto       id                  = texture_cache.FindImage(desc, shader_conversion);
+#if defined(__ANDROID__)
+	// Save one selected sampled texture after its upload, before the draw reads it.
+	static Common::DebugFlags::CachedValue dump_tex_addr("debug.capy.dump_tex_addr", 0);
+	static std::atomic<uint64_t>              dumped_address {0};
+	const auto requested = static_cast<uint64_t>(dump_tex_addr.Get());
+	if (requested == 0) {
+		dumped_address.store(0, std::memory_order_relaxed);
+	} else if (address == requested && dumped_address.exchange(requested) != requested) {
+		const auto dir = AndroidGetFilesDir() + "/watch";
+		Common::File::CreateDirectories(dir);
+		const auto path = fmt::format("{}/tex_{:x}.img", dir, address);
+		const bool ok = texture_cache.DebugSaveImageLinear(id, path);
+		__android_log_print(ANDROID_LOG_WARN, "CapyPS5-TexDump",
+		                    "addr=0x%llx %ux%u fmt=%u image=%u save=%d path=%s",
+		                    static_cast<unsigned long long>(address), width, height,
+		                    static_cast<uint32_t>(format), static_cast<uint32_t>(id.index),
+		                    ok ? 1 : 0, path.c_str());
+	}
+#endif
 	auto*      image               = &texture_cache.GetImage(id);
 	const bool stencil_association = static_cast<bool>(image->depth_id);
 	if (stencil_association) {
@@ -711,7 +773,14 @@ static vk::DescriptorBufferInfo NativeUpload(RenderContext&            context,
 	EXIT_IF(data.empty());
 	auto& command_buffer = context.GetCommandScheduler().Current();
 	EXIT_IF(command_buffer.IsInvalid());
-	auto&      buffer = context.GetBufferCache().GetUtilityBuffer(MemoryUsage::Stream);
+	// Guest buffer uploads can fill the shared stream ring before the GPU retires a frame.
+	// Keep per-draw descriptors in their own ring so those uploads do not stall every draw.
+	// `debug.capy.descriptor_stream 0` restores the shared ring for comparisons.
+	static Common::DebugFlags::CachedValue descriptor_stream("debug.capy.descriptor_stream", 1);
+	auto& cache = context.GetBufferCache();
+	auto& buffer = descriptor_stream.Get() != 0
+	                   ? cache.GetDescriptorBuffer()
+	                   : cache.GetUtilityBuffer(MemoryUsage::Stream);
 	const auto offset = buffer.Copy(data.data(), data.size_bytes(), 256);
 	return {buffer.Handle(), offset, data.size_bytes()};
 }
@@ -794,6 +863,36 @@ void RenderExecutor::FindBuffers(std::span<PreparedBindings* const> stages) {
 		EXIT_IF(prepared.runtime == nullptr || !*prepared.runtime);
 		const auto& program  = *prepared.runtime->program;
 		const auto& snapshot = *prepared.runtime->resources;
+#if defined(__ANDROID__)
+		static std::atomic_uint video_buffer_logs {0};
+		if (Common::DebugFlags::VideoProbeEnabled() && video_buffer_logs.load() < 8) {
+			bool video_input = false;
+			const auto count = std::min<uint32_t>(Common::DebugFlags::g_avplayer_video_count.load(),
+			    Common::DebugFlags::g_avplayer_video_addresses.size());
+			for (const auto& value: snapshot.buffers) {
+				const auto descriptor = DecodeNativeDescriptor<ShaderBufferResource>(value);
+				for (uint32_t i = 0; i < count; i++) {
+					const auto start = Common::DebugFlags::g_avplayer_video_addresses[i].load();
+					const auto size = Common::DebugFlags::g_avplayer_video_sizes[i].load();
+					video_input |= start != 0 && descriptor.Base48() < start + size &&
+					    start < descriptor.Base48() + descriptor.GetSize();
+				}
+			}
+			if (video_input && video_buffer_logs.fetch_add(1) < 8) {
+				__android_log_print(ANDROID_LOG_WARN, "CapyPS5-VideoProbe",
+				    "NV12 shader stage=%u hash=0x%llx", static_cast<uint32_t>(program.stage),
+				    static_cast<unsigned long long>(program.shader_hash));
+				for (uint32_t i = 0; i < snapshot.buffers.size(); i++) {
+					const auto descriptor = DecodeNativeDescriptor<ShaderBufferResource>(snapshot.buffers[i]);
+					__android_log_print(ANDROID_LOG_WARN, "CapyPS5-VideoProbe",
+					    "  buffer[%u] addr=0x%llx size=%llu read=%d written=%d", i,
+					    static_cast<unsigned long long>(descriptor.Base48()),
+					    static_cast<unsigned long long>(descriptor.GetSize()),
+					    program.info.buffers[i].read ? 1 : 0, program.info.buffers[i].written ? 1 : 0);
+				}
+			}
+		}
+#endif
 		const auto& layout = program.bindings;
 		prepared.buffer_sources.resize(layout.descriptor_counts[static_cast<size_t>(BindingKind::Buffers)]);
 		if (layout.descriptor_counts[static_cast<size_t>(BindingKind::Buffers)] == 0) {

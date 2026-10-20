@@ -3,6 +3,7 @@
 #include "cpu/cpuBackend.h"
 #include "common/assert.h"
 #include "common/common.h"
+#include "common/debugFlags.h"
 #include "common/emulatorConfig.h"
 #include "common/file.h"
 #include "common/hostException.h"
@@ -687,6 +688,25 @@ static bool KytyExceptionHandler(const Common::HostException::ExceptionInfo& exc
 			case CoreAccess::Execute: access = GpuAccess::Execute; break;
 			case CoreAccess::Unknown: return false;
 		}
+#if defined(__ANDROID__)
+		if (access == GpuAccess::Write && Common::DebugFlags::VideoProbeEnabled()) {
+			const auto start = Common::DebugFlags::g_video_probe_address.load(std::memory_order_acquire);
+			const auto size = Common::DebugFlags::g_video_probe_size.load(std::memory_order_relaxed);
+			if (start != 0 && info->access_violation_vaddr >= start &&
+			    info->access_violation_vaddr - start < size) {
+				static std::atomic_uint logged {0};
+				if (logged.fetch_add(1, std::memory_order_relaxed) < 48) {
+					const auto rip = Cpu::GuestRipFromHostPc(info->exception_address);
+					__android_log_print(ANDROID_LOG_WARN, "CapyPS5-VideoProbe",
+					                    "CPU write image=0x%llx offset=0x%llx guest_rip=0x%llx host_pc=0x%llx",
+					                    static_cast<unsigned long long>(start),
+					                    static_cast<unsigned long long>(info->access_violation_vaddr - start),
+					                    static_cast<unsigned long long>(rip),
+					                    static_cast<unsigned long long>(info->exception_address));
+				}
+			}
+		}
+#endif
 		if (Libs::LibKernel::Memory::HandleGpuFault(access, info->access_violation_vaddr)) {
 			return true;
 		}
