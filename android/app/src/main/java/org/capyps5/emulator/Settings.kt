@@ -29,9 +29,15 @@ enum class CoreOption(
 ) {
     ResolutionScale(
         "Resolución interna",
-        "Menos resolución alivia la GPU; algunos juegos no la admiten",
+        "Por eje: un juego 4K al 50 % se dibuja a 1080p (un cuarto del trabajo). " +
+            "Menos resolución alivia la GPU; algunos juegos no la admiten",
         "debug.capy.res_scale",
-        listOf(1000L to "Nativa", 750L to "75 %", 500L to "50 %"),
+        listOf(
+            1000L to "Nativa",
+            750L to "75 % (4K → 1620p)",
+            500L to "50 % (4K → 1080p)",
+            250L to "25 % (4K → 540p)",
+        ),
         1000L,
     ),
     AsyncShaders(
