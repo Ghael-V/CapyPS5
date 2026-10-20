@@ -25,14 +25,17 @@ struct TessellationAddress {
 	Kind     kind        = Kind::Unknown;
 	uint32_t coefficient = 0;
 	uint32_t constant    = 0;
+
+	bool operator==(const TessellationAddress&) const = default;
 };
 
 uint32_t ReflectTessellationStride(const Decoder::Program& program, bool local,
                                    uint32_t control_points, uint32_t input_stride) {
 	using namespace Decoder;
-	using Address = TessellationAddress;
-	using Kind    = Address::Kind;
-	std::array<Address, IR::NumVectorRegs> registers {};
+	using Address   = TessellationAddress;
+	using Kind      = Address::Kind;
+	using Registers = std::array<Address, IR::NumVectorRegs>;
+	Registers registers {};
 	registers[local ? 3u : 1u] =
 	    local ? Address {Kind::Affine, 1u, 0u} : Address {Kind::PackedControlPoint};
 	const auto constant = [](uint32_t value) { return Address {Kind::Affine, 0u, value}; };
@@ -83,14 +86,28 @@ uint32_t ReflectTessellationStride(const Decoder::Program& program, bool local,
 		           ? value
 		           : Address {};
 	};
+	// A forward branch joins its target with the fallthrough path. Definitions that
+	// differ between the paths are unknown there.
+	std::unordered_map<uint32_t, Registers> joins;
+
+	const auto merge = [](Registers& into, const Registers& from) {
+		for (uint32_t index = 0; index < into.size(); index++) {
+			if (into[index] != from[index]) into[index] = {};
+		}
+	};
 	uint32_t stride = 0;
 	for (const auto& inst: program.instructions) {
-		// Stage exits preserve the active path's definitions. An internal join
-		// would require merging register definitions.
-		EXIT_NOT_IMPLEMENTED(IsDirectBranch(inst.opcode) &&
-		                     inst.branch_target != program.instructions.back().pc);
-		const bool local_store =
-		    inst.opcode == Opcode::DS_WRITE_B32 || inst.opcode == Opcode::DS_WRITE2_B32;
+		if (const auto join = joins.find(inst.pc); join != joins.end()) {
+			merge(registers, join->second);
+			joins.erase(join);
+		}
+		if (IsDirectBranch(inst.opcode)) {
+			EXIT_NOT_IMPLEMENTED(inst.branch_target <= inst.pc);
+			if (const auto [join, inserted] = joins.try_emplace(inst.branch_target, registers);
+			    !inserted)
+				merge(join->second, registers);
+		}
+		const bool local_store  = IsDsWriteOpcode(inst.opcode);
 		const bool buffer_store = inst.opcode == Opcode::BUFFER_STORE_DWORD ||
 		                          inst.opcode == Opcode::BUFFER_STORE_DWORDX2 ||
 		                          inst.opcode == Opcode::BUFFER_STORE_DWORDX3 ||
@@ -127,6 +144,12 @@ uint32_t ReflectTessellationStride(const Decoder::Program& program, bool local,
 					if (rhs.constant == 0u && third.constant == 8u) value = constant(0u);
 				}
 				break;
+			case Opcode::V_AND_B32:
+				if ((lhs.kind == Kind::PackedControlPoint && rhs == constant(0xffu)) ||
+				    (rhs.kind == Kind::PackedControlPoint && lhs == constant(0xffu)))
+					value = constant(0u);
+				break;
+			case Opcode::V_MUL_LO_U32: value = multiply(lhs, rhs); break;
 			case Opcode::V_MUL_U32_U24: value = multiply(low24(lhs), low24(rhs)); break;
 			case Opcode::V_MAD_U32_U24: value = add(multiply(low24(lhs), low24(rhs)), third); break;
 			case Opcode::V_LSHL_ADD_U32:
@@ -153,7 +176,7 @@ uint32_t ReflectTessellationStride(const Decoder::Program& program, bool local,
 		}
 		registers.at(inst.dst.reg) = value;
 	}
-	EXIT_NOT_IMPLEMENTED(stride == 0u);
+	EXIT_NOT_IMPLEMENTED(!joins.empty() || stride == 0u);
 	return stride;
 }
 
