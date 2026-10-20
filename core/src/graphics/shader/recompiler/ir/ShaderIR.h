@@ -329,6 +329,8 @@ struct PushData {
 	// Mesh draws: count, base vertex, base instance, index size, index address lo/hi; emulated
 	// mesh shaders add workgroups per instance, index region offset, record address lo/hi.
 	static constexpr uint32_t MeshDrawDwordCount = 10;
+	// User clip planes 0..N follow the mesh draw parameters, four dwords each.
+	static constexpr uint32_t UserClipPlaneDword = MeshDrawDwordCount;
 	static constexpr uint32_t NoStart    = UINT32_MAX;
 	std::array<uint32_t, DwordCount> dwords {};
 

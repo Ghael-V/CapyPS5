@@ -293,10 +293,6 @@ KYTY_HW_CTX_PARSER(HwCtxSetCentroidPriority) {
 static void HwCtxIgnoreAaMaskRegister([[maybe_unused]] uint32_t cmd_offset,
                                       [[maybe_unused]] uint32_t value) {}
 
-static void HwCtxIgnoreDisabledUserClipPlane(CommandProcessor& cp, uint32_t value) {
-	EXIT_NOT_IMPLEMENTED(value != 0 || cp.GetCtx().GetClipControl().user_clip_planes != 0);
-}
-
 static void HwCtxIgnoreDrawPayloadControl([[maybe_unused]] uint32_t value) {}
 
 static void HwCtxIgnoreObjprimIdControl([[maybe_unused]] uint32_t value) {}
@@ -2919,7 +2915,7 @@ void GraphicsInitJmpTablesCxIndirect() {
 
 	for (auto cmd_offset = Pm4::PA_CL_UCP_0_X; cmd_offset <= Pm4::PA_CL_UCP_5_W; cmd_offset++) {
 		g_hw_ctx_indirect_func[cmd_offset] = [](KYTY_HW_CTX_INDIRECT_ARGS) {
-			HwCtxIgnoreDisabledUserClipPlane(cp, value);
+			cp.GetCtx().SetUserClipPlane(cmd_offset - Pm4::PA_CL_UCP_0_X, value);
 		};
 	}
 

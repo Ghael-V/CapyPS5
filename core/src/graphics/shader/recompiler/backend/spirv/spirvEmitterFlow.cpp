@@ -9,6 +9,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <bit>
 #include <optional>
 
 namespace Libs::Graphics::ShaderRecompiler::Spirv::Emitter {
@@ -418,6 +419,43 @@ uint32_t ExportVector(ValueEmitContext& ctx, uint32_t data, const IR::ExportInfo
 	return vector;
 }
 
+uint32_t DistancePointer(EmitterState& state, IR::StageOutputKind kind, uint32_t index) {
+	if (state.program.stage == ShaderType::Mesh) {
+		return MeshOutputPointer(state, kind, index);
+	}
+	const auto variable = kind == IR::StageOutputKind::ClipDistance ? state.clip_distance_variable
+	                                                                : state.cull_distance_variable;
+	const auto pointer  = state.builder.AllocateId();
+	state.builder.AddFunction(spv::OpAccessChain,
+	                          TypePointer(state, spv::StorageClassOutput, TypeF32(state)), pointer,
+	                          variable, ConstantU32(state, index));
+	return pointer;
+}
+
+// The clipper keeps the half space where dot(plane, position) >= 0 for each UCP_ENA plane.
+void EmitUserClipDistances(EmitterState& state, uint32_t position) {
+	uint32_t index = 0;
+	for (auto mask = state.user_clip_planes; mask != 0; mask &= mask - 1u) {
+		const auto dword = IR::PushData::UserClipPlaneDword + 4u * std::countr_zero(mask);
+		uint32_t   components[4] {};
+		for (uint32_t i = 0; i < 4; i++) {
+			const auto pointer = state.builder.AllocateId();
+			const auto bits    = state.builder.AllocateId();
+			state.builder.AddFunction(spv::OpAccessChain, TypePushConstantElementPointer(state),
+			                          pointer, state.push_constant_variable, ConstantU32(state, 0),
+			                          ConstantU32(state, dword + i));
+			state.builder.AddFunction(spv::OpLoad, TypeU32(state), bits, pointer);
+			components[i] = Unary(state, spv::OpBitcast, TypeF32(state), bits);
+		}
+		const auto plane = state.builder.AllocateId();
+		state.builder.AddFunction(spv::OpCompositeConstruct, TypeF32Vector(state, 4), plane,
+		                          components[0], components[1], components[2], components[3]);
+		state.builder.AddFunction(
+		    spv::OpStore, DistancePointer(state, IR::StageOutputKind::ClipDistance, index++),
+		    Binary(state, spv::OpDot, TypeF32(state), plane, position));
+	}
+}
+
 void EmitAuxPositionExport(ValueEmitContext& ctx, uint32_t data, const IR::ExportInfo& exp) {
 	auto& state = ctx.state;
 	for (uint32_t component = 0; component < 4; component++) {
@@ -648,6 +686,9 @@ void EmitSetAttribute(ValueEmitContext& ctx, const IR::Inst& inst) {
 		    state.input_info.vertex->clip_space.enabled) {
 			value = ConvertPositionToClipSpace(state, value);
 		}
+		if (exp.kind == IR::ExportTargetKind::Position && state.user_clip_planes != 0) {
+			EmitUserClipDistances(state, value);
+		}
 		if (state.program.stage == ShaderType::Mesh) {
 			const auto kind = exp.kind == IR::ExportTargetKind::Position
 			                      ? IR::StageOutputKind::Position
@@ -660,7 +701,6 @@ void EmitSetAttribute(ValueEmitContext& ctx, const IR::Inst& inst) {
 				const auto equal = state.builder.AllocateId();
 				const auto invalid = state.builder.AllocateId();
 				const auto distance = state.builder.AllocateId();
-				const auto distance_pointer = state.builder.AllocateId();
 				state.builder.AddFunction(spv::OpFOrdEqual, TypeBoolVector(state, 4), equal,
 				                          value, zero);
 				state.builder.AddFunction(spv::OpAll, TypeBool(state), invalid, equal);
@@ -669,11 +709,10 @@ void EmitSetAttribute(ValueEmitContext& ctx, const IR::Inst& inst) {
 				state.builder.AddFunction(spv::OpSelect, TypeF32(state), distance, invalid,
 				                          ConstantF32Value(state, -1.0f),
 				                          ConstantF32Value(state, 0.0f));
-				state.builder.AddFunction(
-				    spv::OpAccessChain, TypePointer(state, spv::StorageClassOutput, TypeF32(state)),
-				    distance_pointer, state.clip_distance_variable,
-				    ConstantU32(state, state.invalid_position_clip_distance));
-				state.builder.AddFunction(spv::OpStore, distance_pointer, distance);
+				state.builder.AddFunction(spv::OpStore,
+				                          DistancePointer(state, IR::StageOutputKind::ClipDistance,
+				                                          state.invalid_position_clip_distance),
+				                          distance);
 				static std::atomic_bool logged = false;
 				if (!logged.exchange(true, std::memory_order_relaxed)) {
 					Log::WriteToConsoleAndLog(

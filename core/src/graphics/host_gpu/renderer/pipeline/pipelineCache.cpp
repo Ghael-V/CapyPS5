@@ -9,6 +9,7 @@
 
 #include "common/assert.h"
 #include "common/debugFlags.h"
+#include "graphics/shader/recompiler/HostFeatures.h"
 #include "common/emulatorConfig.h"
 #include "common/file.h"
 #include "common/logging/log.h"
@@ -34,6 +35,7 @@
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <chrono>
 #include <atomic>
 #if defined(__ANDROID__) || defined(__linux__)
@@ -901,10 +903,12 @@ PipelineCache::GraphicsPrograms PipelineCache::GetGraphicsPrograms(
 			}
 		}
 	}
-	if (context.GetClipControl().clip_disable) {
+	auto&       last_stage   = vertex_info[tess_active ? 2u : 0u];
+	const auto& clip_control = context.GetClipControl();
+	if (clip_control.clip_disable) {
 		const auto& viewport = context.GetScreenViewport().viewports[0];
 		const auto& limits   = m_graphics.GetPhysicalDeviceProperties().limits;
-		auto&       clip     = vertex_info[tess_active ? 2u : 0u].clip_space;
+		auto&       clip     = last_stage.clip_space;
 		clip.scale[0]        = viewport.xscale;
 		clip.scale[1]        = viewport.yscale;
 		clip.offset[0]       = viewport.xoffset;
@@ -914,9 +918,26 @@ PipelineCache::GraphicsPrograms PipelineCache::GetGraphicsPrograms(
 		clip.half_extent[1] =
 		    static_cast<float>(std::min(limits.maxViewportDimensions[1], 16384u)) * 0.5f;
 		clip.enabled = true;
+	} else if (clip_control.user_clip_planes != 0) {
+		// CLIP_DISABLE also disables user planes. They become clip distances of a plain vertex
+		// shader; with shader clip/cull distances, tessellation, mesh or rect lists (whose
+		// generated stages do not forward distances), or without host clip distances, the planes
+		// are ignored as before.
+		const bool supported = (last_stage.pa_cl_vs_out_cntl & 0xffffu) == 0 && !tess_active &&
+		                       !mesh_active && !Prospero::IsRectList(user_config.GetPrimType()) &&
+		                       ShaderRecompiler::g_host_features.clip_distance;
+		if (supported) {
+			last_stage.user_clip_planes = clip_control.user_clip_planes;
+		} else {
+			Common::DebugFlags::NoteOnce("CapyPS5-Clip", 0x55435000ull | clip_control.user_clip_planes,
+			                             "user clip planes 0x%x ignored", clip_control.user_clip_planes);
+		}
 	}
-	uint32_t          push_data_cursor =
-	    mesh_active ? ShaderRecompiler::IR::PushData::MeshDrawDwordCount : 0;
+	uint32_t push_data_cursor =
+	    last_stage.user_clip_planes != 0
+	        ? ShaderRecompiler::IR::PushData::UserClipPlaneDword +
+	              4u * static_cast<uint32_t>(std::bit_width(last_stage.user_clip_planes))
+	        : mesh_active ? ShaderRecompiler::IR::PushData::MeshDrawDwordCount : 0;
 	GraphicsPrograms  result;
 	if (pixel_active) {
 		result.pixel = m_program_cache->Get(pixel_params, pixel_info, push_data_cursor);

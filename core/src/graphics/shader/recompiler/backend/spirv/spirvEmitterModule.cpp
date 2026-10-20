@@ -250,7 +250,9 @@ void DefineDescriptors(EmitterState& state) {
 	    IR::PushData::StartFor(bindings.push_data_start_dword, bindings.ShaderDataDwords());
 	counts[static_cast<size_t>(Kind::ShaderData)] =
 	    bindings.ShaderDataDwords() != 0 && !bindings.UsesPushData();
-	if (state.program.bindings.UsesPushData() || state.program.stage == ShaderType::Mesh) {
+	if (state.program.bindings.UsesPushData() || state.program.stage == ShaderType::Mesh ||
+	    (state.program.stage == ShaderType::Vertex && state.input_info.vertex != nullptr &&
+	     state.input_info.vertex->user_clip_planes != 0)) {
 		const auto type              = PushConstantBlockType(state);
 		state.push_constant_variable = state.builder.DefineGlobalVariable(
 		    TypePointer(state, spv::StorageClassPushConstant, type), spv::StorageClassPushConstant);
@@ -607,6 +609,19 @@ void DefineOutputs(EmitterState& state) {
 			clip_distance_count = std::max(clip_distance_count, output.index + 1);
 		} else if (output.kind == IR::StageOutputKind::CullDistance) {
 			cull_distance_count = std::max(cull_distance_count, output.index + 1);
+		}
+	}
+	if (state.program.stage == ShaderType::Vertex && state.input_info.vertex != nullptr &&
+	    state.input_info.vertex->user_clip_planes != 0 &&
+	    std::ranges::any_of(state.outputs, [](const OutputBinding& output) {
+		    return output.kind == IR::StageOutputKind::Position;
+	    })) {
+		// PipelineCache enables user planes only without shader clip or cull distances.
+		EXIT_IF(clip_distance_count + cull_distance_count != 0);
+		state.user_clip_planes = state.input_info.vertex->user_clip_planes;
+		for (auto mask = state.user_clip_planes; mask != 0; mask &= mask - 1u) {
+			state.outputs.push_back(
+			    {{IR::StageOutputKind::ClipDistance, clip_distance_count++, 0, "gl_ClipDistance"}});
 		}
 	}
 	if (state.program.stage == ShaderType::Mesh) {

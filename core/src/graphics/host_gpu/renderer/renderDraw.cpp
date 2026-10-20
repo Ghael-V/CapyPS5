@@ -1828,6 +1828,13 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 	} else if (!mesh_active) {
 		CommitIndexBuffer(vk_buffer, index_binding);
 	}
+	if (const auto planes = vertex_stages.back().user_clip_planes; planes != 0) {
+		vk_buffer.pushConstants(pipeline.pipeline_layout,
+		                        vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment,
+		                        ShaderRecompiler::IR::PushData::UserClipPlaneDword * sizeof(uint32_t),
+		                        std::bit_width(planes) * 4u * sizeof(uint32_t),
+		                        buffer.GetRegisters().GetUserClipPlanes().data());
+	}
 
 	auto& dynamic_state = m_context.GetCommandScheduler().GetDynamicState();
 	// Bisection aid: `setprop debug.capy.dyn_invalidate 1` re-records all dynamic state per draw.
