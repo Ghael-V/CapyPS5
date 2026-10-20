@@ -102,11 +102,10 @@ void ReflectTessellationLayout(const Decoder::Program& program, bool local,
 		return changed;
 	};
 
-	uint32_t stride = 0, patch_begin = 0, patch_end = 0;
+	uint32_t stride = 0, patch_begin = UINT32_MAX, patch_end = 0;
 	for (bool repeat = true; repeat;) {
 		repeat    = false;
 		registers = entry;
-		stride = 0, patch_begin = UINT32_MAX, patch_end = 0;
 		for (const auto& inst: program.instructions) {
 			if (const auto join = joins.find(inst.pc); join != joins.end()) {
 				merge(registers, join->second);
@@ -116,7 +115,7 @@ void ReflectTessellationLayout(const Decoder::Program& program, bool local,
 				merge(registers, loop->second);
 			if (IsDirectBranch(inst.opcode)) {
 				const bool back = inst.branch_target <= inst.pc;
-				auto [join, inserted] =
+				const auto [join, inserted] =
 				    (back ? loops : joins).try_emplace(inst.branch_target, registers);
 				const bool changed = !inserted && merge(join->second, registers);
 				repeat |= back && (inserted || changed);
