@@ -345,6 +345,11 @@ static_assert(sizeof(PushData) == 128);
 inline constexpr uint32_t ResolutionScaleSpecId = 100;
 inline constexpr uint32_t ScaledImageMaskSpecId = 101;
 inline constexpr uint32_t ScaledRenderTargetBit = 1u << 31u;
+// Compute: the dispatch covers the downscaled image instead of the guest one; workgroup and
+// invocation IDs are mapped back to the guest thread of the same image position. Image
+// resources then use the first 30 bits.
+inline constexpr uint32_t ScaledDispatchBit = 1u << 30u;
+inline constexpr uint32_t ScaledImageResources = 30u;
 
 // Emulated mesh shaders store every output vertex as a record holding the stage outputs in
 // order: Position and Parameter take 4 dwords, Layer and each clip/cull distance one.

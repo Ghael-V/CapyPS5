@@ -169,13 +169,13 @@ uint32_t CoordF32(ValueEmitContext& ctx, const IR::MemoryInfo& mem, const IR::In
 // Whether image resource `resource` is downscaled, from the specialization mask.
 uint32_t ImageScaled(EmitterState& state, uint32_t resource) {
 	const auto bit = Binary(state, spv::OpBitwiseAnd, TypeU32(state), ScaledImageMask(state),
-	                        ConstantU32(state, resource < 31u ? 1u << resource : 0u));
+	                        ConstantU32(state, resource < IR::ScaledImageResources ? 1u << resource : 0u));
 	return Binary(state, spv::OpINotEqual, TypeBool(state), bit, ConstantU32(state, 0));
 }
 
 // Guest texel coordinate -> host texel of a downscaled image.
 uint32_t ScaleTexelCoord(EmitterState& state, uint32_t resource, uint32_t coord) {
-	if (resource >= 31u) return coord;
+	if (resource >= IR::ScaledImageResources) return coord;
 	const auto scaled = Unary(
 	    state, spv::OpConvertFToU, TypeU32(state),
 	    Binary(state, spv::OpFMul, TypeF32(state),
@@ -188,7 +188,7 @@ uint32_t ScaleTexelCoord(EmitterState& state, uint32_t resource, uint32_t coord)
 
 // Host size of a downscaled image -> the guest size the shader expects.
 uint32_t UnscaleImageSize(EmitterState& state, uint32_t resource, uint32_t size) {
-	if (resource >= 31u) return size;
+	if (resource >= IR::ScaledImageResources) return size;
 	const auto guest_float = Binary(state, spv::OpFDiv, TypeF32(state),
 	                                Unary(state, spv::OpConvertUToF, TypeF32(state), size),
 	                                ResolutionScale(state));

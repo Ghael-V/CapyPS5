@@ -19,6 +19,12 @@
 #include "graphics/shader/recompiler/ir/ShaderIR.h"
 #include "graphics/shader/rectListShader.h"
 #include "graphics/shader/shader.h"
+#include "common/debugFlags.h"
+#include <cinttypes>
+#include <string>
+#if defined(__ANDROID__)
+#include <android/log.h>
+#endif
 
 #include <algorithm>
 #include <bit>
@@ -227,6 +233,65 @@ ScaledImageSpecialization::ScaledImageSpecialization(uint32_t mask) {
 	info.pMapEntries   = entries.data();
 	info.dataSize      = sizeof(data);
 	info.pData         = &data;
+}
+
+// `setprop debug.capy.pipeline_stats 1` (read when pipelines are created): log the driver's own
+// statistics of each new pipeline (registers, waves per core, instructions) through
+// VK_KHR_pipeline_executable_properties, tag CapyPS5-PStats.
+static bool CapturePipelineStatistics(const GraphicContext& graphics) {
+	static Common::DebugFlags::CachedValue enabled("debug.capy.pipeline_stats", 0);
+	return graphics.pipeline_executable_info_enabled && enabled.Get() != 0;
+}
+
+static void LogPipelineStatistics(GraphicContext& graphics, vk::Pipeline pipeline, const char* kind,
+                                  uint64_t first_hash, uint64_t second_hash) {
+#if defined(__ANDROID__)
+	vk::PipelineInfoKHR info {};
+	info.pipeline = pipeline;
+	uint32_t count = 0;
+	if (graphics.device.getPipelineExecutablePropertiesKHR(&info, &count, nullptr) != vk::Result::eSuccess) {
+		return;
+	}
+	std::vector<vk::PipelineExecutablePropertiesKHR> executables(count);
+	(void)graphics.device.getPipelineExecutablePropertiesKHR(&info, &count, executables.data());
+	for (uint32_t index = 0; index < count; index++) {
+		vk::PipelineExecutableInfoKHR executable {};
+		executable.pipeline        = pipeline;
+		executable.executableIndex = index;
+		uint32_t stat_count        = 0;
+		if (graphics.device.getPipelineExecutableStatisticsKHR(&executable, &stat_count, nullptr) !=
+		    vk::Result::eSuccess) {
+			continue;
+		}
+		std::vector<vk::PipelineExecutableStatisticKHR> stats(stat_count);
+		(void)graphics.device.getPipelineExecutableStatisticsKHR(&executable, &stat_count, stats.data());
+		std::string line;
+		for (const auto& stat: stats) {
+			char value[48];
+			switch (stat.format) {
+				case vk::PipelineExecutableStatisticFormatKHR::eBool32:
+					std::snprintf(value, sizeof(value), "%u", stat.value.b32);
+					break;
+				case vk::PipelineExecutableStatisticFormatKHR::eInt64:
+					std::snprintf(value, sizeof(value), "%" PRId64, stat.value.i64);
+					break;
+				case vk::PipelineExecutableStatisticFormatKHR::eUint64:
+					std::snprintf(value, sizeof(value), "%" PRIu64, stat.value.u64);
+					break;
+				default: std::snprintf(value, sizeof(value), "%.2f", stat.value.f64); break;
+			}
+			line += std::string(" | ") + stat.name.data() + "=" + value;
+		}
+		__android_log_print(ANDROID_LOG_WARN, "CapyPS5-PStats", "%s %016" PRIx64 " %016" PRIx64 " %s%s",
+		                    kind, first_hash, second_hash, executables[index].name.data(), line.c_str());
+	}
+#else
+	(void)graphics;
+	(void)pipeline;
+	(void)kind;
+	(void)first_hash;
+	(void)second_hash;
+#endif
 }
 
 // NOLINTNEXTLINE(readability-function-cognitive-complexity)
@@ -619,8 +684,16 @@ void CreatePipelineInternal(GraphicContext& graphics, PipelineCache::Pipeline& p
 		     (with_depth ? "true" : "false"), (static_params.blend_enable[0] ? "true" : "false"),
 		     dynamic_state.dynamicStateCount);
 	}
+	const bool capture_stats = CapturePipelineStatistics(graphics);
+	if (capture_stats) {
+		pipeline_info.flags |= vk::PipelineCreateFlagBits::eCaptureStatisticsKHR;
+	}
 	result = graphics.device.createGraphicsPipelines(driver_cache, 1, &pipeline_info, nullptr,
 	                                                 &pipeline.pipeline);
+	if (capture_stats && result == vk::Result::eSuccess) {
+		LogPipelineStatistics(graphics, pipeline.pipeline, "gfx", vs_input_info.stage.program->shader_hash,
+		                      ps_active ? ps_input_info->stage.program->shader_hash : 0);
+	}
 	if (graphics_debug_dump_enabled()) {
 		LOGF("PipelineTrace: vkCreateGraphicsPipelines done result=%s pipeline=%p\n",
 		     vk::to_string(result).c_str(), static_cast<void*>(pipeline.pipeline));
@@ -694,8 +767,15 @@ void CreatePipelineInternal(GraphicContext& graphics, PipelineCache::Pipeline& p
 
 	LOGF("PipelineTrace: vkCreateComputePipelines begin layout=%p\n",
 	     static_cast<void*>(pipeline.pipeline_layout));
+	const bool capture_stats = CapturePipelineStatistics(graphics);
+	if (capture_stats) {
+		info.flags |= vk::PipelineCreateFlagBits::eCaptureStatisticsKHR;
+	}
 	result = graphics.device.createComputePipelines(driver_cache, 1, &info, nullptr,
 	                                                &pipeline.pipeline);
+	if (capture_stats && result == vk::Result::eSuccess) {
+		LogPipelineStatistics(graphics, pipeline.pipeline, "cs", stage.program->shader_hash, scaled_images);
+	}
 	LOGF("PipelineTrace: vkCreateComputePipelines done result=%s pipeline=%p\n",
 	     vk::to_string(result).c_str(), static_cast<void*>(pipeline.pipeline));
 	EXIT_NOT_IMPLEMENTED(result != vk::Result::eSuccess);

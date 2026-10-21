@@ -2068,7 +2068,7 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 uint32_t RenderExecutor::ScaledImageMask(const PreparedBindings& bindings) {
 	auto&    cache = m_context.GetTextureCache();
 	uint32_t mask  = 0;
-	for (uint32_t i = 0; i < bindings.images.size() && i < 31u; i++) {
+	for (uint32_t i = 0; i < bindings.images.size() && i < ShaderRecompiler::IR::ScaledImageResources; i++) {
 		const auto* image = cache.m_slot_images.try_get(bindings.images[i].image_id);
 		if (image != nullptr && image->IsScaled()) {
 			mask |= 1u << i;

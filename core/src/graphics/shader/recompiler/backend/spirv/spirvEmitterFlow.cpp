@@ -20,7 +20,68 @@ bool UserDataDwordIndex(const EmitterState& state, IR::ScalarReg reg, uint32_t& 
 	return true;
 }
 
+uint32_t EmitBuiltinU32Raw(EmitterState& state, IR::StageInputKind kind, uint32_t component);
+
+// Downscaled compute dispatch (IR::ScaledDispatchBit): the host grid covers the scaled image,
+// so host thread h of an axis stands for guest thread floor(h / scale), whose image writes the
+// scaled-image path maps back to host texel h. X and Y only; Z is untouched.
+uint32_t EmitScaledDispatchBuiltin(EmitterState& state, IR::StageInputKind kind, uint32_t component) {
+	const auto* cs = ShaderWorkgroupInput(state.program.stage, state.input_info);
+	const auto  raw = EmitBuiltinU32Raw(state, kind, component);
+	if (cs == nullptr) {
+		return raw;
+	}
+	const auto enabled = Binary(state, spv::OpINotEqual, TypeBool(state),
+	                            Binary(state, spv::OpBitwiseAnd, TypeU32(state), ScaledImageMask(state),
+	                                   ConstantU32(state, IR::ScaledDispatchBit)),
+	                            ConstantU32(state, 0));
+	const auto guest_axis = [&](uint32_t axis) {
+		const auto size  = ConstantU32(state, std::max(cs->threads_num[axis], 1u));
+		const auto group = EmitBuiltinU32Raw(state, IR::StageInputKind::WorkgroupId, axis);
+		const auto local = EmitBuiltinU32Raw(state, IR::StageInputKind::LocalInvocationId, axis);
+		const auto host  = EmitAddU32(state, local, EmitBinaryU32(state, spv::OpIMul, group, size));
+		const auto guest = Unary(state, spv::OpConvertFToU, TypeU32(state),
+		                         Binary(state, spv::OpFDiv, TypeF32(state),
+		                                Unary(state, spv::OpConvertUToF, TypeF32(state), host),
+		                                ResolutionScale(state)));
+		struct Ids {
+			uint32_t global, group, local;
+		};
+		return Ids {guest, EmitBinaryU32(state, spv::OpUDiv, guest, size),
+		            EmitBinaryU32(state, spv::OpUMod, guest, size)};
+	};
+	uint32_t mapped = raw;
+	if (kind == IR::StageInputKind::LocalInvocationIndex) {
+		const auto x     = guest_axis(0);
+		const auto y     = guest_axis(1);
+		const auto z     = EmitBuiltinU32Raw(state, IR::StageInputKind::LocalInvocationId, 2);
+		const auto sx    = std::max(cs->threads_num[0], 1u);
+		const auto sy    = std::max(cs->threads_num[1], 1u);
+		mapped = EmitAddU32(state, x.local,
+		                    EmitAddU32(state, EmitBinaryU32(state, spv::OpIMul, y.local, ConstantU32(state, sx)),
+		                               EmitBinaryU32(state, spv::OpIMul, z, ConstantU32(state, sx * sy))));
+	} else if (component < 2u) {
+		const auto ids = guest_axis(component);
+		mapped = kind == IR::StageInputKind::WorkgroupId       ? ids.group
+		         : kind == IR::StageInputKind::LocalInvocationId ? ids.local
+		                                                         : ids.global;
+	}
+	const auto result = state.builder.AllocateId();
+	state.builder.AddFunction(spv::OpSelect, TypeU32(state), result, enabled, mapped, raw);
+	return result;
+}
+
 uint32_t EmitBuiltinU32(EmitterState& state, IR::StageInputKind kind, uint32_t component) {
+	if (state.program.stage == ShaderType::Compute &&
+	    (kind == IR::StageInputKind::WorkgroupId || kind == IR::StageInputKind::LocalInvocationId ||
+	     kind == IR::StageInputKind::GlobalInvocationId ||
+	     kind == IR::StageInputKind::LocalInvocationIndex)) {
+		return EmitScaledDispatchBuiltin(state, kind, component);
+	}
+	return EmitBuiltinU32Raw(state, kind, component);
+}
+
+uint32_t EmitBuiltinU32Raw(EmitterState& state, IR::StageInputKind kind, uint32_t component) {
 	if (kind == IR::StageInputKind::LocalInvocationIndex) {
 		return EmitLocalInvocationIndex(state);
 	}

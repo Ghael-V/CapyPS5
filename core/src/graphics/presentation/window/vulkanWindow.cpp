@@ -450,6 +450,8 @@ static vk::Device VulkanCreateDevice(GraphicContext& graphics,
 	// the Qualcomm driver lacks them but Turnip has them, and its compiler crashes on shaders
 	// that use them without the extension enabled.
 	vk::PhysicalDeviceFragmentShaderBarycentricFeaturesKHR optional_barycentric {};
+	// Driver statistics of compiled pipelines (registers, waves), for debug.capy.pipeline_stats.
+	vk::PhysicalDevicePipelineExecutablePropertiesFeaturesKHR optional_executable_info {};
 	void*                                         optional_chain = nullptr;
 	{
 		const auto query = [&](auto& feature, const char* extension) {
@@ -465,6 +467,7 @@ static vk::Device VulkanCreateDevice(GraphicContext& graphics,
 #if defined(__ANDROID__) || defined(ANDROID) || defined(KYTY_PLATFORM_ANDROID)
 		query(optional_barycentric, VK_KHR_FRAGMENT_SHADER_BARYCENTRIC_EXTENSION_NAME);
 #endif
+		query(optional_executable_info, VK_KHR_PIPELINE_EXECUTABLE_PROPERTIES_EXTENSION_NAME);
 		vk::PhysicalDeviceFeatures2 supported {};
 		supported.pNext = optional_chain;
 		physical_device.getFeatures2(&supported);
@@ -490,7 +493,9 @@ static vk::Device VulkanCreateDevice(GraphicContext& graphics,
 		    optional_barycentric.fragmentShaderBarycentric == VK_TRUE;
 #endif
 		enable(optional_barycentric, optional_barycentric.fragmentShaderBarycentric);
+		enable(optional_executable_info, optional_executable_info.pipelineExecutableInfo);
 	}
+	graphics.pipeline_executable_info_enabled = optional_executable_info.pipelineExecutableInfo == VK_TRUE;
 	LOGF("Vulkan fragment shader barycentrics: %s\n",
 	     optional_barycentric.fragmentShaderBarycentric == VK_TRUE ? "true" : "false");
 	graphics.color_write_enable_enabled = color_write_ext.colorWriteEnable == VK_TRUE;
@@ -1247,6 +1252,7 @@ void WindowContext::CreateVulkan() {
 		                             VK_EXT_DEPTH_CLIP_CONTROL_EXTENSION_NAME,
 		                             VK_EXT_IMAGE_VIEW_MIN_LOD_EXTENSION_NAME,
 		                             VK_EXT_COLOR_WRITE_ENABLE_EXTENSION_NAME,
+		                             VK_KHR_PIPELINE_EXECUTABLE_PROPERTIES_EXTENSION_NAME,
 #if defined(__ANDROID__) || defined(ANDROID) || defined(KYTY_PLATFORM_ANDROID)
 		                             VK_KHR_FRAGMENT_SHADER_BARYCENTRIC_EXTENSION_NAME,
 #endif

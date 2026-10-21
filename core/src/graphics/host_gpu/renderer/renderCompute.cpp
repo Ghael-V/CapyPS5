@@ -136,6 +136,77 @@ bool ResolveComputeBufferFill(const ShaderComputeInputInfo& input, uint32_t grou
 	return true;
 }
 
+// Full-screen compute passes written for the guest resolution still ran one thread per guest
+// pixel on downscaled images (debug.capy.res_scale), several threads writing each host texel.
+// When a dispatch only writes downscaled images and its grid covers them exactly, run the grid
+// of the host size instead (IR::ScaledDispatchBit maps IDs back to guest threads). Shaders whose
+// threads cooperate (LDS, GDS, cross-lane shuffles, barriers, derivatives) or that write
+// buffers keep the full grid. Experimental and off by default: no tested game qualified yet
+// (Born of Bread's full-screen passes write buffers); `setprop debug.capy.scaled_dispatch 1`.
+static bool DownscaleComputeGrid(const ShaderComputeInputInfo& input, const PreparedBindings& bindings,
+                                 TextureCache& cache, uint32_t& group_x, uint32_t& group_y) {
+	static Common::DebugFlags::CachedValue enabled("debug.capy.scaled_dispatch", 0);
+	const float scale = TextureCache::ResolutionScale();
+	if (enabled.Get() == 0 || scale == 1.0f || input.dispatch_thread_dimensions) {
+		return false;
+	}
+	const auto& info = input.stage.program->info;
+	if (info.uses_lds || info.uses_gds || info.subgroup_shuffle || info.subgroup_barrier ||
+	    info.compute_derivatives || HasShaderBufferWrites(input.stage)) {
+		return false;
+	}
+	bool has_group = false;
+	bool has_local = false;
+	for (const auto& stage_input: info.inputs) {
+		if (stage_input.kind == ShaderRecompiler::IR::StageInputKind::NumWorkgroups) {
+			return false;
+		}
+		has_group |= stage_input.kind == ShaderRecompiler::IR::StageInputKind::WorkgroupId;
+		has_local |= stage_input.kind == ShaderRecompiler::IR::StageInputKind::LocalInvocationId;
+	}
+	if (!has_group || !has_local) {
+		return false;
+	}
+	uint32_t width = 0, height = 0;
+	for (uint32_t i = 0; i < info.images.size() && i < bindings.images.size(); i++) {
+		if (!info.images[i].written) {
+			continue;
+		}
+		if (i >= ShaderRecompiler::IR::ScaledImageResources) {
+			return false;
+		}
+		if (!bindings.images[i].image_id) {
+			return false;
+		}
+		const auto& image = cache.GetImage(bindings.images[i].image_id);
+		if (!image.IsScaled() || bindings.images[i].desc.view_info.base_level != 0) {
+			return false;
+		}
+		const auto& extent = image.info.extent;
+		if (width != 0 && (extent.width != width || extent.height != height)) {
+			return false;
+		}
+		width  = extent.width;
+		height = extent.height;
+	}
+	const auto size_x = std::max(input.threads_num[0], 1u);
+	const auto size_y = std::max(input.threads_num[1], 1u);
+	const auto covers = [](uint64_t threads, uint32_t pixels, uint32_t size) {
+		return threads >= pixels && threads < static_cast<uint64_t>(pixels) + size;
+	};
+	if (width == 0 || !covers(static_cast<uint64_t>(group_x) * size_x, width, size_x) ||
+	    !covers(static_cast<uint64_t>(group_y) * size_y, height, size_y)) {
+		return false;
+	}
+	const auto host = [scale](uint32_t pixels, uint32_t size) {
+		const auto threads = static_cast<uint32_t>(std::ceil(static_cast<float>(pixels) * scale));
+		return std::max((threads + size - 1u) / size, 1u);
+	};
+	group_x = host(width, size_x);
+	group_y = host(height, size_y);
+	return true;
+}
+
 bool RenderExecutor::TryConsumeComputeImageClear(const ShaderComputeInputInfo& input,
                                                 CommandBuffer& command, uint32_t group_x,
                                                 uint32_t group_y, uint32_t group_z, uint32_t mode) {
@@ -388,8 +459,14 @@ void RenderExecutor::DispatchDirect(uint64_t submit_id, CommandBuffer& buffer,
 	RebindImages(bindings);
 	BindSharedMemory(m_context, input_info, bindings);
 	RebindBuffers(bindings);
+	uint32_t scaled_mask = ScaledImageMask(bindings);
+	if (DownscaleComputeGrid(input_info, bindings, m_context.GetTextureCache(), thread_group_x,
+	                         thread_group_y)) {
+		scaled_mask |= ShaderRecompiler::IR::ScaledDispatchBit;
+		Common::DebugFlags::FrameTrace("    -> downscaled grid %ux%u", thread_group_x, thread_group_y);
+	}
 	auto& pipeline = m_context.GetPipelineCache().GetComputePipeline(
-	    input_info, compute_program, ScaledImageMask(bindings));
+	    input_info, compute_program, scaled_mask);
 	if (pipeline.pipeline == nullptr) {
 		// The driver rejected this shader (logged once by the pipeline cache): skip the dispatch.
 		ResetBindings();
