@@ -491,6 +491,12 @@ static vk::Device VulkanCreateDevice(GraphicContext& graphics,
 		}
 		ShaderRecompiler::g_host_features.fragment_barycentric =
 		    optional_barycentric.fragmentShaderBarycentric == VK_TRUE;
+		// Bisection aid: `setprop debug.capy.force_barycentric 1` keeps emitting BaryCoordKHR
+		// without driver support, as before the fallback existed.
+		static Common::DebugFlags::CachedValue force_barycentric("debug.capy.force_barycentric", 0);
+		if (force_barycentric.Get() != 0) {
+			ShaderRecompiler::g_host_features.fragment_barycentric = true;
+		}
 #endif
 		enable(optional_barycentric, optional_barycentric.fragmentShaderBarycentric);
 		enable(optional_executable_info, optional_executable_info.pipelineExecutableInfo);
