@@ -192,51 +192,26 @@ uint32_t EmitBuiltinU32Raw(EmitterState& state, IR::StageInputKind kind, uint32_
 
 uint32_t EmitDppWriteCondition(ValueEmitContext& ctx, const IR::DppMoveFlags& flags,
                                uint32_t exec) {
-	auto&      state      = ctx.state;
-	const auto lane       = EmitSubgroupLocalInvocationId(state);
-	const auto bank_shift = state.builder.AllocateId();
-	const auto row_shift  = state.builder.AllocateId();
-	const auto bank       = state.builder.AllocateId();
-	const auto row        = state.builder.AllocateId();
-	const auto bank_bit   = state.builder.AllocateId();
-	const auto row_bit    = state.builder.AllocateId();
-	const auto bank_hit   = state.builder.AllocateId();
-	const auto row_hit    = state.builder.AllocateId();
-	const auto bank_ok    = state.builder.AllocateId();
-	const auto row_ok     = state.builder.AllocateId();
-	const auto masks_ok   = state.builder.AllocateId();
-	state.builder.AddFunction(spv::OpShiftRightLogical, TypeU32(state), bank_shift, lane,
-	                          ConstantU32(state, 2));
-	state.builder.AddFunction(spv::OpShiftRightLogical, TypeU32(state), row_shift, lane,
-	                          ConstantU32(state, 4));
-	state.builder.AddFunction(spv::OpBitwiseAnd, TypeU32(state), bank, bank_shift,
-	                          ConstantU32(state, 3));
-	state.builder.AddFunction(spv::OpBitwiseAnd, TypeU32(state), row, row_shift,
-	                          ConstantU32(state, 3));
-	state.builder.AddFunction(spv::OpShiftLeftLogical, TypeU32(state), bank_bit,
-	                          ConstantU32(state, 1), bank);
-	state.builder.AddFunction(spv::OpShiftLeftLogical, TypeU32(state), row_bit,
-	                          ConstantU32(state, 1), row);
-	state.builder.AddFunction(spv::OpBitwiseAnd, TypeU32(state), bank_hit,
-	                          ConstantU32(state, flags.bank_mask), bank_bit);
-	state.builder.AddFunction(spv::OpBitwiseAnd, TypeU32(state), row_hit,
-	                          ConstantU32(state, flags.row_mask), row_bit);
-	state.builder.AddFunction(spv::OpINotEqual, TypeBool(state), bank_ok, bank_hit,
-	                          ConstantU32(state, 0));
-	state.builder.AddFunction(spv::OpINotEqual, TypeBool(state), row_ok, row_hit,
-	                          ConstantU32(state, 0));
-	state.builder.AddFunction(spv::OpLogicalAnd, TypeBool(state), masks_ok, bank_ok, row_ok);
-	uint32_t writable = masks_ok;
+	auto&    state    = ctx.state;
+	uint32_t writable = exec;
+	// Each mask bit enables writes to one bank (4 lanes) or row (16 lanes); a full mask enables all.
+	const auto enable = [&](uint32_t mask, uint32_t group_shift) {
+		if (mask == 0xfu) return;
+		const auto group = EmitNative<spv::OpBitFieldUExtract, IR::Type::U32>(
+		    state, EmitSubgroupLocalInvocationId(state), ConstantU32(state, group_shift),
+		    ConstantU32(state, 2));
+		const auto bit = EmitNative<spv::OpBitFieldUExtract, IR::Type::U32>(
+		    state, ConstantU32(state, mask), group, ConstantU32(state, 1));
+		writable = Binary(state, spv::OpLogicalAnd, TypeBool(state), writable,
+		                  Binary(state, spv::OpINotEqual, TypeBool(state), bit, ConstantU32(state, 0)));
+	};
+	enable(flags.bank_mask, 2u);
+	enable(flags.row_mask, 4u);
 	if (!flags.bound_control) {
-		const auto target  = EmitDppTargetLane(state, flags);
-		const auto bounded = state.builder.AllocateId();
-		state.builder.AddFunction(spv::OpLogicalAnd, TypeBool(state), bounded, writable,
-		                          target.valid);
-		writable = bounded;
+		writable = Binary(state, spv::OpLogicalAnd, TypeBool(state), writable,
+		                  EmitDppTargetLane(state, flags).valid);
 	}
-	const auto result = state.builder.AllocateId();
-	state.builder.AddFunction(spv::OpLogicalAnd, TypeBool(state), result, exec, writable);
-	return result;
+	return writable;
 }
 
 uint32_t EmitAttribute(EmitterState& state, uint32_t attr, uint32_t chan) {
