@@ -149,11 +149,13 @@ void Translator::S_ADD_SUB_I32(const Decoder::Instruction& inst, bool subtract) 
 	const auto lhs    = ReadU32(inst.src0);
 	const auto rhs    = ReadU32(inst.src1);
 	const auto result = subtract ? ir.ISub(lhs, rhs) : ir.IAdd(lhs, rhs);
-	// Overflow sets the sign bit of lhs ^ result and of rhs ^ result (add) or lhs ^ rhs (sub).
-	const auto other    = subtract ? ir.BitwiseXor(lhs, rhs) : ir.BitwiseXor(rhs, result);
-	const auto overflow = ir.BitwiseAnd(ir.BitwiseXor(lhs, result), other);
+	// Signed overflow moves the result past lhs the wrong way for the sign of rhs.
+	const auto ge = [&](IR::Value a, IR::Value b) {
+		return IR::U1(ir.Emit(IR::ValueOpcode::SGreaterThanEqual32, {a, b}));
+	};
+	const auto moved = subtract ? ge(lhs, result) : ge(result, lhs);
 	WriteOperand(DestinationOperand(inst), result);
-	ir.SetScc(ir.UGreaterThan(overflow, IR::U32(IR::Value(0x7fffffffu))));
+	ir.SetScc(IR::U1(ir.Emit(IR::ValueOpcode::LogicalXor, {moved, ge(rhs, IR::Value(0u))})));
 }
 
 void Translator::S_LSHL_ADD_U32(const Decoder::Instruction& inst, uint32_t shift_amount) {
