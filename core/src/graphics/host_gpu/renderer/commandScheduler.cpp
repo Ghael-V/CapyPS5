@@ -487,7 +487,7 @@ void CommandScheduler::CheckActive() const {
 }
 
 CommandBuffer& CommandScheduler::Current() {
-	CheckActive();
+	EXIT_IF(m_command.IsInvalid());
 	return m_command;
 }
 
