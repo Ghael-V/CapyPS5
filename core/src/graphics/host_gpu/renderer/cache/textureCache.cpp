@@ -1272,6 +1272,31 @@ ImageId TextureCache::FindImage(ImageDesc& desc, bool exact_format) {
 				result = {};
 			}
 		}
+		// An image first seen as a texture, storage image or display buffer was created unscaled;
+		// drawn into later with scaled attachments, the pass shrank to the smallest one and showed
+		// only the top-left of the scene (every other frame when buffers alternate). Recreate it at
+		// the target scale the first time it becomes a render or depth target.
+		if (result && view_mip < 0 && view_layer < 0 &&
+		    (desc.type == BindingType::RenderTarget || desc.type == BindingType::DepthTarget)) {
+			auto&       cached = m_slot_images[result];
+			const float scale  = ChooseScale(desc);
+			if (!cached.depth_id && cached.scale == 1.0f && scale != 1.0f &&
+			    cached.info.extent == desc.info.extent && cached.info.data == desc.info.data &&
+			    cached.backing.samples == 1) {
+				const auto old_id = result;
+				RefreshImage(old_id);
+				const auto upgraded_id = InsertImage(m_slot_images[old_id].info, scale);
+				auto&      upgraded    = m_slot_images[upgraded_id];
+				auto&      old         = m_slot_images[old_id];
+				upgraded.usage         = old.usage;
+				if (old.binding.is_bound || old.binding.is_target) {
+					old.binding.needs_rebind = true;
+				}
+				CopyImage(upgraded_id, old_id);
+				FreeImage(old_id);
+				result = upgraded_id;
+			}
+		}
 		if (!result) {
 			result         = InsertImage(desc.info, ChooseScale(desc));
 			auto& inserted = m_slot_images[result];

@@ -108,12 +108,58 @@ void EmitReturn(ValueEmitContext& ctx) {
 // inside the loop construct, unlike one in the continue construct) and the invocation returns once
 // the budget is spent.
 // `setprop debug.capy.loop_cap N` (read when shaders compile) sets the budget; 0 disables it.
-uint32_t LoopCap() {
-	// A fixed per-invocation budget cannot stop a full-screen pass where every invocation loops:
-	// a few thousand iterations each already run past the driver's timeout (pending: a budget per
-	// dispatch, divided among its invocations).
+constexpr uint32_t MinLoopBudget = 32;
+
+uint32_t LoopCapValue() {
+	// Compute dispatches also share DispatchLoopBudget() among their invocations; this cap bounds
+	// each invocation of small dispatches and of graphics stages.
 	static Common::DebugFlags::CachedValue cap("debug.capy.loop_cap", 1 << 16);
 	return static_cast<uint32_t>(std::clamp<int64_t>(cap.Get(), 0, UINT32_MAX));
+}
+
+// Initial budget of this invocation: compute dispatches share DispatchLoopBudget() among all
+// their invocations, so a full-screen pass where every invocation loops still ends in bounded
+// time, while small dispatches keep up to LoopCap() each.
+uint32_t EmitInitialLoopBudget(EmitterState& state) {
+	const auto  cap  = ConstantU32(state, LoopCap());
+	const auto* cs   = ShaderWorkgroupInput(state.program.stage, state.input_info);
+	const auto  total = DispatchLoopBudget();
+	if (cs == nullptr || total == 0 || InputVariableForKind(state, IR::StageInputKind::NumWorkgroups) == 0) {
+		return cap;
+	}
+	const auto f = TypeF32(state);
+	const auto to_float = [&](uint32_t value) {
+		const auto result = state.builder.AllocateId();
+		state.builder.AddFunction(spv::OpConvertUToF, f, result, value);
+		return result;
+	};
+	const auto fmul = [&](uint32_t a, uint32_t b) {
+		const auto result = state.builder.AllocateId();
+		state.builder.AddFunction(spv::OpFMul, f, result, a, b);
+		return result;
+	};
+	const auto local = std::max(cs->threads_num[0], 1u) * std::max(cs->threads_num[1], 1u) *
+	                   std::max(cs->threads_num[2], 1u);
+	auto invocations = ConstantF32Value(state, static_cast<float>(local));
+	for (uint32_t i = 0; i < 3; i++) {
+		invocations = fmul(invocations,
+		                   to_float(EmitInputComponentU32(state, IR::StageInputKind::NumWorkgroups, i)));
+	}
+	const auto share = state.builder.AllocateId();
+	state.builder.AddFunction(spv::OpFDiv, f, share, ConstantF32Value(state, static_cast<float>(total)), invocations);
+	// Clamp in float before converting: the share of a tiny dispatch exceeds 32 bits.
+	const auto bounded = [&](uint32_t value, spv::Op compare, float limit) {
+		const auto beyond = state.builder.AllocateId();
+		state.builder.AddFunction(compare, TypeBool(state), beyond, value, ConstantF32Value(state, limit));
+		const auto result = state.builder.AllocateId();
+		state.builder.AddFunction(spv::OpSelect, f, result, beyond, ConstantF32Value(state, limit), value);
+		return result;
+	};
+	const auto clamped = bounded(bounded(share, spv::OpFOrdGreaterThan, static_cast<float>(LoopCap())),
+	                             spv::OpFOrdLessThan, static_cast<float>(MinLoopBudget));
+	const auto result = state.builder.AllocateId();
+	state.builder.AddFunction(spv::OpConvertFToU, TypeU32(state), result, clamped);
+	return result;
 }
 
 void EmitLoopBudget(ValueEmitContext& ctx) {
@@ -803,14 +849,11 @@ void EmitProgram(EmitterState& state) {
 		state.builder.AddFunction(spv::OpStore, state.pixel_valid_mask_variable,
 		                          ConstantU32(state, 1));
 	}
-	const bool has_loops = state.program.dispatcher_fallback ||
-	                       std::ranges::any_of(program.blocks, [](const IR::Block* block) {
-		                       return block->terminator.loop_header;
-	                       });
+	const bool has_loops = ProgramHasLoops(state.program);
 	if (has_loops && LoopCap() != 0) {
 		state.loop_budget_variable = state.builder.DefineGlobalVariable(
 		    TypePointer(state, spv::StorageClassPrivate, TypeU32(state)), spv::StorageClassPrivate);
-		state.builder.AddFunction(spv::OpStore, state.loop_budget_variable, ConstantU32(state, LoopCap()));
+		state.builder.AddFunction(spv::OpStore, state.loop_budget_variable, EmitInitialLoopBudget(state));
 	}
 	if (state.lds_storage_class == spv::StorageClassStorageBuffer && state.lds_variable != 0) {
 		const auto group_x = EmitInputComponentU32(state, IR::StageInputKind::WorkgroupId, 0);
@@ -835,6 +878,25 @@ void EmitProgram(EmitterState& state) {
 	if (state.program.stage == ShaderType::Mesh) {
 		EmitMeshEntryPoint(state);
 	}
+}
+
+uint32_t LoopCap() {
+	return LoopCapValue();
+}
+
+// `setprop debug.capy.loop_budget N` (read when shaders compile): loop iterations one compute
+// dispatch may spend in all, shared among its invocations (at least MinLoopBudget each); 0 keeps
+// the fixed per-invocation cap only. The default keeps a dispatch of about a million looping
+// invocations within the driver's timeout on an Adreno 830.
+uint32_t DispatchLoopBudget() {
+	static Common::DebugFlags::CachedValue budget("debug.capy.loop_budget", 1 << 26);
+	return static_cast<uint32_t>(std::clamp<int64_t>(budget.Get(), 0, UINT32_MAX));
+}
+
+bool ProgramHasLoops(const IR::Program& program) {
+	return program.dispatcher_fallback || std::ranges::any_of(program.blocks, [](const IR::Block* block) {
+		       return block->terminator.loop_header;
+	       });
 }
 
 } // namespace Libs::Graphics::ShaderRecompiler::Spirv::Emitter

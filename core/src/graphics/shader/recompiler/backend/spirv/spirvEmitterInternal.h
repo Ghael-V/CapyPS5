@@ -392,6 +392,11 @@ uint32_t EmitVertexParameterComponentU32(EmitterState& state, const InputBinding
                                          uint32_t component);
 
 uint32_t EmitInputComponentU32(EmitterState& state, IR::StageInputKind kind, uint32_t component);
+// Loop iteration budgets (spirvEmitterProgram.cpp): the most one invocation may spend, and the
+// total a compute dispatch may spend, divided among its invocations (0 = fixed budget only).
+uint32_t LoopCap();
+uint32_t DispatchLoopBudget();
+bool     ProgramHasLoops(const IR::Program& program);
 
 uint32_t EmitLocalInvocationIndex(EmitterState& state);
 
