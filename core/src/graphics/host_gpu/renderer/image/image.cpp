@@ -1031,6 +1031,18 @@ Image::Image(GraphicContext& graphics, CommandScheduler& scheduler, const ImageI
 	create.initialLayout = vk::ImageLayout::eUndefined;
 	create.usage         = ImageUsageFlags(graphics, info);
 	create.samples       = vulkan_sample_count(info.samples);
+	// Measurement probe: `setprop debug.capy.ubwc_probe 1` declares only the image's own format
+	// for render targets, which lets drivers keep framebuffer compression (UBWC) despite
+	// eMutableFormat. Views in other formats then read wrong data; for FPS comparisons only.
+	static Common::DebugFlags::CachedValue ubwc_probe("debug.capy.ubwc_probe", 0);
+	vk::ImageFormatListCreateInfo own_format {};
+	own_format.viewFormatCount = 1;
+	own_format.pViewFormats    = &create.format;
+	if (ubwc_probe.Get() != 0 && !info.IsBlock() &&
+	    (create.usage & (vk::ImageUsageFlagBits::eColorAttachment |
+	                     vk::ImageUsageFlagBits::eDepthStencilAttachment))) {
+		create.pNext = &own_format;
+	}
 
 	vk::ImageFormatProperties properties {};
 	if (graphics.GetImageFormatProperties(create.format, create.imageType, create.tiling,
