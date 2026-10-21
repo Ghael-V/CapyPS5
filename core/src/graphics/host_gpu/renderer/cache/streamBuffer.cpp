@@ -6,10 +6,12 @@
 
 #include "common/alignment.h"
 #include "common/assert.h"
+#include "common/logging/log.h"
 #include "common/profiler.h"
 #include "graphics/host_gpu/graphicContext.h"
 #include "graphics/host_gpu/renderer/commandScheduler.h"
 
+#include <cinttypes>
 #include <cstring>
 #include <numeric>
 #include <vk_mem_alloc.h>
@@ -84,13 +86,27 @@ Buffer::Buffer(GraphicContext& graphics, CommandScheduler& scheduler, MemoryUsag
 
 	VmaAllocationInfo allocation_result {};
 	VkBuffer          native_buffer = VK_NULL_HANDLE;
-	const auto        result        = static_cast<vk::Result>(vmaCreateBuffer(
+	auto              result        = static_cast<vk::Result>(vmaCreateBuffer(
 	    graphics.allocator, static_cast<const VkBufferCreateInfo*>(buffer_info), &allocation_info,
 	    &native_buffer, &m_allocation, &allocation_result));
+	if (result == vk::Result::eErrorOutOfDeviceMemory) {
+		// These buffers are required for rendering. The reported budget is advisory; let the
+		// driver attempt the allocation before treating it as a fatal failure.
+		LOGF("Buffer allocation ran out of device memory with budget enforcement: size=%" PRIu64
+		     ", memory_usage=%u; retrying without the budget limit\n",
+		     size, static_cast<unsigned>(usage));
+		graphics.LogMemoryBudget();
+		allocation_info.flags &= ~VMA_ALLOCATION_CREATE_WITHIN_BUDGET_BIT;
+		result = static_cast<vk::Result>(
+		    vmaCreateBuffer(graphics.allocator, static_cast<const VkBufferCreateInfo*>(buffer_info),
+		                    &allocation_info, &native_buffer, &m_allocation, &allocation_result));
+	}
 	if (result != vk::Result::eSuccess) {
 		graphics.LogMemoryBudget();
+		EXIT("Buffer allocation failed: %s, size=%" PRIu64 ", memory_usage=%u, flags=0x%x\n",
+		     vk::to_string(result).c_str(), size, static_cast<unsigned>(usage),
+		     static_cast<unsigned>(static_cast<VkBufferUsageFlags>(flags)));
 	}
-	EXIT_NOT_IMPLEMENTED(result != vk::Result::eSuccess);
 
 	m_buffer = native_buffer;
 	if (with_bda) {
