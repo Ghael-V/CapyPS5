@@ -2,6 +2,7 @@
 
 #include "common/assert.h"
 #include "common/common.h"
+#include "common/debugFlags.h"
 #include "common/logging/log.h"
 #include "common/stringUtils.h"
 #include "common/threads.h"
@@ -10,12 +11,17 @@
 #include "libs/libs.h"
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <fmt/format.h>
 #include <limits>
 #include <list>
 #include <unordered_map>
 #include <vector>
+
+#if defined(__ANDROID__)
+#include <android/log.h>
+#endif
 
 namespace Libs::LibKernel::EventQueue {
 
@@ -435,6 +441,28 @@ int KYTY_SYSV_ABI KernelWaitEqueue(KernelEqueue eq, KernelEvent* ev, int num, in
 	if (*out == KERNEL_ERROR_EBADF) {
 		return KERNEL_ERROR_EBADF;
 	}
+#if defined(__ANDROID__)
+	// `setprop debug.capy.equeue_log N`: log the next N waits with a timeout or a result (tag
+	// CapyPS5-Equeue), to find games pacing frames on waits that time out. Change N to re-arm.
+	{
+		static Common::DebugFlags::CachedValue equeue_log("debug.capy.equeue_log", 0);
+		static std::atomic<int64_t>             armed {0};
+		static std::atomic<int64_t>             left {0};
+		const auto                              value = equeue_log.Get();
+		if (value != armed.exchange(value)) {
+			left = value;
+		}
+		if (left.load() > 0 && left.fetch_sub(1) > 0) {
+			__android_log_print(ANDROID_LOG_WARN, "CapyPS5-Equeue",
+			                    "%s timo=%lld us -> %d events ident=0x%llx filter=%d data=0x%llx",
+			                    owner->GetName().c_str(),
+			                    timo == nullptr ? -1ll : static_cast<long long>(*timo), *out,
+			                    *out > 0 ? static_cast<unsigned long long>(ev[0].ident) : 0ull,
+			                    *out > 0 ? static_cast<int>(ev[0].filter) : 0,
+			                    *out > 0 ? static_cast<unsigned long long>(ev[0].data) : 0ull);
+		}
+	}
+#endif
 	if (*out == 0) {
 		LOGF("\tEqueue wait timedout: %s\n", owner->GetName().c_str());
 		return KERNEL_ERROR_ETIMEDOUT;
