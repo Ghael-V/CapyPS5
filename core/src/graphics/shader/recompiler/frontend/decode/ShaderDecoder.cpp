@@ -241,6 +241,8 @@ void SetDecodingStage(int stage) {
 		std::fclose(file);
 	}
 	const auto at = pc / 4u;
+	__android_log_print(ANDROID_LOG_ERROR, "CapyPS5-Shader", "decoding %zu words at %p",
+	                    g_decoding_code.size(), static_cast<const void*>(g_decoding_code.data()));
 	__android_log_print(ANDROID_LOG_ERROR, "CapyPS5-Shader",
 	                    "%s 0x%x at pc 0x%x (stage %d): dwords %08x %08x [%08x %08x] %08x %08x saved %s", what, code, pc,
 	                    g_decoding_stage,
@@ -417,7 +419,7 @@ void DecodeInstruction(std::span<const uint32_t> code, uint32_t word_index, Inst
 		case Family::MIMG: DecodeMimg(pc, code, word_index, inst); return;
 		case Family::EXP: DecodeExp(pc, code, word_index, inst); return;
 		default:
-			EXIT("unknown RDNA2 instruction family at pc 0x%08x, raw=0x%08x", pc, code[word_index]);
+			DecodeFailure("unknown RDNA2 instruction family", code[word_index], pc);
 	}
 }
 
