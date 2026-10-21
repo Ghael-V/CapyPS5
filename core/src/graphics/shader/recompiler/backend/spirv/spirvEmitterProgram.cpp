@@ -609,29 +609,24 @@ uint32_t ValueEmitContext::Ballot(IR::Value predicate) {
 }
 
 uint32_t ValueEmitContext::FirstLane(uint32_t ballot) {
-	if (other_half == nullptr) {
-		const auto result = state.builder.AllocateId();
-		state.builder.AddFunction(spv::OpGroupNonUniformBallotFindLSB, TypeU32(state), result,
-		                          ConstantU32(state, spv::ScopeSubgroup), ballot);
-		return result;
+	// An empty ballot (EXEC zero) gives lane 0, which V_READFIRSTLANE reads on hardware. FindILsb
+	// returns -1 for zero, unlike BallotFindLSB, whose result is then undefined.
+	const auto first = [&](uint32_t word) {
+		const auto bits = state.builder.AllocateId();
+		state.builder.AddFunction(spv::OpCompositeExtract, TypeU32(state), bits, ballot, word);
+		return std::pair {bits, EmitGlsl<GLSLstd450FindILsb, IR::Type::U32>(state, bits)};
+	};
+	const auto [low, low_first] = first(0);
+	if (state.program.wave_size == 32u) {
+		return EmitGlsl<GLSLstd450SMax, IR::Type::U32>(state, low_first, ConstantU32(state, 0));
 	}
-	const auto low        = state.builder.AllocateId();
-	const auto high       = state.builder.AllocateId();
-	const auto low_first  = state.builder.AllocateId();
-	const auto high_first = state.builder.AllocateId();
-	const auto low_active = state.builder.AllocateId();
-	const auto result     = state.builder.AllocateId();
-	state.builder.AddFunction(spv::OpCompositeExtract, TypeU32(state), low, ballot, 0);
-	state.builder.AddFunction(spv::OpCompositeExtract, TypeU32(state), high, ballot, 1);
-	state.builder.AddFunction(spv::OpExtInst, TypeU32(state), low_first, GlslStd450(state),
-	                          GLSLstd450FindILsb, low);
-	state.builder.AddFunction(spv::OpExtInst, TypeU32(state), high_first, GlslStd450(state),
-	                          GLSLstd450FindILsb, high);
-	state.builder.AddFunction(spv::OpINotEqual, TypeBool(state), low_active, low,
-	                          ConstantU32(state, 0));
-	state.builder.AddFunction(spv::OpSelect, TypeU32(state), result, low_active, low_first,
-	                          EmitAddU32(state, high_first, ConstantU32(state, 32)));
-	return result;
+	const auto high_first = first(1).second;
+	const auto high_lane  = EmitGlsl<GLSLstd450SMax, IR::Type::U32>(
+	    state, EmitBinaryU32(state, spv::OpBitwiseOr, high_first, ConstantU32(state, 32)),
+	    ConstantU32(state, 0));
+	return Select(state, TypeU32(state),
+	              Binary(state, spv::OpINotEqual, TypeBool(state), low, ConstantU32(state, 0)),
+	              low_first, high_lane);
 }
 
 uint32_t ValueEmitContext::Shuffle(const IR::Inst& inst, size_t index, uint32_t lane) {
