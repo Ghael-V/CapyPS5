@@ -12,6 +12,9 @@ struct HostFeatures {
 	bool buffer_int64_atomics = true;
 	// gl_BaseVertex/gl_BaseInstance, needed for GPU-side indirect draws.
 	bool draw_parameters = false;
+	// BaryCoordKHR for pixel inputs read per vertex. Without it those inputs are declared as
+	// ordinary interpolated (or flat) inputs, and per-vertex reads get the interpolated value.
+	bool fragment_barycentric = true;
 };
 
 inline HostFeatures g_host_features;

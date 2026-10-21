@@ -1,3 +1,4 @@
+#include "graphics/shader/recompiler/HostFeatures.h"
 #include "common/assert.h"
 #include "common/debugFlags.h"
 #include "graphics/shader/recompiler/frontend/translate/Translator.h"
@@ -1345,10 +1346,19 @@ IR::Program TranslateProgram(const Decoder::Program& decoded, const CFG::Graph& 
 		} else if (options.stage == ShaderType::Pixel) {
 			const auto* ps = options.input_info.pixel;
 			const auto barycentric_pair = [&](uint32_t reg, IR::StageInputKind kind) {
-				if (reg != UINT32_MAX) {
-					entry_ir.SetVectorReg(static_cast<IR::VectorReg>(reg), builtin(kind, 0));
-					entry_ir.SetVectorReg(static_cast<IR::VectorReg>(reg + 1u), builtin(kind, 1));
+				if (reg == UINT32_MAX) {
+					return;
 				}
+				if (!g_host_features.fragment_barycentric) {
+					// No BaryCoordKHR: raw I/J reads get the triangle centre (1/3, 1/3) instead
+					// of making the shader invalid. Attribute interpolation does not use them.
+					const auto third = IR::U32(IR::Value(0x3eaaaaabu));
+					entry_ir.SetVectorReg(static_cast<IR::VectorReg>(reg), third);
+					entry_ir.SetVectorReg(static_cast<IR::VectorReg>(reg + 1u), third);
+					return;
+				}
+				entry_ir.SetVectorReg(static_cast<IR::VectorReg>(reg), builtin(kind, 0));
+				entry_ir.SetVectorReg(static_cast<IR::VectorReg>(reg + 1u), builtin(kind, 1));
 			};
 			barycentric_pair(ps->ps_perspective_center_vgpr, IR::StageInputKind::BaryCoordSmooth);
 			barycentric_pair(ps->ps_perspective_sample_vgpr,

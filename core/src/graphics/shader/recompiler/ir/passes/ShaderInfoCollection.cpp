@@ -97,6 +97,9 @@ void CollectVertexInputs(const ShaderVertexInputInfo* vertex, ShaderInfo& info,
 void CollectPixelInputs(const ShaderPixelInputInfo* pixel, ShaderInfo& info,
                         std::array<bool, 32>& per_vertex,
                         const std::array<uint8_t, 32>& used_components) {
+	if (!g_host_features.fragment_barycentric) {
+		per_vertex.fill(false);
+	}
 	if (pixel->HasPositionInput()) {
 		AddInput(info, StageInputKind::FragCoord, 0, 4, "gl_FragCoord");
 	}
@@ -112,7 +115,8 @@ void CollectPixelInputs(const ShaderPixelInputInfo* pixel, ShaderInfo& info,
 			if (ShaderPixelParameterMappedLocation(*pixel, input) ==
 			        ShaderPixelParameterMappedLocation(*pixel, alias) &&
 			    (pixel->parameter_mode != ShaderPixelParameterMode::Rectangle || same_mode)) {
-				per_vertex[input] = per_vertex[input] || per_vertex[alias] || !same_mode;
+				per_vertex[input] = g_host_features.fragment_barycentric &&
+				                    (per_vertex[input] || per_vertex[alias] || !same_mode);
 			}
 		}
 	}

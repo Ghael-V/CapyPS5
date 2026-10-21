@@ -3,6 +3,7 @@
 
 #include "common/assert.h"
 #include "common/common.h"
+#include "common/debugFlags.h"
 #include "common/emulatorConfig.h"
 #include "common/file.h"
 #include "common/logging/log.h"
@@ -478,6 +479,16 @@ static vk::Device VulkanCreateDevice(GraphicContext& graphics,
 		enable(depth_clip_enable, depth_clip_enable.depthClipEnable);
 		enable(depth_clip_control, depth_clip_control.depthClipControl);
 		enable(image_view_min_lod, image_view_min_lod.minLod);
+#if defined(__ANDROID__) || defined(ANDROID) || defined(KYTY_PLATFORM_ANDROID)
+		// Some Turnip builds advertise barycentrics their Adreno 8xx compiler cannot handle
+		// (load_barycentric_coord_pixel). `setprop debug.capy.no_barycentric 1` uses the fallback.
+		static Common::DebugFlags::CachedValue no_barycentric("debug.capy.no_barycentric", 0);
+		if (no_barycentric.Get() != 0) {
+			optional_barycentric.fragmentShaderBarycentric = VK_FALSE;
+		}
+		ShaderRecompiler::g_host_features.fragment_barycentric =
+		    optional_barycentric.fragmentShaderBarycentric == VK_TRUE;
+#endif
 		enable(optional_barycentric, optional_barycentric.fragmentShaderBarycentric);
 	}
 	LOGF("Vulkan fragment shader barycentrics: %s\n",
