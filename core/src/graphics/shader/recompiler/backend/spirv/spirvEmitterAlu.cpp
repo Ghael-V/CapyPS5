@@ -36,9 +36,8 @@ uint32_t EmitMinMaxF64(EmitterState& state, uint32_t lhs, uint32_t rhs, bool max
 	result = Select(state, TypeF64(state), equal,
 	                Unary(state, spv::OpBitcast, TypeF64(state), equal_bits), result);
 
-	// Non-IEEE mode selects the other operand for NaN, and lhs when both are NaN.
-	result = Select(state, TypeF64(state), Unary(state, spv::OpIsNan, TypeBool(state), lhs),
-	                rhs, result);
+	// Non-IEEE mode selects the other operand for NaN, and lhs when both are NaN. The ordered
+	// compares already pick rhs for a NaN lhs.
 	return Select(state, TypeF64(state), Unary(state, spv::OpIsNan, TypeBool(state), rhs),
 	              lhs, result);
 }
