@@ -223,7 +223,11 @@ float TextureCache::ChooseScale(const ImageDesc& desc) {
 		return 1.0f;
 	}
 	const auto& info = desc.info;
-	if ((desc.type != BindingType::RenderTarget && desc.type != BindingType::DepthTarget) ||
+	// Display buffers are scaled too: Greak flips one of its two buffers before drawing into it,
+	// and that buffer, created unscaled, was then drawn with the scaled depth target bound, so
+	// every other frame showed only the top-left quarter of the scene.
+	if ((desc.type != BindingType::RenderTarget && desc.type != BindingType::DepthTarget &&
+	     desc.type != BindingType::VideoOut) ||
 	    info.type != Prospero::ImageType::kColor2D || info.samples != 1 ||
 	    info.resources.levels != 1 || info.IsBlock() || info.extent.width < 1280 ||
 	    info.extent.height < 720) {
