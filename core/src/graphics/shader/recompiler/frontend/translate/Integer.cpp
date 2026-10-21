@@ -433,9 +433,8 @@ void Translator::S_QUADMASK_B64(const Decoder::Instruction& inst) {
 void Translator::BFM_B32(const Decoder::Instruction& inst) {
 	const auto count  = ir.BitwiseAnd(ReadU32(inst.src0), IR::U32(IR::Value(31u)));
 	const auto offset = ir.BitwiseAnd(ReadU32(inst.src1), IR::U32(IR::Value(31u)));
-	const auto result = ir.Emit(IR::ValueOpcode::BitFieldInsert,
-	                            {IR::Value(0u), IR::Value(0xffffffffu), offset, count});
-	WriteOperand(DestinationOperand(inst), result);
+	// Mask bits shifted past bit 31 are dropped.
+	WriteOperand(DestinationOperand(inst), ir.ShiftLeftLogical(RightMask32(count), offset));
 }
 
 IR::U32 Translator::RightMask32(IR::U32 count) {
