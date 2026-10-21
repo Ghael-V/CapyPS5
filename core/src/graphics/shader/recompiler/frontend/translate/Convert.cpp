@@ -44,9 +44,8 @@ IR::U32 Translator::ConvertF32ToI32Saturated(IR::F32 value, float lower_bound, f
 
 void Translator::V_CVT_F32_UBYTE(const Decoder::Instruction& inst, uint32_t byte_index) {
 	const auto source = ReadU32(SourceAt(inst, 0));
-	const auto byte =
-	    ir.BitwiseAnd(ir.ShiftRightLogical(source, IR::U32(IR::Value(byte_index * 8u))),
-	                  IR::U32(IR::Value(0xffu)));
+	const auto byte   = ir.Emit(IR::ValueOpcode::BitFieldUExtract,
+	                            {source, IR::Value(byte_index * 8u), IR::Value(8u)});
 	WriteOperand(DestinationOperand(inst), ir.Emit(IR::ValueOpcode::ConvertF32U32, {byte}));
 }
 
