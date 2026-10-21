@@ -194,12 +194,13 @@ uint32_t EmitDppWriteCondition(ValueEmitContext& ctx, const IR::DppMoveFlags& fl
                                uint32_t exec) {
 	auto&    state    = ctx.state;
 	uint32_t writable = exec;
+	uint32_t lane     = 0;
 	// Each mask bit enables writes to one bank (4 lanes) or row (16 lanes); a full mask enables all.
 	const auto enable = [&](uint32_t mask, uint32_t group_shift) {
 		if (mask == 0xfu) return;
+		lane = lane != 0 ? lane : EmitSubgroupLocalInvocationId(state);
 		const auto group = EmitNative<spv::OpBitFieldUExtract, IR::Type::U32>(
-		    state, EmitSubgroupLocalInvocationId(state), ConstantU32(state, group_shift),
-		    ConstantU32(state, 2));
+		    state, lane, ConstantU32(state, group_shift), ConstantU32(state, 2));
 		const auto bit = EmitNative<spv::OpBitFieldUExtract, IR::Type::U32>(
 		    state, ConstantU32(state, mask), group, ConstantU32(state, 1));
 		writable = Binary(state, spv::OpLogicalAnd, TypeBool(state), writable,
