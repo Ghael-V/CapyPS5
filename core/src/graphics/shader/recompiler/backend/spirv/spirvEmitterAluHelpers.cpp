@@ -234,34 +234,19 @@ uint32_t EmitFlushF32DenormToSignedZero(EmitterState& state, uint32_t value) {
 }
 
 uint32_t EmitTrigCycleF32(EmitterState& state, uint32_t src, bool preserve_signed_zero) {
-	const auto fract        = state.builder.AllocateId();
-	const auto bits         = state.builder.AllocateId();
-	const auto abs_bits     = state.builder.AllocateId();
-	const auto large        = state.builder.AllocateId();
-	const auto finite       = state.builder.AllocateId();
-	const auto large_finite = state.builder.AllocateId();
-	const auto reduced      = state.builder.AllocateId();
+	// Finite values of magnitude 2^23 and above are integers, so fract already gives them +0.
+	const auto fract = state.builder.AllocateId();
 	state.builder.AddFunction(spv::OpExtInst, TypeF32(state), fract, GlslStd450(state),
 	                          GLSLstd450Fract, src);
-	state.builder.AddFunction(spv::OpBitcast, TypeU32(state), bits, src);
-	state.builder.AddFunction(spv::OpBitwiseAnd, TypeU32(state), abs_bits, bits,
-	                          ConstantU32(state, 0x7fffffffu));
-	state.builder.AddFunction(spv::OpUGreaterThanEqual, TypeBool(state), large, abs_bits,
-	                          ConstantU32(state, 0x4b000000u));
-	state.builder.AddFunction(spv::OpULessThan, TypeBool(state), finite, abs_bits,
-	                          ConstantU32(state, 0x7f800000u));
-	state.builder.AddFunction(spv::OpLogicalAnd, TypeBool(state), large_finite, large, finite);
-	state.builder.AddFunction(spv::OpSelect, TypeF32(state), reduced, large_finite,
-	                          ConstantF32(state, 0), fract);
 	if (!preserve_signed_zero) {
-		return reduced;
+		return fract;
 	}
-	const auto zero = state.builder.AllocateId();
-	const auto ret  = state.builder.AllocateId();
-	state.builder.AddFunction(spv::OpIEqual, TypeBool(state), zero, abs_bits,
-	                          ConstantU32(state, 0));
-	state.builder.AddFunction(spv::OpSelect, TypeF32(state), ret, zero, src, reduced);
-	return ret;
+	const auto abs_bits = Binary(state, spv::OpBitwiseAnd, TypeU32(state),
+	                             Unary(state, spv::OpBitcast, TypeU32(state), src),
+	                             ConstantU32(state, 0x7fffffffu));
+	return Select(state, TypeF32(state),
+	              Binary(state, spv::OpIEqual, TypeBool(state), abs_bits, ConstantU32(state, 0)),
+	              src, fract);
 }
 
 uint32_t EmitF16BitsToF32(EmitterState& state, uint32_t bits) {
