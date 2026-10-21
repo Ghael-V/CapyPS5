@@ -29,6 +29,9 @@ void EndScope(vk::CommandBuffer command);
 void SetEndCaller(const void* caller);
 // Reads finished timestamps; call after each queue submission.
 void Collect(GraphicContext& graphics);
+// Logs the oldest scopes still pending and whether their timestamps were written (tag
+// CapyPS5-GpuHang): the hung pass or dispatch has a begin and no end. Any thread.
+void ReportHang();
 
 } // namespace GpuProfiler
 

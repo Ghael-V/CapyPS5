@@ -188,8 +188,17 @@ void DumpShaderOriginal(const char* stage_name, uint64_t shader_hash,
 		                    static_cast<unsigned long long>(shader_hash));
 	}
 	if (dump_text.Get() != 0 && !code.empty()) {
+		// Stages that hand over to another one end in S_SETPC_B64 with the footer right after it
+		// ("sl00" in Little Nightmares), which a full decode would run into.
+		const auto end = std::ranges::find_if(code, [](uint32_t word) {
+			return word == 0xbf810000u || (word & 0xffffff00u) == 0xbe802000u;
+		});
 		ShaderRecompiler::Decoder::Program program;
-		ShaderRecompiler::Decoder::DecodeProgram(code, program);
+		if (end != code.end() && *end != 0xbf810000u) {
+			program = ShaderRecompiler::Decoder::DecodeFrontProgram(code);
+		} else {
+			ShaderRecompiler::Decoder::DecodeProgram(code, program);
+		}
 		const auto text = ShaderRecompiler::Decoder::ProgramToString(program);
 		const auto dir  = AndroidGetFilesDir() + "/shaders";
 		Common::File::CreateDirectories(dir);

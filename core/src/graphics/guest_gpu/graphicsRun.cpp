@@ -268,6 +268,7 @@ void GuestGpu::SuspendPoint() {
 		                    "SuspendPoint: GPU busy for >2 s, still waiting");
 #endif
 		SyncDump("SuspendPoint stall");
+		GpuProfiler::ReportHang();
 		m_suspend_point_ready->Acquire();
 	}
 	Submission submission;

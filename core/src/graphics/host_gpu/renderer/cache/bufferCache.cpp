@@ -13,6 +13,7 @@
 #include "graphics/host_gpu/renderer/render.h"
 #include "graphics/host_gpu/renderer/renderContext.h"
 #include "graphics/host_gpu/vulkanCommon.h"
+#include "graphics/shader/shader.h"
 #include "kernel/memory.h"
 
 #include <algorithm>
@@ -263,6 +264,10 @@ BufferCache::BufferCache(GraphicContext& graphics, CommandScheduler& scheduler,
       m_download_buffer(graphics, scheduler, MemoryUsage::Download, 64 * MiB),
       m_device_buffer(graphics, scheduler, MemoryUsage::DeviceLocal, 128 * MiB),
       m_texture_cache(texture_cache) {
+	// Little Nightmares places shader code with GPU copies; read it only once they landed.
+	ShaderSetCodeSync([this](uint64_t vaddr, uint64_t size) {
+		return GuestGpu::IsGpuThread() && SyncForRead(vaddr, size);
+	});
 	std::memset(m_gds_buffer.Mapped().data(), 0, static_cast<size_t>(m_gds_buffer.Size()));
 	m_gds_buffer.Flush(0, m_gds_buffer.Size());
 #if defined(__ANDROID__)
@@ -361,10 +366,13 @@ void BufferCache::ReadMemory(uint64_t vaddr, uint64_t size, bool is_write) {
 		// every access to those pages serialized the CPU and the GPU. An access at least
 		// ReadGuard bytes away from every GPU-written byte proceeds at once, and those bytes reach
 		// guest memory when the GPU finishes. `setprop debug.capy.async_readback 0` disables it.
+		// Writes always wait: the page stays writable afterwards, and the late download overwrote
+		// whatever the CPU had written there since (Little Nightmares copies shader code into such
+		// pages, which then decoded as code for 0x100 bytes and vertex data after).
 		static Common::DebugFlags::CachedValue async_readback("debug.capy.async_readback", 1);
 		constexpr uint64_t ReadGuard = 64;
 		const uint64_t     guard_low = vaddr >= ReadGuard ? vaddr - ReadGuard : 0;
-		if (async_readback.Get() != 0 &&
+		if (async_readback.Get() != 0 && !is_write &&
 		    !m_gpu_modified_ranges.Intersects(guard_low, size + 2 * ReadGuard)) {
 			const auto page_low  = Common::AlignDown(vaddr, TRACKER_PAGE_SIZE);
 			const auto page_high = Common::AlignUp(vaddr + size, TRACKER_PAGE_SIZE);
@@ -927,6 +935,27 @@ bool BufferCache::IsRegionRegistered(uint64_t vaddr, uint64_t size) {
 	}
 	const auto& [address, id] = *std::prev(candidate);
 	return address + m_slot_buffers[id].Size() > vaddr;
+}
+
+bool BufferCache::SyncForRead(uint64_t vaddr, uint64_t size) {
+	if (!m_scheduler.Active()) {
+		return false;
+	}
+	bool pending = false;
+	if (HasGpuDirtyBytes(vaddr, size)) {
+		auto& buffer = m_slot_buffers[FindBuffer(vaddr, size)];
+		pending |= DownloadBufferMemory<false>(buffer, vaddr, size);
+		m_memory_tracker.UnmarkRegionAsGpuModified(vaddr, size);
+	}
+	// A fault elsewhere on the page may have queued these bytes for an asynchronous download
+	// and made the page readable: wait until they are published.
+	if (HasAsyncDownloadIn(vaddr, size)) {
+		const auto tick = m_scheduler.CurrentTick();
+		m_scheduler.Wait(tick);
+		m_scheduler.WaitPriorityOperations(tick);
+		pending = true;
+	}
+	return pending;
 }
 
 bool BufferCache::HasAsyncDownloadIn(uint64_t vaddr, uint64_t size) {

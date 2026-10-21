@@ -102,6 +102,56 @@ void EmitReturn(ValueEmitContext& ctx) {
 	ctx.state.builder.AddFunction(spv::OpReturn);
 }
 
+// Guest loops that never end (Little Nightmares walks a ray tracing BVH by hand and cycles when
+// that BVH is incomplete) hang the host GPU and then the whole device. Every iteration spends one
+// unit of a per-invocation budget at the end of the loop's first body block (a return there stays
+// inside the loop construct, unlike one in the continue construct) and the invocation returns once
+// the budget is spent.
+// `setprop debug.capy.loop_cap N` (read when shaders compile) sets the budget; 0 disables it.
+uint32_t LoopCap() {
+	// A fixed per-invocation budget cannot stop a full-screen pass where every invocation loops:
+	// a few thousand iterations each already run past the driver's timeout (pending: a budget per
+	// dispatch, divided among its invocations).
+	static Common::DebugFlags::CachedValue cap("debug.capy.loop_cap", 1 << 16);
+	return static_cast<uint32_t>(std::clamp<int64_t>(cap.Get(), 0, UINT32_MAX));
+}
+
+void EmitLoopBudget(ValueEmitContext& ctx) {
+	auto& state = ctx.state;
+	if (state.loop_budget_variable == 0) return;
+	const auto left = state.builder.AllocateId();
+	state.builder.AddFunction(spv::OpLoad, TypeU32(state), left, state.loop_budget_variable);
+	const auto next = EmitBinaryU32(state, spv::OpISub, left, ConstantU32(state, 1));
+	state.builder.AddFunction(spv::OpStore, state.loop_budget_variable, next);
+	const auto spent = state.builder.AllocateId();
+	state.builder.AddFunction(spv::OpIEqual, TypeBool(state), spent, next, ConstantU32(state, 0));
+	const auto stop  = state.builder.AllocateId();
+	const auto merge = state.builder.AllocateId();
+	state.builder.AddFunction(spv::OpSelectionMerge, merge, spv::SelectionControlMaskNone);
+	state.builder.AddFunction(spv::OpBranchConditional, spent, stop, merge);
+	EmitLabel(state, stop);
+	EmitReturn(ctx);
+	EmitLabel(state, merge);
+}
+
+// The first block of a loop's body where the budget can be spent: not the header itself, the
+// continue block or the header of a nested loop (which spends its own budget).
+const IR::Block* LoopBudgetBlock(const IR::Block* header) {
+	const auto& term = header->terminator;
+	if (!term.loop_header) return nullptr;
+	const IR::Block* body = nullptr;
+	if (term.kind == CFG::TerminatorKind::Branch) {
+		body = term.true_block;
+	} else if (term.kind == CFG::TerminatorKind::ConditionalBranch) {
+		body = term.true_block != term.merge_block ? term.true_block : term.false_block;
+	}
+	if (body == nullptr || body == header || body == term.merge_block || body == term.continue_block ||
+	    body->terminator.loop_header) {
+		return nullptr;
+	}
+	return body;
+}
+
 void EmitStructuredTerminator(ValueEmitContext& ctx, const IR::Block* block) {
 	const auto& term       = block->terminator;
 	const auto  emit_merge = [&]() {
@@ -338,12 +388,26 @@ void PatchStructuredPhis(ValueEmitContext& ctx, StructuredFunctionState& structu
 void EmitStructuredFunction(ValueEmitContext& ctx) {
 	const auto& program = ctx.state.program;
 	StructuredFunctionState structured;
+	std::unordered_set<const IR::Block*> budget_blocks;
+	for (const auto* block: program.blocks) {
+		if (const auto* body = LoopBudgetBlock(block)) {
+			budget_blocks.insert(body);
+		} else if (block->terminator.loop_header && block->terminator.continue_block != nullptr &&
+		           block->terminator.continue_block != block &&
+		           !block->terminator.continue_block->terminator.loop_header) {
+			// No body block can hold it: spend the budget in the continue block instead.
+			budget_blocks.insert(block->terminator.continue_block);
+		}
+	}
 	ctx.state.builder.AddFunction(spv::OpBranch, program.blocks.front()->Definition());
 	for (size_t index = 0; index < program.blocks.size(); index++) {
 		const auto* block = program.blocks[index];
 		EmitBlock(ctx, block, [&](ValueEmitContext& lane, const IR::Inst& inst) {
 			EmitStructuredInstruction(lane, structured, inst);
 		});
+		if (budget_blocks.contains(block)) {
+			EmitLoopBudget(ctx);
+		}
 		structured.block_exit_labels.emplace(block, ctx.state.current_label);
 		EmitStructuredTerminator(ctx, block);
 	}
@@ -398,6 +462,7 @@ void EmitDispatcherFunction(ValueEmitContext& ctx, const DispatcherFunctionState
 	}
 	EmitLabel(state, dispatcher.after_switch_label);
 	state.builder.AddFunction(next_pc_words);
+	EmitLoopBudget(ctx);
 	state.builder.AddFunction(spv::OpBranch, dispatcher.continue_label);
 	EmitLabel(state, dispatcher.continue_label);
 	state.builder.AddFunction(spv::OpBranch, dispatcher.header_label);
@@ -737,6 +802,15 @@ void EmitProgram(EmitterState& state) {
 	if (state.pixel_valid_mask_variable != 0) {
 		state.builder.AddFunction(spv::OpStore, state.pixel_valid_mask_variable,
 		                          ConstantU32(state, 1));
+	}
+	const bool has_loops = state.program.dispatcher_fallback ||
+	                       std::ranges::any_of(program.blocks, [](const IR::Block* block) {
+		                       return block->terminator.loop_header;
+	                       });
+	if (has_loops && LoopCap() != 0) {
+		state.loop_budget_variable = state.builder.DefineGlobalVariable(
+		    TypePointer(state, spv::StorageClassPrivate, TypeU32(state)), spv::StorageClassPrivate);
+		state.builder.AddFunction(spv::OpStore, state.loop_budget_variable, ConstantU32(state, LoopCap()));
 	}
 	if (state.lds_storage_class == spv::StorageClassStorageBuffer && state.lds_variable != 0) {
 		const auto group_x = EmitInputComponentU32(state, IR::StageInputKind::WorkgroupId, 0);

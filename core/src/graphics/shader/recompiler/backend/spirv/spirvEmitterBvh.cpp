@@ -1,4 +1,5 @@
 #include "graphics/shader/recompiler/backend/spirv/spirvEmitterInstructions.h"
+#include "common/debugFlags.h"
 
 namespace Libs::Graphics::ShaderRecompiler::Spirv::Emitter {
 namespace {
@@ -279,6 +280,11 @@ void DefineBvhIntersect(EmitterState& s) {
 	               PackU64(s, words[2], and_bits(words[3], 0x3ff))));
 	require(Binary(s, spv::OpULessThan, b, last_address, ConstantU64(s, uint64_t {1} << 48)));
 	require(Unary(s, spv::OpLogicalNot, b, Unary(s, spv::OpIsNan, b, extent)));
+	// `setprop debug.capy.bvh_miss 1` (read when shaders compile): every node misses, so guest
+	// traversal loops end at once. Isolates hangs on BVHs built by work we skip.
+	if (Common::DebugFlags::CachedValue("debug.capy.bvh_miss", 0).Get() != 0) {
+		require(ConstantBool(s, false));
+	}
 	for (uint32_t i = 0; i < 3; ++i) {
 		for (const auto value: {origin[i], direction[i], inverse[i]})
 			require(Unary(s, spv::OpLogicalNot, b, Unary(s, spv::OpIsNan, b, value)));

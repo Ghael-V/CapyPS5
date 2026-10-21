@@ -184,10 +184,23 @@ static ShaderMapEntry ShaderGetMappedData(uint64_t addr, const char* label) {
 	return entry;
 }
 
+static std::function<bool(uint64_t, uint64_t)> g_code_sync;
+
+void ShaderSetCodeSync(std::function<bool(uint64_t, uint64_t)> sync) {
+	g_code_sync = std::move(sync);
+}
+
 static ShaderParams GetShaderParams(uint64_t shader_addr, uint64_t hash,
 	                                std::span<const uint32_t> user_data,
 	                                const ShaderMappedData& data, uint32_t user_data_base = 0) {
 	const auto code_words = data.code_size_bytes / sizeof(uint32_t);
+	if (g_code_sync && g_code_sync(shader_addr, data.code_size_bytes)) {
+		hash = XXH3_64bits(reinterpret_cast<const void*>(shader_addr), data.code_size_bytes);
+		std::scoped_lock lock(g_shader_map_mutex);
+		if (const auto iter = g_shader_map->find(shader_addr); iter != g_shader_map->end()) {
+			iter->second.hash = hash;
+		}
+	}
 	const auto code = std::span {reinterpret_cast<const uint32_t*>(shader_addr), code_words};
 	ShaderParams params {
 	    .code            = code,

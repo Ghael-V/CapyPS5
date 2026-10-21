@@ -8,6 +8,7 @@
 #include "graphics/shader/shaderBindings.h"
 
 #include <array>
+#include <functional>
 #include <span>
 #include <string>
 #include <string_view>
@@ -325,6 +326,9 @@ void ShaderInit();
 void ShaderMapUserData(uint64_t addr, const ShaderMappedData& data);
 /** Code size in dwords of the shader registered at `addr`, 0 when none is (debug dumps). */
 uint32_t ShaderCodeWords(uint64_t addr);
+/** Called with each shader's code range before it is read; returns true when it brought in GPU
+ *  writes (the code may have changed since it was registered). */
+void ShaderSetCodeSync(std::function<bool(uint64_t, uint64_t)> sync);
 uint32_t ShaderPixelExportTarget(uint32_t shader_mask, uint32_t export_index);
 
 void     ShaderDbgDumpInputInfo(const ShaderVertexInputInfo& info);

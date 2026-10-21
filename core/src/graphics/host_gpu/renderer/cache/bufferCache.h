@@ -91,6 +91,9 @@ public:
 	void               DiscardGpuWrites(uint64_t vaddr, uint64_t size);
 	/** Whether an asynchronous download (still to be published) writes into the range. */
 	[[nodiscard]] bool HasAsyncDownloadIn(uint64_t vaddr, uint64_t size);
+	/** Brings GPU writes to a range into guest memory before host code reads it directly (shader
+	 *  code); true when anything was pending. GPU thread. */
+	bool               SyncForRead(uint64_t vaddr, uint64_t size);
 	void               ProcessFaultBuffer();
 	void               SynchronizeBuffersInRange(uint64_t vaddr, uint64_t size);
 	void               RunGarbageCollector();

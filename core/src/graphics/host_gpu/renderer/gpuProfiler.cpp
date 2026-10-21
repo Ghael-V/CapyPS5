@@ -11,6 +11,7 @@
 #include <dlfcn.h>
 #include <mutex>
 #include <string>
+#include <thread>
 #include <unordered_map>
 #include <vector>
 
@@ -50,6 +51,9 @@ struct State {
 	uint64_t                              total_ns = 0;
 	std::chrono::steady_clock::time_point report = std::chrono::steady_clock::now();
 	uint64_t                              end_caller = 0;
+	GraphicContext*                       graphics   = nullptr;
+	std::chrono::steady_clock::time_point progress = std::chrono::steady_clock::now();
+	bool                                  watchdog = false;
 };
 
 // The GPU thread and the present thread both record and submit.
@@ -62,6 +66,29 @@ State& GetState() {
 
 bool Begin(GraphicContext& graphics, vk::CommandBuffer command, std::string label) {
 	auto& state = GetState();
+	state.graphics = &graphics;
+	if (!state.watchdog) {
+		// The GPU thread blocks inside vkQueueSubmit once a hung GPU fills the ring, so a separate
+		// thread reports which scope never finished.
+		state.watchdog = true;
+		std::thread([] {
+			bool reported = false;
+			for (;;) {
+				std::this_thread::sleep_for(std::chrono::seconds(1));
+				bool stalled = false;
+				{
+					std::lock_guard lock(g_mutex);
+					auto& s = GetState();
+					stalled = !s.pending.empty() &&
+					          std::chrono::steady_clock::now() - s.progress > std::chrono::seconds(4);
+				}
+				if (stalled && !reported) {
+					ReportHang();
+				}
+				reported = stalled;
+			}
+		}).detach();
+	}
 	if (state.open) {
 		return false;
 	}
@@ -235,6 +262,9 @@ void Collect(GraphicContext& graphics) {
 		state.total_ns += ns;
 	}
 	state.pending.erase(state.pending.begin(), state.pending.begin() + static_cast<std::ptrdiff_t>(done));
+	if (done != 0) {
+		state.progress = std::chrono::steady_clock::now();
+	}
 
 	const auto now = std::chrono::steady_clock::now();
 	if (now < state.report + std::chrono::seconds(2)) {
@@ -269,6 +299,27 @@ void Collect(GraphicContext& graphics) {
 #endif
 	state.stats.clear();
 	state.total_ns = 0;
+}
+
+void ReportHang() {
+	std::lock_guard lock(g_mutex);
+	auto& state = GetState();
+	if (state.pool == nullptr || state.graphics == nullptr) {
+		return;
+	}
+	// Scopes are collected in order, so the hung one is among the first still pending: its begin
+	// timestamp is written and its end is not.
+	for (size_t i = 0; i < state.pending.size() && i < 12; i++) {
+		const auto& scope = state.pending[i];
+		std::array<uint64_t, 4> values {};
+		(void)state.graphics->device.getQueryPoolResults(
+		    state.pool, scope.query, 2, sizeof(values), values.data(), 2 * sizeof(uint64_t),
+		    vk::QueryResultFlagBits::e64 | vk::QueryResultFlagBits::eWithAvailability);
+#if defined(__ANDROID__)
+		__android_log_print(ANDROID_LOG_WARN, "CapyPS5-GpuHang", "pending[%zu] begin=%d end=%d draws %u %s", i,
+		                    values[1] != 0 ? 1 : 0, values[3] != 0 ? 1 : 0, scope.draws, scope.label.c_str());
+#endif
+	}
 }
 
 } // namespace Libs::Graphics::GpuProfiler
