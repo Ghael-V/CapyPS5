@@ -1177,6 +1177,29 @@ bool RenderExecutor::PrepareDrawRenderState(CommandBuffer& buffer, const DrawCal
 		LogDrawPhase(draw.Name(), "ResolveRenderDepthTarget");
 	}
 	ResolveRenderDepthTarget(buffer, state.depth_info);
+	// TODO(PPSA09243): Vulkan passes take one sample count. Where PS5 attachments mix counts,
+	// keep those matching the raster count instead of resolving multisampled shadows.
+	const auto colors       = std::span {state.color_info, state.color_count};
+	const auto pass_samples = state.depth_info.image_id ? state.depth_info.desc.info.samples
+	                                                    : state.color_info[0].desc.info.samples;
+	if (std::ranges::any_of(colors, [&](const RenderColorInfo& color) {
+		    return color.desc.info.samples != pass_samples;
+	    })) {
+		const auto raster =
+		    render_sample_count(buffer.GetRegisters().GetAaConfig().msaa_num_samples);
+		const auto dropped = std::ranges::remove_if(colors, [&](const RenderColorInfo& color) {
+			return color.desc.info.samples != raster;
+		});
+		state.color_count -= static_cast<uint32_t>(dropped.size());
+		if (state.depth_info.image_id && state.depth_info.desc.info.samples != raster) {
+			state.depth_info = {};
+		}
+		static std::atomic_bool logged = false;
+		if (!logged.exchange(true, std::memory_order_relaxed)) {
+			Log::WriteToConsoleAndLog(
+			    "Warning: dropping attachments whose sample count differs from the raster.\n");
+		}
+	}
 
 	if (state.color_count == 0 && !state.depth_info.image_id && !state.ps_active) {
 		LogFramebufferSkip(draw.Name(), state.color_info[0], state.depth_info, buffer,
