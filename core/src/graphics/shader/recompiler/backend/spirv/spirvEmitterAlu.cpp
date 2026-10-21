@@ -333,8 +333,8 @@ uint32_t EmitFPSqrt(EmitterState& state, uint32_t arg0) {
 }
 
 uint32_t EmitFPExp2(EmitterState& state, uint32_t arg0) {
-	return EmitExt(state, TypeF32(state), GLSLstd450Exp2,
-	               {EmitFlushF32DenormToSignedZero(state, arg0)});
+	// A denormal input already rounds to 1.0, the result for its flushed zero.
+	return EmitExt(state, TypeF32(state), GLSLstd450Exp2, {arg0});
 }
 
 uint32_t EmitFPLog2(EmitterState& state, uint32_t arg0) {
