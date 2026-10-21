@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2026 CapyPS5 Project
+// SPDX-License-Identifier: GPL-2.0-only
+
 // Compatibility shims for Linux glibc symbols when linking against
 // static Linux aarch64 libraries (e.g. FFmpeg) under Android Bionic libc.
 

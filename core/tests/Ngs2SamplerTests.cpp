@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright KytyPS5 contributors; based on Kyty, Copyright (c) 2021 InoriRus (MIT)
+// SPDX-License-Identifier: GPL-2.0-only
+
 // Exercise sampler controls and rendering without a host audio device.
 #include "libs/ngs2.cpp"
 

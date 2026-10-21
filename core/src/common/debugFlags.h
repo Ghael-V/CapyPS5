@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2026 CapyPS5 Project
+// SPDX-License-Identifier: GPL-2.0-only
+
 #ifndef COMMON_DEBUG_FLAGS_H
 #define COMMON_DEBUG_FLAGS_H
 

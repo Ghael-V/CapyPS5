@@ -1,12 +1,17 @@
 # Third-party notices
 
-CapyPS5 is free software under the GNU General Public License, version 2 (see `LICENSE`). It
-derives from Kyty (GPL-2.0) and includes the following components under their own licenses. The
-full license texts are in each component's folder under `core/3rdparty/`.
+CapyPS5 is free software under the GNU General Public License, version 2 only (`GPL-2.0-only`, see
+`LICENSE`). Every source file names its copyright holders and license in an SPDX header. CapyPS5
+derives from KytyPS5 (`GPL-2.0-only`), which is based on the original Kyty by InoriRus, released
+under the MIT License; Kyty's copyright and license notice are preserved in `LICENSES/Kyty-MIT.txt`.
+A few files keep the headers of their own origin (shadPS4, `GPL-2.0-or-later`; public-domain and
+CC0 code). It includes the following components under their own licenses. The full license texts
+are in each component's folder under `core/3rdparty/`.
 
 | Component | License |
 |---|---|
-| Kyty | GPL-2.0 |
+| KytyPS5 | GPL-2.0-only |
+| Kyty (original, by InoriRus) | MIT |
 | FEX (FEXCore, x86-64 JIT) | MIT |
 | SDL 3 | zlib |
 | FFmpeg | LGPL-2.1 |

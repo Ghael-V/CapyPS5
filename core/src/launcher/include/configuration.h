@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright KytyPS5 contributors; based on Kyty, Copyright (c) 2021 InoriRus (MIT)
+// SPDX-License-Identifier: GPL-2.0-only
+
 #ifndef LAUNCHER_INCLUDE_CONFIGURATION_H_
 #define LAUNCHER_INCLUDE_CONFIGURATION_H_
 

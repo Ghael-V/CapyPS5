@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright KytyPS5 contributors; based on Kyty, Copyright (c) 2021 InoriRus (MIT)
+// SPDX-License-Identifier: GPL-2.0-only
+
 // Exercise the production controller with deterministic host output and time.
 #include <SDL3/SDL.h>
 #include <array>

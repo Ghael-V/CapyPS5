@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright KytyPS5 contributors; based on Kyty, Copyright (c) 2021 InoriRus (MIT)
+// SPDX-License-Identifier: GPL-2.0-only
+
 #include "graphics/guest_gpu/gpu_format.h"
 
 #include "graphics/guest_gpu/gpu_defs.h"

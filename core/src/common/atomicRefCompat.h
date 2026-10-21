@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2026 CapyPS5 Project
+// SPDX-License-Identifier: GPL-2.0-only
+
 #ifndef KYTY_COMMON_ATOMIC_REF_COMPAT_H_
 #define KYTY_COMMON_ATOMIC_REF_COMPAT_H_
 

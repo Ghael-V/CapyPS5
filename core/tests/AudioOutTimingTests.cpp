@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright KytyPS5 contributors; based on Kyty, Copyright (c) 2021 InoriRus (MIT)
+// SPDX-License-Identifier: GPL-2.0-only
+
 // Exercise production output scheduling with a deterministic clock and consuming SDL queues.
 #include "common/threads.h"
 #include "libs/dualSenseHaptics.h"

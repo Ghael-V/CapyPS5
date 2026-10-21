@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2026 CapyPS5 Project
+// SPDX-License-Identifier: GPL-2.0-only
+
 #include "cpu/cpuBackend.h"
 #include "common/debugFlags.h"
 #include "common/logging/log.h"

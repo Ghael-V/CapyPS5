@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2026 CapyPS5 Project
+// SPDX-License-Identifier: GPL-2.0-only
+
 #ifndef CAPYPS5_ANDROID_JNI_H_
 #define CAPYPS5_ANDROID_JNI_H_
 

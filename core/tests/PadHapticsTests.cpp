@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright KytyPS5 contributors; based on Kyty, Copyright (c) 2021 InoriRus (MIT)
+// SPDX-License-Identifier: GPL-2.0-only
+
 // Exercise the production module with real SDL streams and fake USB endpoints.
 #include <SDL3/SDL.h>
 #include <opus.h>

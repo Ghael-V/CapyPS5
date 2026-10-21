@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2026 CapyPS5 Project
+// SPDX-License-Identifier: GPL-2.0-only
+
 #include "graphics/host_gpu/renderer/gpuProfiler.h"
 
 #include "common/debugFlags.h"

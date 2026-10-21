@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: Copyright KytyPS5 contributors; based on Kyty, Copyright (c) 2021 InoriRus (MIT)
+# SPDX-License-Identifier: GPL-2.0-only
+
 # The installer is copied outside the application before it runs. Keep it free of
 # Qt and application DLL dependencies so it can replace those files on Windows.
 if(MSVC)

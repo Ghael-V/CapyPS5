@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright 2026 CapyPS5 Project
+// SPDX-License-Identifier: GPL-2.0-only
+
 package org.capyps5.emulator.ui.theme
 
 import androidx.compose.material3.LocalContentColor

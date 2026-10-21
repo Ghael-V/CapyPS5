@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright KytyPS5 contributors; based on Kyty, Copyright (c) 2021 InoriRus (MIT)
+// SPDX-License-Identifier: GPL-2.0-only
+
 #if defined(__APPLE__) && defined(__x86_64__)
 
 // Make the process own the guest ranges before any runtime initialization.

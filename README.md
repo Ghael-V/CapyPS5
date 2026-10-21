@@ -50,5 +50,9 @@ firma la APK de release.
 
 ## Licencia
 
-CapyPS5 es software libre bajo la **GNU General Public License v2** (`LICENSE`). Los componentes de
-terceros y sus licencias están en `docs/THIRD_PARTY_NOTICES.md`.
+CapyPS5 es software libre bajo la **GNU General Public License v2** (`GPL-2.0-only`, `LICENSE`).
+Cada archivo de código indica en su cabecera SPDX sus titulares de copyright y su licencia: el código
+propio es © 2026 CapyPS5 Project, y el derivado conserva el crédito de KytyPS5 y del Kyty original de
+InoriRus (MIT, aviso en `LICENSES/Kyty-MIT.txt`). Quien redistribuya o haga un fork debe conservar
+esas cabeceras y ofrecer el código fuente. Los componentes de terceros y sus licencias están en
+`docs/THIRD_PARTY_NOTICES.md`.
