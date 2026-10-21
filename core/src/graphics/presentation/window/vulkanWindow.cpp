@@ -22,6 +22,7 @@
 #include <vulkan/vulkan_android.h>
 #include "android/capyps5_jni.h"
 #include <adrenotools/driver.h>
+#include <sys/system_properties.h>
 #endif
 #include "graphics/presentation/presenter.h"
 #include "graphics/presentation/systemOverlay.h"
@@ -971,6 +972,41 @@ static vk::SurfaceKHR CreatePlatformSurface(vk::Instance instance, SDL_Window* w
 #endif
 }
 
+#if defined(__ANDROID__) || defined(ANDROID) || defined(KYTY_PLATFORM_ANDROID)
+// A custom driver built for another GPU (a Turnip build for Adreno 7xx on an 8xx) loads but
+// reports no device. Probe with a throwaway instance so the system driver can take over.
+static bool VulkanDriverHasDevices(void* library) {
+	const auto get_proc =
+	    reinterpret_cast<PFN_vkGetInstanceProcAddr>(dlsym(library, "vkGetInstanceProcAddr"));
+	if (get_proc == nullptr) {
+		return false;
+	}
+	const auto create = reinterpret_cast<PFN_vkCreateInstance>(get_proc(nullptr, "vkCreateInstance"));
+	if (create == nullptr) {
+		return false;
+	}
+	VkApplicationInfo app {VK_STRUCTURE_TYPE_APPLICATION_INFO};
+	app.apiVersion = VK_API_VERSION_1_3;
+	VkInstanceCreateInfo info {VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO};
+	info.pApplicationInfo = &app;
+	VkInstance instance   = VK_NULL_HANDLE;
+	if (create(&info, nullptr, &instance) != VK_SUCCESS) {
+		return false;
+	}
+	const auto enumerate = reinterpret_cast<PFN_vkEnumeratePhysicalDevices>(
+	    get_proc(instance, "vkEnumeratePhysicalDevices"));
+	const auto destroy =
+	    reinterpret_cast<PFN_vkDestroyInstance>(get_proc(instance, "vkDestroyInstance"));
+	uint32_t   count = 0;
+	const bool found =
+	    enumerate != nullptr && enumerate(instance, &count, nullptr) == VK_SUCCESS && count != 0;
+	if (destroy != nullptr) {
+		destroy(instance, nullptr);
+	}
+	return found;
+}
+#endif
+
 void WindowContext::CreateVulkan() {
 #if !defined(__ANDROID__) && !defined(ANDROID) && !defined(KYTY_PLATFORM_ANDROID)
 	EXIT_IF(window == nullptr);
@@ -982,6 +1018,12 @@ void WindowContext::CreateVulkan() {
 
 #if defined(__ANDROID__) || defined(ANDROID) || defined(KYTY_PLATFORM_ANDROID)
 	void* libvulkan = nullptr;
+	// `setprop debug.capy.tu_debug <flags>` passes TU_DEBUG to a Turnip driver (e.g. noubwc,
+	// to measure what framebuffer compression is worth). Read before the driver loads.
+	if (char tu_debug[PROP_VALUE_MAX] {}; __system_property_get("debug.capy.tu_debug", tu_debug) > 0) {
+		setenv("TU_DEBUG", tu_debug, 1);
+		Log::WriteToConsoleAndLog(fmt::format("GPU driver: TU_DEBUG={}\n", tu_debug));
+	}
 	if (const auto& driver = AndroidGetGpuDriver(); !driver.library.empty()) {
 		// A user-installed driver (Turnip, PanVK) replaces the system one inside libvulkan.
 		const auto with_slash = [](std::string path) {
@@ -995,7 +1037,12 @@ void WindowContext::CreateVulkan() {
 		libvulkan = adrenotools_open_libvulkan(RTLD_NOW | RTLD_LOCAL, ADRENOTOOLS_DRIVER_CUSTOM,
 		                                       nullptr, hook_dir.c_str(), driver_dir.c_str(),
 		                                       driver.library.c_str(), nullptr, nullptr);
-		if (libvulkan != nullptr) {
+		if (libvulkan != nullptr && !VulkanDriverHasDevices(libvulkan)) {
+			Log::WriteToConsoleAndLog(fmt::format(
+			    "WARNING: GPU driver {}{} does not support this GPU; using the system driver\n",
+			    driver_dir, driver.library));
+			libvulkan = nullptr;
+		} else if (libvulkan != nullptr) {
 			Log::WriteToConsoleAndLog(fmt::format("GPU driver: loaded custom driver {}{}\n",
 			                                      driver_dir, driver.library));
 		} else {
