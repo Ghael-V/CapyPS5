@@ -146,29 +146,23 @@ void Translator::S_ABSDIFF_I32(const Decoder::Instruction& inst) {
 }
 
 void Translator::S_ADD_SUB_I32(const Decoder::Instruction& inst, bool subtract) {
-	const auto lhs      = ReadU32(inst.src0);
-	const auto rhs      = ReadU32(inst.src1);
-	const auto result   = subtract ? ir.ISub(lhs, rhs) : ir.IAdd(lhs, rhs);
-	const auto shift    = IR::U32(IR::Value(31u));
-	const auto lhs_sign = ir.ShiftRightLogical(lhs, shift);
-	const auto rhs_sign = ir.ShiftRightLogical(rhs, shift);
-	const auto out_sign = ir.ShiftRightLogical(result, shift);
-	const auto inputs = subtract ? ir.INotEqual(lhs_sign, rhs_sign) : ir.IEqual(lhs_sign, rhs_sign);
-	const auto changed = ir.INotEqual(lhs_sign, out_sign);
+	const auto lhs    = ReadU32(inst.src0);
+	const auto rhs    = ReadU32(inst.src1);
+	const auto result = subtract ? ir.ISub(lhs, rhs) : ir.IAdd(lhs, rhs);
+	// Overflow sets the sign bit of lhs ^ result and of rhs ^ result (add) or lhs ^ rhs (sub).
+	const auto other    = subtract ? ir.BitwiseXor(lhs, rhs) : ir.BitwiseXor(rhs, result);
+	const auto overflow = ir.BitwiseAnd(ir.BitwiseXor(lhs, result), other);
 	WriteOperand(DestinationOperand(inst), result);
-	ir.SetScc(ir.LogicalAnd(inputs, changed));
+	ir.SetScc(ir.UGreaterThan(overflow, IR::U32(IR::Value(0x7fffffffu))));
 }
 
 void Translator::S_LSHL_ADD_U32(const Decoder::Instruction& inst, uint32_t shift_amount) {
-	const auto lhs           = ReadU32(inst.src0);
-	const auto shift         = IR::U32(IR::Value(shift_amount));
-	const auto rhs           = ReadU32(inst.src1);
-	const auto shifted       = ir.ShiftLeftLogical(lhs, shift);
-	const auto result        = ir.IAdd(shifted, rhs);
-	const auto add_carry     = ir.ULessThan(result, shifted);
-	const auto inverse_shift = ir.ISub(IR::U32(IR::Value(32u)), shift);
-	const auto shifted_out   = ir.ShiftRightLogical(lhs, inverse_shift);
-	const auto shift_carry   = ir.INotEqual(shifted_out, IR::U32(IR::Value(0u)));
+	const auto lhs         = ReadU32(inst.src0);
+	const auto rhs         = ReadU32(inst.src1);
+	const auto shifted     = ir.ShiftLeftLogical(lhs, IR::U32(IR::Value(shift_amount)));
+	const auto result      = ir.IAdd(shifted, rhs);
+	const auto add_carry   = ir.ULessThan(result, shifted);
+	const auto shift_carry = ir.UGreaterThan(lhs, IR::U32(IR::Value(~0u >> shift_amount)));
 	WriteOperand(DestinationOperand(inst), result);
 	ir.SetScc(ir.LogicalOr(add_carry, shift_carry));
 }
