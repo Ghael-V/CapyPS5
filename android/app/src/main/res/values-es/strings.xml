@@ -47,6 +47,9 @@
     <string name="resolution_75">75 % (4K → 1620p)</string>
     <string name="resolution_50">50 % (4K → 1080p)</string>
     <string name="resolution_25">25 % (4K → 540p)</string>
+    <string name="ue_resolution">Resolución por defecto para juegos Unreal</string>
+    <string name="ue_resolution_desc">Los juegos de Unreal Engine dibujan casi a 4K y van lentos en GPUs de móvil; se usa salvo que el juego tenga su propio ajuste</string>
+    <string name="ue_value">Unreal (%1$s)</string>
     <string name="option_async_shaders">Compilar shaders en segundo plano</string>
     <string name="option_async_shaders_desc">Evita tirones; un objeto puede tardar un instante en aparecer</string>
 

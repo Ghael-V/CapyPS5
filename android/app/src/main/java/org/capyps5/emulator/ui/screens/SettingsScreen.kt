@@ -99,8 +99,16 @@ fun SettingsScreen(
                 val drivers = GpuDrivers.list(context)
                 val ids = listOf("") + drivers.map { it.id }
                 val current = settings.gpuDriver().takeIf { id -> id in ids }.orEmpty()
+                val scales = CoreOption.ResolutionScale.choices.map { it.first }
+                val ueScale = settings.ueResolution()
                 listOf(
                     coreItem(CoreOption.ResolutionScale),
+                    SettingItem(
+                        context.getString(R.string.ue_resolution),
+                        context.getString(R.string.ue_resolution_desc),
+                        CoreOption.ResolutionScale.label(context, ueScale),
+                        onStep = { settings.updateUeResolution(cycle(scales, ueScale, it)) },
+                    ),
                     SettingItem(
                         context.getString(R.string.gpu_driver),
                         context.getString(R.string.gpu_driver_desc),

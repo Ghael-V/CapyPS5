@@ -11,7 +11,14 @@ data class GameItem(
     val backgroundPath: String? = null,
     val version: String? = null,
 ) {
+    /** Unreal Engine build (UE4/UE5 command-line file or engine folder in app0). */
+    val isUnreal: Boolean get() = isUnrealDir(File(directoryPath))
+
     companion object {
+        fun isUnrealDir(dir: File): Boolean =
+            File(dir, "ue4commandline.txt").isFile || File(dir, "uecommandline.txt").isFile ||
+                File(dir, "engine").isDirectory || File(dir, "Engine").isDirectory
+
         /** Builds an item from a dumped game folder (eboot.bin + sce_sys/param.json). */
         fun fromGameDir(dir: File, elf: File = File(dir, "eboot.bin")): GameItem {
             var titleId = dir.name

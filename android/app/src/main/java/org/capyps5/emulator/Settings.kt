@@ -177,8 +177,21 @@ class Settings(context: Context) {
 
     fun effectiveGpuDriver(titleId: String): String = gameGpuDriver(titleId) ?: gpuDriver()
 
-    /** Value a game runs with. */
-    fun effectiveOption(titleId: String, option: CoreOption): Long = gameOption(titleId, option) ?: coreOption(option)
+    /**
+     * Resolution scale for Unreal Engine games without their own setting: they render near 4K and
+     * are bound by pixel work on mobile GPUs, so a lower default keeps them playable.
+     */
+    fun ueResolution(): Long = prefs.getLong("ue_resolution", 250L)
+
+    fun updateUeResolution(value: Long) {
+        prefs.edit().putLong("ue_resolution", value).apply()
+        coreOptionsVersion++
+    }
+
+    /** Value a game runs with: its own setting, then the Unreal default, then the global one. */
+    fun effectiveOption(titleId: String, option: CoreOption, unreal: Boolean = false): Long =
+        gameOption(titleId, option)
+            ?: if (unreal && option == CoreOption.ResolutionScale) ueResolution() else coreOption(option)
 
     fun updateOverlayMode(value: OverlayMode) {
         overlayMode = value

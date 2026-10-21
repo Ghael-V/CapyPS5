@@ -441,7 +441,11 @@ private fun GameOptionsPanel(
                 option.title(context),
                 option.description(context),
                 override?.let { option.label(context, it) }
-                    ?: context.getString(R.string.global_value, option.label(context, settings.coreOption(option))),
+                    ?: if (option == CoreOption.ResolutionScale && game.isUnreal) {
+                        context.getString(R.string.ue_value, option.label(context, settings.ueResolution()))
+                    } else {
+                        context.getString(R.string.global_value, option.label(context, settings.coreOption(option)))
+                    },
                 onStep = { settings.updateGameOption(game.titleId, option, cycle(choices, override, it)) },
             )
         } + listOf(

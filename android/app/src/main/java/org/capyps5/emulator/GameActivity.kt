@@ -67,7 +67,7 @@ class GameActivity : CapyActivity() {
         swapFaceButtons = settings.buttonLayout == ButtonLayout.Nintendo
         // Global settings with this game's overrides, applied before the core reads them.
         CoreOption.entries.forEach { option ->
-            NativeBridge.nativeSetOption(option.property, settings.effectiveOption(game.titleId, option))
+            NativeBridge.nativeSetOption(option.property, settings.effectiveOption(game.titleId, option, game.isUnreal))
         }
         val driver = GpuDrivers.find(this, settings.effectiveGpuDriver(game.titleId))
         NativeBridge.nativeSetGpuDriver(
