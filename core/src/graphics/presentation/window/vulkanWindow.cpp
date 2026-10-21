@@ -663,6 +663,9 @@ static vk::Device VulkanCreateDevice(GraphicContext& graphics,
 	graphics.multi_viewport_enabled      = device_features.multiViewport == VK_TRUE;
 	graphics.fill_mode_non_solid_enabled = device_features.fillModeNonSolid == VK_TRUE;
 	device_features.drawIndirectFirstInstance = supported_features2.features.drawIndirectFirstInstance;
+	// Fragment/compute invocation counts per profiled scope (gpu_profile).
+	device_features.pipelineStatisticsQuery = supported_features2.features.pipelineStatisticsQuery;
+	graphics.pipeline_statistics_enabled    = device_features.pipelineStatisticsQuery == VK_TRUE;
 	graphics.draw_indirect_first_instance_enabled =
 	    device_features.drawIndirectFirstInstance == VK_TRUE;
 	ShaderRecompiler::g_host_features.clip_distance = device_features.shaderClipDistance == VK_TRUE;

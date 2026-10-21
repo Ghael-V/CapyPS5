@@ -31,13 +31,17 @@ struct Scope {
 };
 
 struct Stat {
-	uint64_t ns    = 0;
-	uint32_t count = 0;
-	uint32_t draws = 0;
+	uint64_t ns        = 0;
+	uint32_t count     = 0;
+	uint32_t draws     = 0;
+	uint64_t fragments = 0;
+	uint64_t compute   = 0;
 };
 
 struct State {
 	vk::QueryPool                         pool = nullptr;
+	// Pipeline statistics, one query per scope (timestamp query / 2), when the device has them.
+	vk::QueryPool                         stats_pool = nullptr;
 	uint32_t                              next = 0;
 	std::deque<Scope>                     pending;
 	bool                                  open = false;
@@ -80,11 +84,25 @@ bool Begin(GraphicContext& graphics, vk::CommandBuffer command, std::string labe
 	const auto query = state.next;
 	state.next += 2;
 	command.resetQueryPool(state.pool, query, 2);
+	if (state.stats_pool == nullptr && graphics.pipeline_statistics_enabled) {
+		vk::QueryPoolCreateInfo info {};
+		info.queryType          = vk::QueryType::ePipelineStatistics;
+		info.queryCount         = QueryCount / 2;
+		info.pipelineStatistics = vk::QueryPipelineStatisticFlagBits::eFragmentShaderInvocations |
+		                          vk::QueryPipelineStatisticFlagBits::eComputeShaderInvocations;
+		if (graphics.device.createQueryPool(&info, nullptr, &state.stats_pool) != vk::Result::eSuccess) {
+			state.stats_pool = nullptr;
+		}
+	}
+	if (state.stats_pool != nullptr) {
+		command.resetQueryPool(state.stats_pool, query / 2, 1);
+	}
 	// `debug.capy.gpu_profile 3`: drain the queue before each scope (passes begin before
 	// vkCmdBeginRendering). Adreno does not hold bottom-of-pipe timestamps behind earlier work,
 	// so without this a scope absorbs the tail of whatever ran before it.
+	// Mode 4 (fragment counts) drains too: Adreno pipeline statistics also count overlapped work.
 	static Common::DebugFlags::CachedValue mode("debug.capy.gpu_profile", 0);
-	if (mode.Get() == 3) {
+	if (mode.Get() == 3 || mode.Get() == 4) {
 		vk::MemoryBarrier barrier {};
 		barrier.srcAccessMask = vk::AccessFlagBits::eMemoryWrite;
 		barrier.dstAccessMask = vk::AccessFlagBits::eMemoryRead | vk::AccessFlagBits::eMemoryWrite;
@@ -93,6 +111,9 @@ bool Begin(GraphicContext& graphics, vk::CommandBuffer command, std::string labe
 	}
 	// Bottom of pipe: written once earlier work finishes, so a scope does not absorb its tail.
 	command.writeTimestamp(vk::PipelineStageFlagBits::eBottomOfPipe, state.pool, query);
+	if (state.stats_pool != nullptr) {
+		command.beginQuery(state.stats_pool, query / 2, {});
+	}
 	state.pending.push_back({query, 0, std::move(label)});
 	state.open = true;
 	return true;
@@ -158,6 +179,9 @@ void EndScope(vk::CommandBuffer command) {
 	if (!state.open || state.pending.empty()) {
 		return;
 	}
+	if (state.stats_pool != nullptr) {
+		command.endQuery(state.stats_pool, state.pending.back().query / 2);
+	}
 	command.writeTimestamp(vk::PipelineStageFlagBits::eBottomOfPipe, state.pool,
 	                       state.pending.back().query + 1);
 	state.open = false;
@@ -195,7 +219,16 @@ void Collect(GraphicContext& graphics) {
 		const auto ns = values[2] > values[0]
 		                    ? static_cast<uint64_t>(static_cast<double>(values[2] - values[0]) * period)
 		                    : 0;
+		std::array<uint64_t, 3> invocations {};
+		if (state.stats_pool != nullptr) {
+			// Fragment and compute shader invocations, then availability.
+			(void)graphics.device.getQueryPoolResults(
+			    state.stats_pool, scope.query / 2, 1, sizeof(invocations), invocations.data(),
+			    sizeof(invocations), vk::QueryResultFlagBits::e64 | vk::QueryResultFlagBits::eWithAvailability);
+		}
 		auto& stat = state.stats[scope.label];
+		stat.fragments += invocations[2] != 0 ? invocations[0] : 0;
+		stat.compute += invocations[2] != 0 ? invocations[1] : 0;
 		stat.ns += ns;
 		stat.count++;
 		stat.draws += scope.draws;
@@ -210,17 +243,28 @@ void Collect(GraphicContext& graphics) {
 	const auto wall_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(now - state.report).count();
 	state.report       = now;
 	std::vector<std::pair<std::string, Stat>> sorted(state.stats.begin(), state.stats.end());
-	std::sort(sorted.begin(), sorted.end(),
-	          [](const auto& a, const auto& b) { return a.second.ns > b.second.ns; });
+	// `gpu_profile 4` ranks by shaded fragments (pipeline statistics) instead of time.
+	static Common::DebugFlags::CachedValue mode("debug.capy.gpu_profile", 0);
+	const bool by_fragments  = mode.Get() == 4;
+	uint64_t   all_fragments = 0;
+	for (const auto& [label, stat]: sorted) {
+		all_fragments += stat.fragments;
+	}
+	std::sort(sorted.begin(), sorted.end(), [by_fragments](const auto& a, const auto& b) {
+		return by_fragments ? a.second.fragments > b.second.fragments : a.second.ns > b.second.ns;
+	});
 #if defined(__ANDROID__)
 	__android_log_print(ANDROID_LOG_WARN, "CapyPS5-GpuProf",
-	                    "---- measured GPU %.1f ms of %.1f ms wall (%zu kinds)",
+	                    "---- measured GPU %.1f ms of %.1f ms wall (%zu kinds), %.1f M fragments",
 	                    static_cast<double>(state.total_ns) / 1e6, static_cast<double>(wall_ns) / 1e6,
-	                    sorted.size());
+	                    sorted.size(), static_cast<double>(all_fragments) / 1e6);
 	for (size_t i = 0; i < sorted.size() && i < 16; i++) {
 		const auto& [label, stat] = sorted[i];
-		__android_log_print(ANDROID_LOG_WARN, "CapyPS5-GpuProf", "%7.1f ms x%-4u draws %-5u %s",
-		                    static_cast<double>(stat.ns) / 1e6, stat.count, stat.draws, label.c_str());
+		__android_log_print(ANDROID_LOG_WARN, "CapyPS5-GpuProf",
+		                    "%7.1f ms x%-4u draws %-5u frags %7.1fM cs %7.1fM %s",
+		                    static_cast<double>(stat.ns) / 1e6, stat.count, stat.draws,
+		                    static_cast<double>(stat.fragments) / 1e6,
+		                    static_cast<double>(stat.compute) / 1e6, label.c_str());
 	}
 #endif
 	state.stats.clear();
