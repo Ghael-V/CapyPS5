@@ -1100,6 +1100,7 @@ PipelineCache::Pipeline* PipelineCache::GetGraphicsPipeline(
 	if (static_params.sample_shading_enable && !m_graphics.sample_rate_shading_enabled) {
 		EXIT("Pipeline: sample-rate shading is required but unsupported by the host\n");
 	}
+	static_params.alpha_to_coverage_enable = ps_active && ctx.GetShaderRegisters().AlphaToMask();
 	const bool rect_list = Prospero::IsRectList(command.GetUserConfig().GetPrimType());
 	// Bisection aid: `setprop debug.capy.no_cull 1` disables face culling.
 	static Common::DebugFlags::CachedValue no_cull("debug.capy.no_cull", 0);
