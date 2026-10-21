@@ -441,15 +441,6 @@ IR::U32 Translator::RightMask32(IR::U32 count) {
 	                       {IR::Value(0u), IR::Value(0xffffffffu), IR::Value(0u), count}));
 }
 
-IR::U64 Translator::RightMask64(IR::U32 count) {
-	const auto below32 = IR::U1(ir.Emit(IR::ValueOpcode::ULessThan32, {count, IR::Value(32u)}));
-	const auto above32 = IR::U1(ir.Emit(IR::ValueOpcode::UGreaterThan32, {count, IR::Value(32u)}));
-	const auto low_count = ir.Select(below32, count, IR::U32(IR::Value(32u)));
-	const auto high_count =
-	    ir.Select(above32, ir.ISub(count, IR::U32(IR::Value(32u))), IR::U32(IR::Value(0u)));
-	return ir.ConstructU64(RightMask32(low_count), RightMask32(high_count));
-}
-
 void Translator::S_BFM_B64(const Decoder::Instruction& inst) {
 	const auto count  = ReadU32(inst.src0);
 	const auto offset = ReadU32(inst.src1);
@@ -481,12 +472,15 @@ void Translator::S_BFE_U64(const Decoder::Instruction& inst) {
 	const auto field  = ReadU32(inst.src1);
 	const auto offset =
 	    IR::U32(ir.Emit(IR::ValueOpcode::BitFieldUExtract, {field, IR::Value(0u), IR::Value(6u)}));
-	const auto raw_count =
+	const auto count =
 	    IR::U32(ir.Emit(IR::ValueOpcode::BitFieldUExtract, {field, IR::Value(16u), IR::Value(7u)}));
-	const auto available = ir.ISub(IR::U32(IR::Value(64u)), offset);
-	const auto count     = IR::U32(ir.Emit(IR::ValueOpcode::UMin32, {raw_count, available}));
-	const auto shifted   = IR::U64(ir.Emit(IR::ValueOpcode::ShiftRightLogical64, {source, offset}));
-	const auto result    = ir.Emit(IR::ValueOpcode::BitwiseAnd64, {shifted, RightMask64(count)});
+	// The shift already clears bits past the source; widths of 64 and more keep every bit.
+	const auto low_count = IR::U32(ir.Emit(IR::ValueOpcode::UMin32, {count, IR::Value(32u)}));
+	const auto high_count =
+	    IR::U32(ir.Emit(IR::ValueOpcode::UMin32, {ir.ISub(count, low_count), IR::Value(32u)}));
+	const auto mask    = ir.ConstructU64(RightMask32(low_count), RightMask32(high_count));
+	const auto shifted = IR::U64(ir.Emit(IR::ValueOpcode::ShiftRightLogical64, {source, offset}));
+	const auto result  = ir.Emit(IR::ValueOpcode::BitwiseAnd64, {shifted, mask});
 	WriteOperand(DestinationOperand(inst), result);
 	ir.SetScc(IR::U1(ir.Emit(IR::ValueOpcode::INotEqual64, {result, IR::Value(uint64_t {0})})));
 }

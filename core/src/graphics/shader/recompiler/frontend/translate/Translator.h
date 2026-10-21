@@ -210,7 +210,6 @@ private:
 	void S_QUADMASK_B64(const Decoder::Instruction& inst);
 	void BFM_B32(const Decoder::Instruction& inst);
 	IR::U32 RightMask32(IR::U32 count);
-	IR::U64 RightMask64(IR::U32 count);
 	void    S_BFM_B64(const Decoder::Instruction& inst);
 	void    S_BFE_U32(const Decoder::Instruction& inst, bool sign);
 	void    S_BFE_U64(const Decoder::Instruction& inst);
