@@ -12,6 +12,7 @@
 #include <filesystem>
 #include <memory>
 #include <span>
+#include <string>
 #include <string_view>
 
 union SDL_Event;
@@ -34,6 +35,21 @@ bool                     ProcessSystemOverlayInput(const SDL_Event& event);
 SystemOverlayVisualState GetSystemOverlayVisualState() noexcept;
 void                     NotifyTrophyUnlocked(std::string_view name, int32_t grade,
                                               std::span<const std::byte> icon_png);
+
+// Direct overlay input for frontends without an SDL event loop (Android). The desktop build
+// feeds the same queues from ProcessSystemOverlayInput; these entry points mirror that path.
+// Mouse positions are in ImGui display units, i.e. pixels of the game surface. Everything is
+// thread-safe and no-op while no dialog is on screen.
+bool           OverlayIsActive() noexcept;
+bool           OverlayCapturesController() noexcept;
+void           OverlayMouse(float x, float y, bool down);
+void           OverlayPadButton(int button, bool down);
+void           OverlayPadAxis(int axis, float value);
+void           OverlaySetText(std::u16string_view text);
+void           OverlayAccept();
+void           OverlayCancel();
+std::u16string OverlayGetText();
+std::u16string OverlayGetTitle();
 
 class SystemOverlay final {
 public:

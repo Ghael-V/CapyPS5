@@ -43,6 +43,9 @@ class GameActivity : CapyActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // The in-game text bar (IME dialog input) must stay visible while the soft keyboard is
+        // open, and the game surface must not resize underneath it.
+        window.setSoftInputMode(android.view.WindowManager.LayoutParams.SOFT_INPUT_ADJUST_NOTHING)
         val elf = intent.getStringExtra(EXTRA_ELF)
         if (elf == null) {
             finish()

@@ -4,6 +4,7 @@
 
 #include "libs/imeDialog.h"
 
+#include "common/logging/log.h"
 #include "libs/errno.h"
 
 #include <algorithm>
@@ -380,6 +381,16 @@ int KYTY_SYSV_ABI ImeDialogInit(const Param* param, const ExtendedParam* extende
 	std::u16string placeholder;
 	const int      validation = ValidateParam(param, extended, &initial, &title, &placeholder);
 	if (validation != OK) {
+		// The game would silently hang waiting for a dialog that never opened; make the
+		// rejection visible in the log with the parameters that caused it.
+		LOGF("[ImeDialog] Init rejected: 0x%08x (type=%u, option=0x%x, input_method=%u, "
+		     "max_text_length=%u, user_id=0x%x)\n",
+		     static_cast<unsigned>(validation),
+		     static_cast<unsigned>(param != nullptr ? param->type : 0),
+		     param != nullptr ? param->option : 0u,
+		     param != nullptr ? param->input_method : 0u,
+		     param != nullptr ? param->max_text_length : 0u,
+		     static_cast<unsigned>(param != nullptr ? param->user_id : -1));
 		return validation;
 	}
 
@@ -409,6 +420,9 @@ int KYTY_SYSV_ABI ImeDialogInit(const Param* param, const ExtendedParam* extende
 		g_status.store(Status::Running, std::memory_order_release);
 		g_revision.store(g_state.revision, std::memory_order_release);
 	}
+	LOGF("[ImeDialog] Init ok (type=%u, max_text_length=%u, title_len=%zu)\n",
+	     static_cast<unsigned>(g_state.param.type), g_state.param.max_text_length,
+	     g_state.title.size());
 	NotifyVisibility(true, generation);
 	return OK;
 }

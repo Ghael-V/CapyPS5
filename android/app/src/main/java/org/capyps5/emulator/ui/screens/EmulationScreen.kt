@@ -28,11 +28,14 @@ import androidx.compose.material.icons.automirrored.outlined.Logout
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.outlined.Layers
 import androidx.compose.material.icons.outlined.Tune
+import androidx.compose.material3.Button
 import androidx.compose.material3.Icon
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.size
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -49,6 +52,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.boundsInWindow
 import androidx.compose.ui.layout.onGloballyPositioned
@@ -95,6 +99,25 @@ fun EmulationScreen(
     var gamepadConnected by remember { mutableStateOf(hasPhysicalGamepad()) }
     var snapshot by remember { mutableStateOf(PerfSnapshot()) }
     val fpsHistory = remember { mutableStateListOf<Float>() }
+
+    // The core draws PS5 system dialogs (IME keyboard, error dialogs) over the game frame.
+    // While one is visible, screen touches go to that dialog and a text bar backed by the
+    // Android soft keyboard stays in sync with the dialog text.
+    var overlayActive by remember { mutableStateOf(false) }
+    var overlayTitle by remember { mutableStateOf("") }
+    var overlayText by remember { mutableStateOf("") }
+
+    LaunchedEffect(Unit) {
+        while (isActive) {
+            val active = NativeBridge.nativeOverlayActive()
+            if (active && !overlayActive) {
+                overlayTitle = NativeBridge.nativeOverlayTitle()
+                overlayText = NativeBridge.nativeOverlayText()
+            }
+            overlayActive = active
+            delay(250)
+        }
+    }
 
     // While any menu is open, controller input drives the UI instead of the game.
     val uiHasInput = showPauseMenu || showSettings || showLayers || loadError != null
@@ -165,6 +188,64 @@ fun EmulationScreen(
             },
         )
 
+        if (overlayActive) {
+            // Taps land on the dialog the core drew (its on-screen keyboard included).
+            Box(
+                Modifier
+                    .fillMaxSize()
+                    .pointerInput(Unit) {
+                        detectTapGestures(
+                            onPress = { offset ->
+                                NativeBridge.nativeOverlayMouse(offset.x, offset.y, true)
+                                try {
+                                    awaitRelease()
+                                } finally {
+                                    NativeBridge.nativeOverlayMouse(offset.x, offset.y, false)
+                                }
+                            },
+                        )
+                    },
+            )
+            // Text entry via the Android soft keyboard, synced with the dialog text.
+            Column(
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .padding(top = 64.dp)
+                    .fillMaxWidth(0.94f)
+                    .background(Capy.Surface, RoundedCornerShape(14.dp))
+                    .padding(horizontal = 12.dp, vertical = 10.dp),
+            ) {
+                if (overlayTitle.isNotBlank()) {
+                    Text(
+                        overlayTitle,
+                        style = MaterialTheme.typography.labelMedium,
+                        color = Capy.TextSecondary,
+                    )
+                    Spacer(Modifier.height(6.dp))
+                }
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    OutlinedTextField(
+                        value = overlayText,
+                        onValueChange = { value ->
+                            overlayText = value
+                            NativeBridge.nativeOverlaySetText(value)
+                        },
+                        modifier = Modifier.weight(1f),
+                        singleLine = true,
+                    )
+                    Button(onClick = { NativeBridge.nativeOverlayAccept() }) {
+                        Text("OK")
+                    }
+                    TextButton(onClick = { NativeBridge.nativeOverlayCancel() }) {
+                        Text(stringResource(android.R.string.cancel))
+                    }
+                }
+            }
+        }
+
         // Swiping in from the left edge opens the pause menu (as in other Android emulators). The
         // strip is excluded from the system back gesture so Android does not take the swipe.
         val density = androidx.compose.ui.platform.LocalDensity.current
@@ -197,14 +278,14 @@ fun EmulationScreen(
                 },
         )
 
-        if (showTouch) {
+        if (showTouch && !overlayActive) {
             VirtualGamepad(
                 modifier = Modifier.fillMaxSize(),
                 alpha = settings.controlsOpacity,
                 showTouchpad = settings.touchpadOverlay != TouchControlsMode.Never,
                 onMenuClick = { showPauseMenu = true },
             )
-        } else if (settings.touchpadOverlay == TouchControlsMode.Always) {
+        } else if (settings.touchpadOverlay == TouchControlsMode.Always && !overlayActive) {
             TouchpadOverlay(Modifier.fillMaxSize(), alpha = settings.controlsOpacity)
         }
 

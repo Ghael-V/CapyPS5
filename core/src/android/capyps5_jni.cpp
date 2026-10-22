@@ -13,11 +13,13 @@
 #include "common/threads.h"
 #include "common/virtualMemory.h"
 #include "emulator.h"
+#include "graphics/presentation/systemOverlay.h"
 #include "libs/controller.h"
 
 #include <array>
 #include <mutex>
 #include <algorithm>
+#include <SDL3/SDL.h>
 #include <android/log.h>
 #include <atomic>
 #include <filesystem>
@@ -217,7 +219,40 @@ JNIEXPORT void JNICALL Java_org_capyps5_emulator_NativeBridge_nativeSetTouchpadC
 	SubmitPad(g_last_buttons, a[0], a[1], a[2], a[3], a[4], a[5]);
 }
 
+// Map the frontend pad state onto the SDL gamepad buttons/axes that the system overlay's
+// ImGui navigation consumes (d-pad/left stick to move the focus, cross to activate,
+// circle to cancel, triangle to backspace). Mirrors the desktop SDL routing.
+static void OverlayRoutePad(jint buttons, jfloat lx, jfloat ly, jfloat rx, jfloat ry) {
+	namespace Overlay = Libs::Graphics;
+	Overlay::OverlayPadButton(SDL_GAMEPAD_BUTTON_SOUTH, (buttons & (1 << 14)) != 0);
+	Overlay::OverlayPadButton(SDL_GAMEPAD_BUTTON_EAST, (buttons & (1 << 13)) != 0);
+	Overlay::OverlayPadButton(SDL_GAMEPAD_BUTTON_WEST, (buttons & (1 << 15)) != 0);
+	Overlay::OverlayPadButton(SDL_GAMEPAD_BUTTON_NORTH, (buttons & (1 << 12)) != 0);
+	Overlay::OverlayPadButton(SDL_GAMEPAD_BUTTON_DPAD_UP, (buttons & (1 << 4)) != 0);
+	Overlay::OverlayPadButton(SDL_GAMEPAD_BUTTON_DPAD_RIGHT, (buttons & (1 << 5)) != 0);
+	Overlay::OverlayPadButton(SDL_GAMEPAD_BUTTON_DPAD_DOWN, (buttons & (1 << 6)) != 0);
+	Overlay::OverlayPadButton(SDL_GAMEPAD_BUTTON_DPAD_LEFT, (buttons & (1 << 7)) != 0);
+	const auto axis = [](float value) { return std::clamp(value, -1.0f, 1.0f) * 32767.0f; };
+	Overlay::OverlayPadAxis(SDL_GAMEPAD_AXIS_LEFTX, axis(lx));
+	Overlay::OverlayPadAxis(SDL_GAMEPAD_AXIS_LEFTY, axis(ly));
+	Overlay::OverlayPadAxis(SDL_GAMEPAD_AXIS_RIGHTX, axis(rx));
+	Overlay::OverlayPadAxis(SDL_GAMEPAD_AXIS_RIGHTY, axis(ry));
+}
+
 static void SubmitPad(jint buttons, jfloat lx, jfloat ly, jfloat rx, jfloat ry, jfloat l2, jfloat r2) {
+	// While a system dialog (IME keyboard, error dialog) is on screen the pad drives that
+	// dialog instead of the game, mirroring the desktop SDL event loop. The transition also
+	// clears whatever the game still held from the previous input batch.
+	static bool overlay_captured = false;
+	const bool  captured         = Libs::Graphics::OverlayCapturesController();
+	if (captured != overlay_captured) {
+		overlay_captured = captured;
+		Libs::Controller::ResetInputState();
+	}
+	if (captured) {
+		OverlayRoutePad(buttons, lx, ly, rx, ry);
+		return;
+	}
 	uint32_t pad_buttons = static_cast<uint32_t>(buttons) & 0xFFFE;
 	if (g_touchpad_click) pad_buttons |= Libs::Controller::PAD_BUTTON_TOUCH_PAD;
 	if (buttons & 1) pad_buttons |= Libs::Controller::PAD_BUTTON_TOUCH_PAD;
@@ -297,6 +332,63 @@ JNIEXPORT jstring JNICALL Java_org_capyps5_emulator_NativeBridge_nativeGetVersio
     JNIEnv* env, jclass /*clazz*/) {
 	const std::string version = "CapyPS5 v0.0.3-alpha (ARM64 Android)";
 	return env->NewStringUTF(version.c_str());
+}
+
+// --- System overlay (IME keyboard, system dialogs) -------------------------------------------
+// The desktop build feeds the overlay through the SDL event loop; on Android the frontend
+// sends touch/gamepad/text directly. Mouse coordinates are pixels in the game surface, which
+// is what the overlay's ImGui uses as display size (the swapchain extent).
+
+JNIEXPORT jboolean JNICALL Java_org_capyps5_emulator_NativeBridge_nativeOverlayActive(
+    JNIEnv* /*env*/, jclass /*clazz*/) {
+	return Libs::Graphics::OverlayIsActive() ? JNI_TRUE : JNI_FALSE;
+}
+
+JNIEXPORT jstring JNICALL Java_org_capyps5_emulator_NativeBridge_nativeOverlayText(
+    JNIEnv* env, jclass /*clazz*/) {
+        const std::u16string text = Libs::Graphics::OverlayGetText();
+        if (text.empty()) {
+                return env->NewStringUTF("");
+        }
+	return env->NewString(reinterpret_cast<const jchar*>(text.data()),
+	                      static_cast<jsize>(text.size()));
+}
+
+JNIEXPORT jstring JNICALL Java_org_capyps5_emulator_NativeBridge_nativeOverlayTitle(
+    JNIEnv* env, jclass /*clazz*/) {
+        const std::u16string title = Libs::Graphics::OverlayGetTitle();
+        if (title.empty()) {
+                return env->NewStringUTF("");
+        }
+	return env->NewString(reinterpret_cast<const jchar*>(title.data()),
+	                      static_cast<jsize>(title.size()));
+}
+
+JNIEXPORT void JNICALL Java_org_capyps5_emulator_NativeBridge_nativeOverlayMouse(
+    JNIEnv* /*env*/, jclass /*clazz*/, jfloat x, jfloat y, jboolean down) {
+	Libs::Graphics::OverlayMouse(x, y, down == JNI_TRUE);
+}
+
+JNIEXPORT void JNICALL Java_org_capyps5_emulator_NativeBridge_nativeOverlaySetText(
+    JNIEnv* env, jclass /*clazz*/, jstring text) {
+	if (text == nullptr) {
+	        return;
+	}
+	const jchar* chars = env->GetStringChars(text, nullptr);
+	const jsize  len   = env->GetStringLength(text);
+	Libs::Graphics::OverlaySetText(
+	    std::u16string_view(reinterpret_cast<const char16_t*>(chars), static_cast<size_t>(len)));
+	env->ReleaseStringChars(text, chars);
+}
+
+JNIEXPORT void JNICALL Java_org_capyps5_emulator_NativeBridge_nativeOverlayAccept(
+    JNIEnv* /*env*/, jclass /*clazz*/) {
+	Libs::Graphics::OverlayAccept();
+}
+
+JNIEXPORT void JNICALL Java_org_capyps5_emulator_NativeBridge_nativeOverlayCancel(
+    JNIEnv* /*env*/, jclass /*clazz*/) {
+	Libs::Graphics::OverlayCancel();
 }
 
 ANativeWindow* AndroidGetNativeWindow() {
