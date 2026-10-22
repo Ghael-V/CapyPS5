@@ -223,6 +223,7 @@ public:
 	bool Flip(uint32_t micros);
 	void GetFlipStatus(VideoOutConfig& cfg, VideoOutFlipStatus& out);
 	void Wait(VideoOutConfig& cfg, int index);
+	bool IsSafeForRendering(VideoOutConfig& cfg, int index);
 
 private:
 	enum class RequestState { Reserved, Recording, Ready, Presenting };
@@ -251,7 +252,10 @@ private:
 	std::list<Request>   m_cpu_requests;
 	std::list<Request>   m_cancelled_requests;
 	bool                 m_processing      = false;
+	bool                 m_gpu_waiting     = false;
 	uint64_t             m_next_request_id = 1;
+
+	void SignalDoneLocked();
 };
 
 struct VideoOutDriver::Impl {
@@ -948,7 +952,7 @@ bool FlipQueue::Reserve(VideoOutConfig& cfg, int index, int64_t flip_arg, FlipRe
 				}
 			}
 		}
-		m_done_cond_var.SignalAll();
+		SignalDoneLocked();
 	}
 	if (cfg.flip_status.flipPendingNum >= VIDEO_OUT_FLIP_QUEUE_CAPACITY) {
 		return false;
@@ -1026,7 +1030,7 @@ void FlipQueue::Cancel(VideoOutConfig& cfg) {
 			it = queue->erase(it);
 		}
 	}
-	m_done_cond_var.SignalAll();
+	SignalDoneLocked();
 	m_submit_slot_cond_var.SignalAll();
 	m_submit_cond_var.SignalAll();
 	m_mutex.Unlock();
@@ -1168,7 +1172,7 @@ void FlipQueue::Complete(uint64_t request_id) {
 	}
 	auto* frame = cancelled->frame;
 	m_cancelled_requests.erase(cancelled);
-	m_done_cond_var.SignalAll();
+	SignalDoneLocked();
 	m_mutex.Unlock();
 	if (frame != nullptr) {
 		m_presenter.Discard(*frame);
@@ -1199,6 +1203,25 @@ void FlipQueue::Wait(VideoOutConfig& cfg, int index) {
 	while (has_request()) {
 		m_done_cond_var.Wait(&m_mutex);
 	}
+}
+
+void FlipQueue::SignalDoneLocked() {
+	m_done_cond_var.SignalAll();
+	// A command processor stalled on this buffer retries now rather than after the GPU thread's
+	// 100 ms idle timeout.
+	if (m_gpu_waiting) {
+		m_gpu_waiting = false;
+		m_presenter.Renderer().GetGpu().Wake();
+	}
+}
+
+bool FlipQueue::IsSafeForRendering(VideoOutConfig& cfg, int index) {
+	Common::LockGuard lock(m_mutex);
+	auto matches = [&cfg, index](const auto& r) { return r.cfg == &cfg && r.index == index; };
+	const bool safe = std::none_of(m_requests.begin(), m_requests.end(), matches) &&
+	                  std::none_of(m_cpu_requests.begin(), m_cpu_requests.end(), matches);
+	m_gpu_waiting |= !safe;
+	return safe;
 }
 
 bool FlipQueue::Flip(uint32_t micros) {
@@ -1277,7 +1300,7 @@ bool FlipQueue::Flip(uint32_t micros) {
 		it = m_requests.erase(it);
 	}
 	m_processing = false;
-	m_done_cond_var.SignalAll();
+	SignalDoneLocked();
 	m_submit_slot_cond_var.SignalAll();
 	m_mutex.Unlock();
 	for (size_t i = count; i != 0; i--) {
@@ -1645,6 +1668,14 @@ void VideoOutDriver::WaitForSubmitSlot(int handle) {
 	auto* cfg = m_impl->Get(handle);
 	EXIT_IF(cfg == nullptr);
 	m_impl->GetFlipQueue().WaitForSubmitSlot(*cfg);
+}
+
+bool VideoOutDriver::IsSafeForRendering(int handle, int index) {
+	auto* ctx = m_impl->Get(handle);
+	EXIT_IF(ctx == nullptr);
+
+	EXIT_NOT_IMPLEMENTED(!IsValidBufferIndex(index));
+	return m_impl->GetFlipQueue().IsSafeForRendering(*ctx, index);
 }
 
 void VideoOutDriver::WaitFlipDone(int handle, int index) {

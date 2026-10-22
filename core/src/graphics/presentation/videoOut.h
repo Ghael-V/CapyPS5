@@ -43,6 +43,8 @@ public:
 	void SubmitFlipPreparation(uint64_t request_id);
 	void WaitForSubmitSlot(int handle);
 	void WaitFlipDone(int handle, int index);
+	// False while the buffer still has a flip queued; the GPU thread is woken when it completes.
+	[[nodiscard]] bool IsSafeForRendering(int handle, int index);
 
 	[[nodiscard]] Impl& State() noexcept;
 
