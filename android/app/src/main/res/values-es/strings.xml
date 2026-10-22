@@ -13,6 +13,7 @@
     <string name="enabled">Activado</string>
     <string name="disabled">Desactivado</string>
     <string name="global_value">Global (%1$s)</string>
+    <string name="ime_keyboard_toggle">Mostrar/ocultar teclado</string>
 
     <!-- Ayudas del mando -->
     <string name="hint_back">Volver</string>

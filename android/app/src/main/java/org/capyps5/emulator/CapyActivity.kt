@@ -22,6 +22,9 @@ object InputRouter {
     var onPauseRequested: (() -> Unit)? = null
     var onRouteChanged: ((Boolean) -> Unit)? = null
 
+    /** Lets the frontend consume the system back key (e.g. to close a system dialog). */
+    var onSystemBack: (() -> Boolean)? = null
+
     fun setRouteToUi(value: Boolean) {
         if (routeToUi == value) return
         routeToUi = value
@@ -119,7 +122,10 @@ abstract class CapyActivity : ComponentActivity() {
         val systemBack = event.keyCode == KeyEvent.KEYCODE_BACK &&
             !event.isFromSource(InputDevice.SOURCE_GAMEPAD) && !event.isFromSource(InputDevice.SOURCE_JOYSTICK)
         if (event.keyCode == KeyEvent.KEYCODE_BUTTON_MODE || systemBack) {
-            if (down) InputRouter.onPauseRequested?.invoke()
+            if (down) {
+                if (InputRouter.onSystemBack?.invoke() == true) return true
+                InputRouter.onPauseRequested?.invoke()
+            }
             return true
         }
         val mask = padMask(event.keyCode)

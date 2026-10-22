@@ -15,6 +15,7 @@
     <string name="enabled">On</string>
     <string name="disabled">Off</string>
     <string name="global_value">Global (%1$s)</string>
+    <string name="ime_keyboard_toggle">Show/hide keyboard</string>
 
     <!-- Controller hints -->
     <string name="hint_back">Back</string>
