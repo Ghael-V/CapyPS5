@@ -196,6 +196,27 @@ class Settings(context: Context) {
         gameOption(titleId, option)
             ?: if (unreal && option == CoreOption.ResolutionScale) ueResolution() else coreOption(option)
 
+    /** Whether the launcher looks for a newer release on start. */
+    var updateChecks by mutableStateOf(prefs.getBoolean("update_checks", true))
+        private set
+
+    fun updateUpdateChecks(value: Boolean) {
+        updateChecks = value
+        prefs.edit().putBoolean("update_checks", value).apply()
+    }
+
+    /** Release the user chose to skip; no notice until a newer one appears. */
+    var skippedRelease: String
+        get() = prefs.getString("skipped_release", "").orEmpty()
+        set(value) = prefs.edit().putString("skipped_release", value).apply()
+
+    /** Counts launcher starts and returns the new count (the support card shows every 10th). */
+    fun countLaunch(): Int {
+        val count = prefs.getInt("launch_count", 0) + 1
+        prefs.edit().putInt("launch_count", count).apply()
+        return count
+    }
+
     fun updateOverlayMode(value: OverlayMode) {
         overlayMode = value
         prefs.edit().putString("overlay_mode", value.name).apply()

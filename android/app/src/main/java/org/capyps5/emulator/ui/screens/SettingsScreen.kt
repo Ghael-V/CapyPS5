@@ -67,6 +67,14 @@ class SettingItem(
 
 private class SettingsCategory(val title: String, val icon: ImageVector, val items: () -> List<SettingItem>)
 
+private fun openLink(context: android.content.Context, url: Int) {
+    runCatching {
+        context.startActivity(
+            android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse(context.getString(url)))
+        )
+    }
+}
+
 fun <T> cycle(values: List<T>, current: T, delta: Int): T =
     values[(values.indexOf(current).coerceAtLeast(0) + delta).mod(values.size)]
 
@@ -96,7 +104,7 @@ fun SettingsScreen(
         )
     }
 
-    val categories = remember(optionsVersion, settings.libraryPaths, message, driverMessage) {
+    val categories = remember(optionsVersion, settings.libraryPaths, message, driverMessage, settings.updateChecks) {
         listOf(
             SettingsCategory(context.getString(R.string.category_graphics), Icons.Outlined.Image) {
                 val drivers = GpuDrivers.list(context)
@@ -193,6 +201,11 @@ fun SettingsScreen(
             SettingsCategory(context.getString(R.string.category_system), Icons.Outlined.Settings) {
                 listOf(
                     SettingItem(
+                        context.getString(R.string.update_checks), context.getString(R.string.update_checks_desc),
+                        context.getString(if (settings.updateChecks) R.string.enabled else R.string.disabled),
+                        onStep = { settings.updateUpdateChecks(!settings.updateChecks) },
+                    ),
+                    SettingItem(
                         context.getString(R.string.clear_shader_cache), context.getString(R.string.clear_shader_cache_desc),
                         danger = true,
                         onConfirm = { message = onClearShaderCache() },
@@ -209,6 +222,20 @@ fun SettingsScreen(
             SettingsCategory(context.getString(R.string.category_about), Icons.Outlined.Info) {
                 listOf(
                     SettingItem("CapyPS5", versionText),
+                    SettingItem(context.getString(R.string.developer), "Ghael-V"),
+                    SettingItem(context.getString(R.string.logo_by), "Madelein"),
+                    SettingItem(
+                        context.getString(R.string.support_discord), context.getString(R.string.discord_link),
+                        onConfirm = { openLink(context, R.string.discord_link) },
+                    ),
+                    SettingItem(
+                        context.getString(R.string.support_kofi), context.getString(R.string.kofi_link),
+                        onConfirm = { openLink(context, R.string.kofi_link) },
+                    ),
+                    SettingItem(
+                        context.getString(R.string.support_buymeacoffee), context.getString(R.string.buymeacoffee_link),
+                        onConfirm = { openLink(context, R.string.buymeacoffee_link) },
+                    ),
                     SettingItem(
                         context.getString(R.string.license),
                         context.getString(R.string.license_desc),

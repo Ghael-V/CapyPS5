@@ -67,6 +67,10 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.delay
@@ -266,6 +270,16 @@ private fun TopBar(tab: Int, onTab: (Int) -> Unit, onAdd: () -> Unit, onRefresh:
         }
     }
     Row(verticalAlignment = Alignment.CenterVertically) {
+        // Brand first: screenshots and videos of the launcher should say what they show.
+        Image(painterResource(R.drawable.capy_logo), null, Modifier.size(36.dp))
+        Text(
+            buildAnnotatedString {
+                withStyle(SpanStyle(color = Capy.TextPrimary)) { append("Capy") }
+                withStyle(SpanStyle(color = Capy.Accent)) { append("PS5") }
+            },
+            style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold),
+            modifier = Modifier.padding(start = 8.dp, end = 30.dp),
+        )
         listOf(stringResource(R.string.tab_games), stringResource(R.string.tab_library)).forEachIndexed { i, label ->
             Text(
                 label,

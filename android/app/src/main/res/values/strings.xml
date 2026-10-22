@@ -115,6 +115,8 @@
     <string name="license">License</string>
     <string name="license_desc">Free software under GPL v2. Includes Kyty (GPL-2.0), FEX (MIT), SDL (zlib), FFmpeg (LGPL-2.1), libadrenotools (BSD-2) and other open-source components. Contains no Sony software or keys.</string>
     <string name="device">Device</string>
+    <string name="developer">Created by</string>
+    <string name="logo_by">Logo by</string>
 
     <!-- In game -->
     <string name="layers">Layers</string>
@@ -128,4 +130,27 @@
     <string name="error_elf_start">Could not start the executable. Check logcat (CapyPS5-*).</string>
     <string name="back_to_home_a">Back to home  Ⓐ</string>
     <string name="crash_title">The game closed because of an error</string>
+    <!-- Updates -->
+    <string name="update_checks">Check for updates</string>
+    <string name="update_checks_desc">Looks for a newer release each time the app starts</string>
+    <string name="update_title">New version available</string>
+    <string name="update_versions">%1$s is available (you have %2$s)</string>
+    <string name="update_download">Download</string>
+    <string name="update_install">Install</string>
+    <string name="update_later">Later</string>
+    <string name="update_skip">Skip this version</string>
+    <string name="update_retry">Retry</string>
+    <string name="update_downloading">Downloading… %1$d %%</string>
+    <string name="update_failed">The download failed. Check your connection and try again.</string>
+    <string name="update_permission">Allow CapyPS5 to install apps in the screen that just opened, then press Install.</string>
+
+    <!-- Support -->
+    <string name="support_title">Enjoying CapyPS5?</string>
+    <string name="support_description">CapyPS5 is free and made in our spare time. Join the community on Discord to report games and follow progress, or support development with a coffee.</string>
+    <string name="support_discord">Join our Discord</string>
+    <string name="support_kofi">Support us on Ko-fi</string>
+    <string name="support_buymeacoffee">Buy me a coffee</string>
+    <string name="discord_link" translatable="false">https://discord.com/invite/PEE7Q5TVM5</string>
+    <string name="kofi_link" translatable="false">https://ko-fi.com/LemonProject</string>
+    <string name="buymeacoffee_link" translatable="false">https://buymeacoffee.com/ghael</string>
 </resources>

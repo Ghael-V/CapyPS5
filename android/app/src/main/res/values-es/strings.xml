@@ -113,6 +113,8 @@
     <string name="license">Licencia</string>
     <string name="license_desc">Software libre bajo GPL v2. Incluye Kyty (GPL-2.0), FEX (MIT), SDL (zlib), FFmpeg (LGPL-2.1), libadrenotools (BSD-2) y otros componentes de código abierto. No incluye software ni claves de Sony.</string>
     <string name="device">Dispositivo</string>
+    <string name="developer">Creado por</string>
+    <string name="logo_by">Logo de</string>
 
     <!-- En juego -->
     <string name="layers">Capas</string>
@@ -126,4 +128,24 @@
     <string name="error_elf_start">No se pudo iniciar el ejecutable. Revisa logcat (CapyPS5-*).</string>
     <string name="back_to_home_a">Volver al inicio  Ⓐ</string>
     <string name="crash_title">El juego se cerró por un error</string>
+    <!-- Actualizaciones -->
+    <string name="update_checks">Buscar actualizaciones</string>
+    <string name="update_checks_desc">Comprueba si hay una versión nueva cada vez que se abre la app</string>
+    <string name="update_title">Nueva versión disponible</string>
+    <string name="update_versions">Ya está disponible %1$s (tienes la %2$s)</string>
+    <string name="update_download">Descargar</string>
+    <string name="update_install">Instalar</string>
+    <string name="update_later">Más tarde</string>
+    <string name="update_skip">Omitir esta versión</string>
+    <string name="update_retry">Reintentar</string>
+    <string name="update_downloading">Descargando… %1$d %%</string>
+    <string name="update_failed">La descarga ha fallado. Comprueba tu conexión e inténtalo de nuevo.</string>
+    <string name="update_permission">Permite a CapyPS5 instalar aplicaciones en la pantalla que se acaba de abrir y vuelve a pulsar Instalar.</string>
+
+    <!-- Apoyo -->
+    <string name="support_title">¿Te gusta CapyPS5?</string>
+    <string name="support_description">CapyPS5 es gratuito y lo hacemos en nuestro tiempo libre. Únete a la comunidad en Discord para informar de juegos y seguir los avances, o apoya el desarrollo con un café.</string>
+    <string name="support_discord">Únete a nuestro Discord</string>
+    <string name="support_kofi">Apóyanos en Ko-fi</string>
+    <string name="support_buymeacoffee">Invítanos a un café</string>
 </resources>

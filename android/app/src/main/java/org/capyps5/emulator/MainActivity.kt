@@ -46,6 +46,10 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import androidx.compose.ui.res.stringResource
+import androidx.lifecycle.lifecycleScope
+import kotlinx.coroutines.launch
+import org.capyps5.emulator.ui.components.SupportDialog
+import org.capyps5.emulator.ui.components.UpdateDialog
 
 /** Launcher: game library and settings. Each game runs in GameActivity, in its own process. */
 class MainActivity : CapyActivity() {
@@ -56,6 +60,9 @@ class MainActivity : CapyActivity() {
     private var storageCheck by mutableIntStateOf(0)
     // Fatal report the last game session left behind, shown once when the launcher returns.
     private var lastError by mutableStateOf<String?>(null)
+    // Newer release found at start, and whether this launch shows the support card.
+    private var update by mutableStateOf<Release?>(null)
+    private var showSupport by mutableStateOf(false)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -73,6 +80,15 @@ class MainActivity : CapyActivity() {
         }
 
         val versionText = runCatching { NativeBridge.nativeGetVersion() }.getOrDefault("CapyPS5")
+        val installed = Updater.installedVersion(this)
+        if (savedInstanceState == null) {
+            showSupport = settings.countLaunch() % SUPPORT_EVERY == 0
+            if (settings.updateChecks) {
+                lifecycleScope.launch {
+                    update = Updater.checkForUpdate(installed)?.takeIf { it.tag != settings.skippedRelease }
+                }
+            }
+        }
         // `adb shell am start ... --es launch_elf <path> [--es launch_dir <dir>]` starts a game directly.
         intent?.getStringExtra("launch_elf")?.takeIf { File(it).exists() }?.let { elf ->
             val dir = File(intent.getStringExtra("launch_dir") ?: File(elf).parent ?: "")
@@ -117,14 +133,27 @@ class MainActivity : CapyActivity() {
                         onLibraryPicked = { settings.addLibraryPath(it) },
                         onClearShaderCache = ::clearShaderCache,
                         onSaveLog = ::saveLog,
-                        overlayActive = lastError != null,
+                        overlayActive = lastError != null || update != null || showSupport,
                     )
-                    lastError?.let { report ->
-                        CrashDialog(
+                    // One notice at a time: the crash report, then an update, then the support card.
+                    val report = lastError
+                    val pending = update
+                    when {
+                        report != null -> CrashDialog(
                             report = report,
                             onSaveLog = ::saveLog,
                             onClose = { lastError = null },
                         )
+                        pending != null -> UpdateDialog(
+                            release = pending,
+                            installed = installed,
+                            onSkip = {
+                                settings.skippedRelease = pending.tag
+                                update = null
+                            },
+                            onClose = { update = null },
+                        )
+                        showSupport -> SupportDialog(onClose = { showSupport = false })
                     }
                 }
             }
@@ -142,6 +171,10 @@ class MainActivity : CapyActivity() {
             lastError = runCatching { report.readText() }.getOrNull()?.takeIf { it.isNotBlank() }
             report.delete()
         }
+    }
+
+    private companion object {
+        const val SUPPORT_EVERY = 10
     }
 
     /** Deletes the persisted pipeline cache of one game, or of every game when [titleId] is null. */
