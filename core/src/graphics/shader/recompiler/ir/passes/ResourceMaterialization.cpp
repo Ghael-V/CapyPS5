@@ -957,7 +957,12 @@ static bool BuildResourceSpecialization(const ResourcePlan& program, ResourceSna
 				return SpecializationFail("FMASK requires a direct image load");
 			}
 		}
-		image.conversion_format = ImageConversionFormat(format);
+		// See ReadsDepthBits; raw loads only, since filtering would blend the codes.
+		const bool depth_bits =
+		    !storage && base.unfiltered_access_only && format == Prospero::BufferFormat::k16UInt &&
+		    static_cast<Prospero::TileMode>((descriptor.dwords[3] >> 20u) & 0x1fu) ==
+		        Prospero::TileMode::kDepth;
+		image.conversion_format = depth_bits ? format : ImageConversionFormat(format);
 		if (storage || image.conversion_format != Prospero::BufferFormat::kInvalid) {
 			image.shader_swizzle = DescriptorImageSwizzle(descriptor);
 		}
@@ -965,7 +970,7 @@ static bool BuildResourceSpecialization(const ResourcePlan& program, ResourceSna
 		const bool raw_sint_storage = raw_sint_format != Prospero::BufferFormat::kInvalid;
 		if (raw_sint_format == Prospero::BufferFormat::k16UInt) image.conversion_format = format;
 		image.numeric_class = Prospero::SampledTextureNumericClass(
-		    Prospero::RemapTextureFormat(format));
+		    depth_bits ? Prospero::BufferFormat::k16UNorm : Prospero::RemapTextureFormat(format));
 		// A stale record of a PS4 table enumerated by key range: drop it as a null image.
 		if (Decoder::GetGuestIsa() == Decoder::GuestIsa::Gfx7 && image.indirect_root != ImageResource::NoIndirectImage &&
 		    image.indirect_root != i && image.numeric_class == Prospero::TextureNumericClass::Unsupported) {

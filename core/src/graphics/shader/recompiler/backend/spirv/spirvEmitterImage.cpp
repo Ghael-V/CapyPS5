@@ -440,6 +440,7 @@ Format::BufferFormatInfo ImageConversionFormat(const EmitterState&   state,
 	const auto format = image.conversion_format;
 	if (format == Prospero::BufferFormat::kInvalid) return {};
 	const auto info = Format::GetFormatInfo(format);
+	if (IR::ReadsDepthBits(image)) return info;
 	const bool raw_signed = IR::RawSignedStorageFormat(image, format) != Prospero::BufferFormat::kInvalid;
 	EXIT_IF((Prospero::RemapTextureFormat(format) == format && !raw_signed) || info.component_count == 0u ||
 	        info.component_count > 4u);
@@ -475,6 +476,7 @@ uint32_t UnpackImageTexel(ValueEmitContext& ctx, const IR::MemoryInfo& mem, uint
 
 	const auto numeric_class = ctx.state.program.info.images[mem.resource].numeric_class;
 	const auto scalar_type   = ImageScalarType(ctx.state, numeric_class);
+	const bool integer       = info.packed_bitfield || info.type == Format::ComponentType::Uint;
 	uint32_t   packed        = 0;
 	if (info.packed_bitfield) {
 		packed = ctx.state.builder.AllocateId();
@@ -492,8 +494,16 @@ uint32_t UnpackImageTexel(ValueEmitContext& ctx, const IR::MemoryInfo& mem, uint
 			ctx.state.builder.AddFunction(spv::OpCompositeExtract, scalar_type,
 			                              components[component], texel, component);
 			// UNorm backing preserves the guest's filtering; scaling precedes swizzle constants.
+			const auto unorm_max = static_cast<float>((1u << info.component_bits[component]) - 1u);
 			components[component] = Binary(ctx.state, spv::OpFMul, scalar_type, components[component],
-			                               ConstantF32Value(ctx.state, 255.0f));
+			                               ConstantF32Value(ctx.state, unorm_max));
+			if (integer) {
+				// Depth bits: round back to the stored UNorm code.
+				components[component] =
+				    Unary(ctx.state, spv::OpConvertFToU, TypeU32(ctx.state),
+				          Binary(ctx.state, spv::OpFAdd, scalar_type, components[component],
+				                 ConstantF32Value(ctx.state, 0.5f)));
+			}
 		}
 	}
 	for (uint32_t component = info.component_count; component < 4u; component++) {
@@ -505,20 +515,19 @@ uint32_t UnpackImageTexel(ValueEmitContext& ctx, const IR::MemoryInfo& mem, uint
 	for (uint32_t component = 0; component < 4u; component++) {
 		const auto selector = (swizzle >> (component * 3u)) & 7u;
 		if (selector == 1u) {
-			selected[component] = info.packed_bitfield
+			selected[component] = integer
 			    ? ConstantU32(ctx.state, Format::FormattedConstantBits(info, Format::FormattedSourceKind::One))
 			    : ConstantF32Value(ctx.state, 1.0f);
 		} else if (selector >= 4u) {
 			selected[component] = components[selector - 4u];
 		} else {
-			selected[component] = info.packed_bitfield ? ConstantU32(ctx.state, 0u)
-			                                          : ZeroF32(ctx.state);
+			selected[component] = integer ? ConstantU32(ctx.state, 0u) : ZeroF32(ctx.state);
 		}
 	}
 	const auto result = ctx.state.builder.AllocateId();
 	ctx.state.builder.AddFunction(spv::OpCompositeConstruct,
-	                              ImageVectorType(ctx.state, numeric_class, 4), result, selected[0],
-	                              selected[1], selected[2], selected[3]);
+	                              integer ? TypeU32Vector(ctx.state, 4) : TypeF32Vector(ctx.state, 4),
+	                              result, selected[0], selected[1], selected[2], selected[3]);
 	return info.type == Format::ComponentType::Unorm
 	           ? Unary(ctx.state, spv::OpBitcast, TypeF32Vector(ctx.state, 4), result) : result;
 }

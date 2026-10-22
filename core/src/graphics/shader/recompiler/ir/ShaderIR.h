@@ -195,6 +195,12 @@ RawSignedStorageFormat(const ImageResource& image, Prospero::BufferFormat format
 	return Prospero::BufferFormat::kInvalid;
 }
 
+// A raw load of a kDepth k16UInt T# reads a D16 surface's codes. Vulkan cannot view D16 as
+// R16Uint, so the host binds it as UNorm and the shader converts back.
+[[nodiscard]] constexpr bool ReadsDepthBits(const ImageResource& image) {
+	return image.conversion_format == Prospero::BufferFormat::k16UInt;
+}
+
 struct SamplerResource {
 	static constexpr uint32_t NoIndirectSampler = UINT32_MAX;
 

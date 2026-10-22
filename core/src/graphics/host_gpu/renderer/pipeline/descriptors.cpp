@@ -415,7 +415,7 @@ static ImageViewInfo TextureViewInfo(const ShaderRecompiler::IR::ImageResource& 
 	}
 	view.usage = storage ? vk::ImageUsageFlagBits::eStorage : vk::ImageUsageFlagBits::eSampled;
 	view.mapping =
-	    storage || surface_format.conversion_format != Prospero::BufferFormat::kInvalid
+	    storage || resource.conversion_format != Prospero::BufferFormat::kInvalid
 	        ? vk::ComponentMapping {}
 	        : TextureGetComponentMapping(descriptor.DstSelXYZW(), surface_format.host_to_storage);
 	switch (resource.dimension) {
@@ -606,7 +606,9 @@ TextureBinding RenderExecutor::ResolveTexture(const ShaderRecompiler::IR::ImageR
 	}
 	const auto samples = multisampled ? 1u << last_level : 1u;
 	const auto depth          = static_cast<uint32_t>(descriptor.Depth()) + 1u;
-	const auto format         = descriptor.Format();
+	const auto format         = ShaderRecompiler::IR::ReadsDepthBits(resource)
+	                                ? Prospero::BufferFormat::k16UNorm
+	                                : descriptor.Format();
 	const auto surface_format = TextureGetSurfaceFormatInfo(format);
 	const bool sampled_numeric_class =
 	    storage || resource.numeric_class ==
