@@ -62,6 +62,14 @@
     <string name="gpu_driver_system">System</string>
     <string name="gpu_driver_import">Import driver (.zip)</string>
     <string name="gpu_driver_import_desc">AdrenoTools packages: meta.json + .so library</string>
+    <string name="driver_download">Download drivers</string>
+    <string name="driver_download_desc">Community Turnip (Adreno) or PanVK (Mali) builds; the one you install becomes the global driver</string>
+    <string name="driver_download_title">Download drivers</string>
+    <string name="driver_downloading">Downloading %1$s…</string>
+    <string name="driver_loading">Loading releases…</string>
+    <string name="driver_list_failed">Could not reach GitHub. Check your connection and try again later.</string>
+    <string name="driver_no_packages">This source has no driver packages.</string>
+    <string name="driver_none_for_gpu">No downloadable drivers for this GPU.</string>
     <string name="gpu_driver_delete">Delete %1$s</string>
     <string name="gpu_driver_delete_desc">Games will go back to the system driver</string>
     <string name="gpu_driver_installed">Installed %1$s</string>

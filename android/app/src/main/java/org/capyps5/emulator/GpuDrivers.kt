@@ -7,6 +7,7 @@ import android.content.Context
 import android.net.Uri
 import org.json.JSONObject
 import java.io.File
+import java.io.InputStream
 import java.util.zip.ZipInputStream
 
 /** A user-installed Vulkan driver (Turnip, PanVK...) loaded through libadrenotools. */
@@ -42,11 +43,16 @@ object GpuDrivers {
     }
 
     /** Installs a driver package; returns the driver or an error message. */
-    fun import(context: Context, uri: Uri): Result<GpuDriver> = runCatching {
+    fun import(context: Context, uri: Uri): Result<GpuDriver> =
+        import(context) { context.contentResolver.openInputStream(uri) }
+
+    /** Installs a downloaded driver package. */
+    fun import(context: Context, file: File): Result<GpuDriver> = import(context) { file.inputStream() }
+
+    private fun import(context: Context, open: () -> InputStream?): Result<GpuDriver> = runCatching {
         val staging = File(context.cacheDir, "driver_import").apply { deleteRecursively(); mkdirs() }
         try {
-            val input = context.contentResolver.openInputStream(uri)
-                ?: error(context.getString(R.string.driver_error_open))
+            val input = open() ?: error(context.getString(R.string.driver_error_open))
             ZipInputStream(input.buffered()).use { zip ->
                 generateSequence { zip.nextEntry }.forEach { entry ->
                     // Flatten: packages keep their files at the top level; ignore any folders.

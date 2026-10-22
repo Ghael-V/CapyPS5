@@ -22,6 +22,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.outlined.ArrowBack
 import androidx.compose.material.icons.outlined.Folder
 import androidx.compose.material.icons.outlined.Info
 import androidx.compose.material.icons.outlined.Image
@@ -41,6 +42,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.platform.LocalContext
 import org.capyps5.emulator.ButtonLayout
@@ -54,6 +56,24 @@ import org.capyps5.emulator.TouchControlsMode
 import org.capyps5.emulator.ui.NavKey
 import org.capyps5.emulator.ui.OnNavKey
 import org.capyps5.emulator.ui.theme.Capy
+
+/** Title of a full-screen page with a back arrow in front of it. */
+@Composable
+fun ScreenHeader(title: String, onBack: () -> Unit) {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onBack)
+            .padding(start = 14.dp, end = 16.dp, top = 4.dp, bottom = 14.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(
+            Icons.AutoMirrored.Outlined.ArrowBack, stringResource(R.string.hint_back),
+            Modifier.padding(end = 10.dp).size(24.dp), tint = Capy.TextPrimary,
+        )
+        Text(title, style = MaterialTheme.typography.headlineSmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
+    }
+}
 
 /** One setting: a value cycled with left/right or confirm, or an action run on confirm. */
 class SettingItem(
@@ -92,6 +112,7 @@ fun SettingsScreen(
 ) {
     val context = LocalContext.current
     var message by remember { mutableStateOf<String?>(null) }
+    var showDrivers by remember { mutableStateOf(false) }
     // Read so the option rows recompose when a value changes.
     val optionsVersion = settings.coreOptionsVersion
 
@@ -125,6 +146,10 @@ fun SettingsScreen(
                         context.getString(R.string.gpu_driver_desc),
                         drivers.firstOrNull { it.id == current }?.label ?: context.getString(R.string.gpu_driver_system),
                         onStep = { settings.updateGpuDriver(cycle(ids, current, it)) },
+                    ),
+                    SettingItem(
+                        context.getString(R.string.driver_download), context.getString(R.string.driver_download_desc),
+                        onConfirm = { showDrivers = true },
                     ),
                     SettingItem(
                         context.getString(R.string.gpu_driver_import),
@@ -254,7 +279,7 @@ fun SettingsScreen(
     val items = categories[category].items()
     if (row >= items.size) row = (items.size - 1).coerceAtLeast(0)
 
-    OnNavKey { key ->
+    OnNavKey(enabled = !showDrivers) { key ->
         if (!inContent) {
             when (key) {
                 NavKey.Up -> { category = (category - 1).mod(categories.size); row = 0 }
@@ -278,12 +303,17 @@ fun SettingsScreen(
         }
     }
 
+    if (showDrivers) {
+        DriverDownloadScreen(settings, onClose = { showDrivers = false })
+        return
+    }
     Row(Modifier.fillMaxSize().background(Capy.Background)) {
         Column(
             Modifier.width(260.dp).fillMaxHeight().background(Capy.Surface).padding(vertical = 22.dp),
             verticalArrangement = Arrangement.spacedBy(2.dp),
         ) {
-            Text(stringResource(R.string.settings), style = MaterialTheme.typography.headlineSmall, modifier = Modifier.padding(start = 24.dp, bottom = 14.dp))
+            // The system bars are hidden, so touch users need their own way back.
+            ScreenHeader(stringResource(R.string.settings), onBack = onClose)
             categories.forEachIndexed { i, entry ->
                 val selected = i == category
                 Row(
@@ -303,13 +333,6 @@ fun SettingsScreen(
                     )
                 }
             }
-            Spacer(Modifier.weight(1f))
-            Text(
-                stringResource(R.string.hint_back_b),
-                style = MaterialTheme.typography.labelLarge,
-                color = Capy.TextSecondary,
-                modifier = Modifier.clickable(onClick = onClose).padding(horizontal = 24.dp, vertical = 8.dp),
-            )
         }
         Column(
             Modifier.weight(1f).fillMaxHeight().verticalScroll(rememberScrollState()).padding(28.dp),

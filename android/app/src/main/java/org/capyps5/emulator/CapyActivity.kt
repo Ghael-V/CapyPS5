@@ -80,7 +80,9 @@ abstract class CapyActivity : ComponentActivity() {
 
     private fun padMask(keyCode: Int): Int = when (faceSwapped(keyCode)) {
         KeyEvent.KEYCODE_BUTTON_A -> NativeBridge.BTN_CROSS
-        KeyEvent.KEYCODE_BUTTON_B, KeyEvent.KEYCODE_BACK -> NativeBridge.BTN_CIRCLE
+        KeyEvent.KEYCODE_BUTTON_B -> NativeBridge.BTN_CIRCLE
+        // Pads that report B as Back; the system back key and gesture open the menu instead.
+        KeyEvent.KEYCODE_BACK -> NativeBridge.BTN_CIRCLE
         KeyEvent.KEYCODE_BUTTON_X -> NativeBridge.BTN_SQUARE
         KeyEvent.KEYCODE_BUTTON_Y -> NativeBridge.BTN_TRIANGLE
         KeyEvent.KEYCODE_BUTTON_L1 -> NativeBridge.BTN_L1
@@ -112,8 +114,11 @@ abstract class CapyActivity : ComponentActivity() {
             return super.dispatchKeyEvent(event)
         }
 
-        // In game: the guide button, or Select+Start together, opens the pause menu.
-        if (event.keyCode == KeyEvent.KEYCODE_BUTTON_MODE) {
+        // In game: the guide button, the system back key or gesture, or Select+Start together,
+        // opens the pause menu.
+        val systemBack = event.keyCode == KeyEvent.KEYCODE_BACK &&
+            !event.isFromSource(InputDevice.SOURCE_GAMEPAD) && !event.isFromSource(InputDevice.SOURCE_JOYSTICK)
+        if (event.keyCode == KeyEvent.KEYCODE_BUTTON_MODE || systemBack) {
             if (down) InputRouter.onPauseRequested?.invoke()
             return true
         }
