@@ -32,6 +32,7 @@
 #include "common/emulatorConfig.h"
 #include "common/logging/log.h"
 #include "common/threads.h"
+#include "kernel/fileSystem.h"
 #include "kernel/pthread.h"
 #include "libs/errno.h"
 #include "libs/libs.h"
@@ -2560,12 +2561,23 @@ int KYTY_SYSV_ABI Select(int nfds, void* readfds, void* writefds, void* exceptfd
 
 	std::vector<std::pair<int, NativeSocket>> descriptors;
 	std::vector<std::shared_ptr<SocketTransport>> stream_reads;
+	std::vector<std::pair<void*, int>> ready_files;
 	int host_nfds = 0;
 	for (int fd = 0; fd < nfds; fd++) {
 		const bool read = GuestFdIsSet(readfds, fd);
 		const bool write = GuestFdIsSet(writefds, fd);
 		const bool except = GuestFdIsSet(exceptfds, fd);
 		if (!read && !write && !except) {
+			continue;
+		}
+		// FreeBSD polls files and devices ready to read and write at once.
+		if (!IsSocket(fd) && LibKernel::FileSystem::IsOpenDescriptor(fd)) {
+			if (read) {
+				ready_files.emplace_back(readfds, fd);
+			}
+			if (write) {
+				ready_files.emplace_back(writefds, fd);
+			}
 			continue;
 		}
 		NativeSocket                    socket = INVALID_NATIVE_SOCKET;
@@ -2619,6 +2631,10 @@ int KYTY_SYSV_ABI Select(int nfds, void* readfds, void* writefds, void* exceptfd
 		host_timeout.tv_usec = static_cast<decltype(host_timeout.tv_usec)>(guest_timeout->tv_usec);
 		host_timeout_ptr = &host_timeout;
 	}
+	if (!ready_files.empty()) {
+		host_timeout     = {};
+		host_timeout_ptr = &host_timeout;
+	}
 
 	int result = 0;
 #if defined(_WIN32)
@@ -2654,6 +2670,10 @@ int KYTY_SYSV_ABI Select(int nfds, void* readfds, void* writefds, void* exceptfd
 			GuestFdSet(exceptfds, fd);
 			result++;
 		}
+	}
+	for (const auto& [fds, fd]: ready_files) {
+		GuestFdSet(fds, fd);
+		result++;
 	}
 	return result;
 }
