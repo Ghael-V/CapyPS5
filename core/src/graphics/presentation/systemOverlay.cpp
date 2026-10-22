@@ -688,6 +688,112 @@ bool ProcessSystemOverlayInput(const SDL_Event& event) {
 	}
 }
 
+// Direct overlay input (Android frontend): the SDL event loop does not run there, so the
+// frontend queues dialog events itself. Everything funnels into the same queues that
+// ProcessSystemOverlayInput drains on the desktop.
+
+namespace {
+
+OverlaySession CurrentOverlaySession() {
+	OverlaySnapshot snapshot;
+	return GetOverlaySnapshot(&snapshot) ? snapshot.session : OverlaySession {};
+}
+
+} // namespace
+
+bool OverlayIsActive() noexcept {
+	OverlaySnapshot snapshot;
+	return GetOverlaySnapshot(&snapshot);
+}
+
+bool OverlayCapturesController() noexcept {
+	OverlaySnapshot snapshot;
+	if (!GetOverlaySnapshot(&snapshot)) {
+		return false;
+	}
+	if (snapshot.session.kind == OverlayKind::Dialog) {
+		return true;
+	}
+	return snapshot.session.kind == OverlayKind::Ime &&
+	       (snapshot.ime.disable_device & Ime::DISABLE_DEVICE_CONTROLLER) == 0;
+}
+
+void OverlayMouse(float x, float y, bool down) {
+	const auto session = CurrentOverlaySession();
+	if (session.kind == OverlayKind::None) {
+		return;
+	}
+	QueueInput({InputKind::MousePosition, session, 0, x, y});
+	QueueInput({InputKind::MouseButton, session, SDL_BUTTON_LEFT, down ? 1.0f : 0.0f, 0.0f});
+}
+
+void OverlayPadButton(int button, bool down) {
+	const auto session = CurrentOverlaySession();
+	if (session.kind == OverlayKind::None) {
+		return;
+	}
+	QueueInput({InputKind::Button, session, button, down ? 1.0f : 0.0f, 0.0f});
+}
+
+void OverlayPadAxis(int axis, float value) {
+	const auto session = CurrentOverlaySession();
+	if (session.kind == OverlayKind::None) {
+		return;
+	}
+	QueueInput({InputKind::Axis, session, axis, value, 0.0f});
+}
+
+void OverlaySetText(std::u16string_view text) {
+	const auto session = CurrentOverlaySession();
+	if (session.kind != OverlayKind::Ime) {
+		return;
+	}
+	// Replace the whole text: clear what is there now, then insert the new one. The loop
+	// ends when the editor reports an empty text, so it is bounded by max_text_length.
+	while (Ime::HostBackspace(session.generation)) {}
+	Ime::HostInsertText(session.generation, text);
+}
+
+void OverlayAccept() {
+	const auto session = CurrentOverlaySession();
+	if (session.kind == OverlayKind::None) {
+		return;
+	}
+	if (session.kind == OverlayKind::Dialog) {
+		SystemDialog::HostClose(session.generation);
+		return;
+	}
+	Ime::HostAccept(session.generation);
+}
+
+void OverlayCancel() {
+	const auto session = CurrentOverlaySession();
+	if (session.kind == OverlayKind::None) {
+		return;
+	}
+	if (session.kind == OverlayKind::Dialog) {
+		SystemDialog::HostClose(session.generation);
+		return;
+	}
+	Ime::HostCancel(session.generation);
+}
+
+std::u16string OverlayGetText() {
+	OverlaySnapshot snapshot;
+	if (!GetOverlaySnapshot(&snapshot) || snapshot.session.kind != OverlayKind::Ime) {
+		return {};
+	}
+	return snapshot.ime.text;
+}
+
+std::u16string OverlayGetTitle() {
+	OverlaySnapshot snapshot;
+	if (!GetOverlaySnapshot(&snapshot) || snapshot.session.kind != OverlayKind::Ime) {
+		return {};
+	}
+	return snapshot.ime.title;
+}
+
 void NotifyTrophyUnlocked(std::string_view name, int32_t grade,
                           std::span<const std::byte> icon_png) {
 	std::scoped_lock lock(g_trophy_notification_mutex);

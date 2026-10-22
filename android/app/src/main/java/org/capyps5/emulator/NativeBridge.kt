@@ -43,6 +43,21 @@ object NativeBridge {
     /** Touchpad click, merged into whatever the controllers send. */
     external fun nativeSetTouchpadClick(down: Boolean)
 
+    /** System overlay (IME keyboard / system dialogs): true while a dialog is on screen. */
+    external fun nativeOverlayActive(): Boolean
+    /** Current IME dialog text; empty when no IME dialog is open. */
+    external fun nativeOverlayText(): String
+    /** Current IME dialog title; empty when none. */
+    external fun nativeOverlayTitle(): String
+    /** Touch on the game surface, in surface pixels; [down] = finger pressed. */
+    external fun nativeOverlayMouse(x: Float, y: Float, down: Boolean)
+    /** Replaces the IME dialog text (live sync from the frontend text field). */
+    external fun nativeOverlaySetText(text: String)
+    /** Confirms (Enter) the visible dialog. */
+    external fun nativeOverlayAccept()
+    /** Cancels the visible dialog. */
+    external fun nativeOverlayCancel()
+
     /** Render passes of the last frame, 5 longs each; see LayersPanel. */
     external fun nativeGetPasses(): LongArray
     external fun nativeSetPassSkipped(pixelShader: Long, skipped: Boolean)
