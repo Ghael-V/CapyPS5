@@ -7,6 +7,8 @@ import android.view.InputDevice
 import android.view.SurfaceHolder
 import android.view.SurfaceView
 import androidx.compose.animation.AnimatedVisibility
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowInsetsCompat
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.background
@@ -23,13 +25,17 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.Logout
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.outlined.Keyboard
 import androidx.compose.material.icons.outlined.Layers
 import androidx.compose.material.icons.outlined.Tune
 import androidx.compose.material3.Button
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.size
 import androidx.compose.material3.MaterialTheme
@@ -47,8 +53,14 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
@@ -106,6 +118,10 @@ fun EmulationScreen(
     var overlayActive by remember { mutableStateOf(false) }
     var overlayTitle by remember { mutableStateOf("") }
     var overlayText by remember { mutableStateOf("") }
+    val overlayFocus = remember { FocusRequester() }
+    val keyboard = LocalSoftwareKeyboardController.current
+    val focusManager = LocalFocusManager.current
+    val inputView = LocalView.current
 
     LaunchedEffect(Unit) {
         while (isActive) {
@@ -114,7 +130,21 @@ fun EmulationScreen(
                 overlayTitle = NativeBridge.nativeOverlayTitle()
                 overlayText = NativeBridge.nativeOverlayText()
             }
+            val wasActive = overlayActive
             overlayActive = active
+            if (active && !wasActive) {
+                // The text bar above composes once overlayActive flips; give it a beat, then
+                // focus it so a physical keyboard types straight into the dialog, and bring
+                // the Android soft keyboard up with it. The toolbar button below hides it
+                // again at any time.
+                delay(250)
+                runCatching { overlayFocus.requestFocus() }
+                delay(100)
+                keyboard?.show()
+            } else if (!active && wasActive) {
+                focusManager.clearFocus(force = true)
+                keyboard?.hide()
+            }
             delay(250)
         }
     }
@@ -124,8 +154,19 @@ fun EmulationScreen(
     LaunchedEffect(uiHasInput) { InputRouter.setRouteToUi(uiHasInput) }
     DisposableEffect(Unit) {
         InputRouter.onPauseRequested = { showPauseMenu = true }
+        // While a system dialog is up, the system back key closes the dialog (as Circle does
+        // on a pad) instead of pausing the game.
+        InputRouter.onSystemBack = {
+            if (overlayActive) {
+                NativeBridge.nativeOverlayCancel()
+                true
+            } else {
+                false
+            }
+        }
         onDispose {
             InputRouter.onPauseRequested = null
+            InputRouter.onSystemBack = null
             InputRouter.setRouteToUi(true)
         }
     }
@@ -233,9 +274,31 @@ fun EmulationScreen(
                             overlayText = value
                             NativeBridge.nativeOverlaySetText(value)
                         },
-                        modifier = Modifier.weight(1f),
+                        modifier = Modifier.weight(1f).focusRequester(overlayFocus),
                         singleLine = true,
+                        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
+                        // Enter on a physical keyboard and "Done" on the soft keyboard both
+                        // confirm the dialog.
+                        keyboardActions = KeyboardActions(onDone = { NativeBridge.nativeOverlayAccept() }),
                     )
+                    // Toggles the Android soft keyboard; typing is synced live with the dialog.
+                    IconButton(
+                        onClick = {
+                            val imeVisible = ViewCompat.getRootWindowInsets(inputView)
+                                ?.isVisible(WindowInsetsCompat.Type.ime()) == true
+                            if (imeVisible) {
+                                keyboard?.hide()
+                            } else {
+                                runCatching { overlayFocus.requestFocus() }
+                                keyboard?.show()
+                            }
+                        },
+                    ) {
+                        Icon(
+                            Icons.Outlined.Keyboard,
+                            contentDescription = stringResource(R.string.ime_keyboard_toggle),
+                        )
+                    }
                     Button(onClick = { NativeBridge.nativeOverlayAccept() }) {
                         Text("OK")
                     }
