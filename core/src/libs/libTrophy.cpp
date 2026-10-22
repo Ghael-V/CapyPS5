@@ -1,3 +1,4 @@
+// SPDX-FileCopyrightText: Copyright 2026 CapyPS5 Project
 // SPDX-FileCopyrightText: Copyright KytyPS5 contributors; based on Kyty, Copyright (c) 2021 InoriRus (MIT)
 // SPDX-License-Identifier: GPL-2.0-only
 
@@ -18,6 +19,10 @@
 #include <optional>
 #include <string>
 #include <vector>
+
+#if defined(__ANDROID__) || defined(ANDROID) || defined(KYTY_PLATFORM_ANDROID)
+#include "android/capyps5_jni.h"
+#endif
 
 namespace Libs {
 
@@ -156,7 +161,13 @@ static TrophyState* LoadTrophyState(TrophyKey key) {
 			     package.event_rules.size(), uds_filename.c_str());
 		}
 	}
-	auto path    = Trophies::UnlocksPath({}, title_id, key.first, key.second);
+#if defined(__ANDROID__) || defined(ANDROID) || defined(KYTY_PLATFORM_ANDROID)
+	// The working directory is / on Android: keep unlocks next to the save data.
+	const std::filesystem::path root = AndroidGetFilesDir();
+#else
+	const std::filesystem::path root;
+#endif
+	auto path    = Trophies::UnlocksPath(root, title_id, key.first, key.second);
 	auto unlocks = Trophies::LoadUnlockData(path);
 	return &g_states.emplace(key, TrophyState {&package, std::move(unlocks), std::move(path)})
 	            .first->second;

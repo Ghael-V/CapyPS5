@@ -3,7 +3,6 @@
 
 package org.capyps5.emulator.ui.components
 
-import android.view.MotionEvent
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -18,14 +17,15 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
-import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
@@ -33,8 +33,8 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.input.pointer.PointerEventType
+import androidx.compose.ui.input.pointer.PointerId
 import androidx.compose.ui.input.pointer.pointerInput
-import androidx.compose.ui.input.pointer.pointerInteropFilter
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
@@ -187,10 +187,17 @@ fun AnalogStick(size: Dp = 116.dp, onMove: (Float, Float) -> Unit) {
             .pointerInput(Unit) {
                 val radius = this.size.width / 2f
                 val centre = Offset(radius, radius)
+                var finger: PointerId? = null
                 awaitPointerEventScope {
                     while (true) {
                         val event = awaitPointerEvent()
-                        val change = event.changes.firstOrNull() ?: continue
+                        // Follow the finger that grabbed the stick; a second one landing on it
+                        // takes over only after the first lifts.
+                        val change = event.changes.firstOrNull { it.id == finger }
+                            ?: event.changes.firstOrNull { it.pressed }
+                            ?: event.changes.firstOrNull()
+                            ?: continue
+                        finger = if (change.pressed) change.id else null
                         if (change.pressed) {
                             var delta = change.position - centre
                             val length = hypot(delta.x, delta.y)
@@ -201,7 +208,7 @@ fun AnalogStick(size: Dp = 116.dp, onMove: (Float, Float) -> Unit) {
                             knob = Offset.Zero
                             onMove(0f, 0f)
                         }
-                        change.consume()
+                        event.changes.forEach { it.consume() }
                     }
                 }
             },
@@ -243,7 +250,10 @@ private fun FaceButtons(onButton: (Int, Boolean) -> Unit) {
     }
 }
 
-@OptIn(ExperimentalComposeUiApi::class)
+/**
+ * Pressed while any finger that went down on it stays down. Compose hands each pointer to the
+ * node it landed on, so several buttons (and the sticks) can be held at the same time.
+ */
 @Composable
 fun GamepadButton(
     label: String,
@@ -254,6 +264,10 @@ fun GamepadButton(
     onPressChanged: (Boolean) -> Unit,
 ) {
     var isPressed by remember { mutableStateOf(false) }
+    val onChange by rememberUpdatedState(onPressChanged)
+    DisposableEffect(Unit) {
+        onDispose { if (isPressed) onChange(false) }
+    }
 
     Box(
         modifier = Modifier
@@ -261,20 +275,17 @@ fun GamepadButton(
             .clip(CircleShape)
             .background(if (isPressed) Color(0x994466AA) else Color(0x66222A3A))
             .border(1.dp, if (isPressed) Color(0xFF00E5FF) else Color(0x44FFFFFF), CircleShape)
-            .pointerInteropFilter { event ->
-                when (event.action) {
-                    MotionEvent.ACTION_DOWN -> {
-                        isPressed = true
-                        onPressChanged(true)
-                        true
+            .pointerInput(Unit) {
+                awaitPointerEventScope {
+                    while (true) {
+                        val event = awaitPointerEvent()
+                        val down = event.changes.any { it.pressed }
+                        if (down != isPressed) {
+                            isPressed = down
+                            onChange(down)
+                        }
+                        event.changes.forEach { it.consume() }
                     }
-                    MotionEvent.ACTION_MOVE -> true
-                    MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
-                        isPressed = false
-                        onPressChanged(false)
-                        true
-                    }
-                    else -> false
                 }
             },
         contentAlignment = Alignment.Center,

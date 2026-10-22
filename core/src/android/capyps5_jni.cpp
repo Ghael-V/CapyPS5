@@ -230,23 +230,8 @@ static void SubmitPad(jint buttons, jfloat lx, jfloat ly, jfloat rx, jfloat ry, 
 	int axis_l2 = std::clamp(static_cast<int>(l2 * 255.0f), 0, 255);
 	int axis_r2 = std::clamp(static_cast<int>(r2 * 255.0f), 0, 255);
 
-	// Synchronize D-pad and left analog stick so games reading either or both work seamlessly
-	if (pad_buttons & Libs::Controller::PAD_BUTTON_RIGHT) {
-		axis_lx = 255;
-	} else if (pad_buttons & Libs::Controller::PAD_BUTTON_LEFT) {
-		axis_lx = 0;
-	}
-	if (pad_buttons & Libs::Controller::PAD_BUTTON_DOWN) {
-		axis_ly = 255;
-	} else if (pad_buttons & Libs::Controller::PAD_BUTTON_UP) {
-		axis_ly = 0;
-	}
-
-	if (axis_lx > 192) pad_buttons |= Libs::Controller::PAD_BUTTON_RIGHT;
-	if (axis_lx < 64)  pad_buttons |= Libs::Controller::PAD_BUTTON_LEFT;
-	if (axis_ly < 64)  pad_buttons |= Libs::Controller::PAD_BUTTON_UP;
-	if (axis_ly > 192) pad_buttons |= Libs::Controller::PAD_BUTTON_DOWN;
-
+	// The d-pad and the left stick stay independent, as on a real DualSense: mirroring one
+	// into the other made the stick press d-pad buttons in games that use both.
 	Libs::Controller::SetState(Libs::Controller::HOST_INPUT_CONTROLLER_ID,
 	                           pad_buttons, axis_lx, axis_ly, axis_rx, axis_ry, axis_l2, axis_r2);
 }
