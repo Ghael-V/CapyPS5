@@ -115,8 +115,6 @@
     <string name="license">License</string>
     <string name="license_desc">Free software under GPL v2. Includes Kyty (GPL-2.0), FEX (MIT), SDL (zlib), FFmpeg (LGPL-2.1), libadrenotools (BSD-2) and other open-source components. Contains no Sony software or keys.</string>
     <string name="device">Device</string>
-    <string name="developer">Created by</string>
-    <string name="logo_by">Logo by</string>
 
     <!-- In game -->
     <string name="layers">Layers</string>

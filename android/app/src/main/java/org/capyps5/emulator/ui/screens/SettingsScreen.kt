@@ -221,9 +221,7 @@ fun SettingsScreen(
             },
             SettingsCategory(context.getString(R.string.category_about), Icons.Outlined.Info) {
                 listOf(
-                    SettingItem("CapyPS5", versionText),
-                    SettingItem(context.getString(R.string.developer), "Ghael-V"),
-                    SettingItem(context.getString(R.string.logo_by), "Madelein"),
+                    SettingItem("CapyPS5", "$versionText (Ghael-V)"),
                     SettingItem(
                         context.getString(R.string.support_discord), context.getString(R.string.discord_link),
                         onConfirm = { openLink(context, R.string.discord_link) },

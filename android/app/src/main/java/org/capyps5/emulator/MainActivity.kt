@@ -79,7 +79,7 @@ class MainActivity : CapyActivity() {
             runCatching { libraryDir.mkdirs() }
         }
 
-        val versionText = runCatching { NativeBridge.nativeGetVersion() }.getOrDefault("CapyPS5")
+        val versionText = Updater.versionText(this)
         val installed = Updater.installedVersion(this)
         if (savedInstanceState == null) {
             showSupport = settings.countLaunch() % SUPPORT_EVERY == 0

@@ -78,7 +78,7 @@ class GameActivity : CapyActivity() {
             driverDir = driver?.dir?.absolutePath.orEmpty(),
             library = driver?.library.orEmpty(),
         )
-        val versionText = runCatching { NativeBridge.nativeGetVersion() }.getOrDefault("CapyPS5")
+        val versionText = Updater.versionText(this)
         setContent {
             CapyPS5Theme {
                 EmulationScreen(

@@ -30,6 +30,9 @@ object Updater {
         "https://api.github.com/repos/Ghael-V/CapyPS5/releases?per_page=20",
     )
 
+    /** What the launcher and the pause menu show, from the APK's own version name. */
+    fun versionText(context: Context): String = "CapyPS5 v${installedVersion(context)} Alpha (ARM64 Android)"
+
     fun installedVersion(context: Context): String =
         runCatching { context.packageManager.getPackageInfo(context.packageName, 0).versionName }.getOrNull() ?: "0"
 
