@@ -112,28 +112,37 @@ static vk::StencilOpState ConvertStencilState(
 
 [[nodiscard]] static vk::Format ResolveHostDepthAttachmentFormat(const CommandBuffer&     buffer,
                                                                  const DepthFormatPolicy& policy,
-                                                                 bool     has_stencil,
-                                                                 uint32_t samples) {
-	auto&      graphics         = buffer.GetGraphics();
-	const auto required_samples = vulkan_sample_count(samples);
-	const auto supports         = [&](vk::Format format) {
+                                                                 bool      has_stencil,
+                                                                 uint32_t* samples) {
+	auto&      graphics = buffer.GetGraphics();
+	const auto supports = [&](vk::Format format) {
 		vk::ImageFormatProperties properties {};
 		return format != vk::Format::eUndefined &&
 		       graphics.GetImageFormatProperties(
 		           format, vk::ImageType::e2D, vk::ImageTiling::eOptimal, DepthTargetImageUsage(),
 		           vk::ImageCreateFlags {}, &properties) == vk::Result::eSuccess &&
-		       static_cast<bool>(properties.sampleCounts & required_samples);
+		       static_cast<bool>(properties.sampleCounts & vulkan_sample_count(*samples));
 	};
-	if (!has_stencil) {
-		return supports(policy.depth_attachment_format) ? policy.depth_attachment_format
-		                                                : vk::Format::eUndefined;
-	}
-	for (const auto format: policy.stencil_attachment_formats) {
-		if (supports(format)) {
-			return format;
+	const auto try_formats = [&]() -> vk::Format {
+		if (!has_stencil) {
+			return supports(policy.depth_attachment_format) ? policy.depth_attachment_format
+			                                                : vk::Format::eUndefined;
 		}
+		for (const auto format: policy.stencil_attachment_formats) {
+			if (supports(format)) {
+				return format;
+			}
+		}
+		return vk::Format::eUndefined;
+	};
+	auto format = try_formats();
+	// The game's MSAA level can be beyond this GPU (8x on Adreno, for example); step down
+	// before dropping the depth attachment (which would kill depth testing) or dying.
+	while (format == vk::Format::eUndefined && *samples > 1) {
+		*samples >>= 1;
+		format = try_formats();
 	}
-	return vk::Format::eUndefined;
+	return format;
 }
 
 static TextureCache::ImageDesc MakeDepthTargetDesc(const CommandBuffer& buffer,
@@ -150,10 +159,11 @@ static TextureCache::ImageDesc MakeDepthTargetDesc(const CommandBuffer& buffer,
 	const bool has_htile = z.z_info.htile_acceleration;
 	const bool unsupported_shading_rate_encoding =
 	    z.shading_rate_encoding > 1 || (z.shading_rate_encoding != 0 && !has_htile);
-	const auto samples   = render_sample_count(z.z_info.num_samples);
-	if (samples == 0) {
+	const auto guest_samples = render_sample_count(z.z_info.num_samples);
+	if (guest_samples == 0) {
 		DepthFatal("unsupported depth fragment count: %u", z.z_info.num_samples);
 	}
+	auto samples = guest_samples;
 	const bool htile_stencil_compat = depth_htile_stencil_acceleration_compatible(
 	    has_stencil, has_htile, z.stencil_info.htile_stencil_disabled);
 	const auto view = ResolveTargetViewInfo(z.depth_view.slice_start, z.depth_view.slice_max);
@@ -199,10 +209,15 @@ static TextureCache::ImageDesc MakeDepthTargetDesc(const CommandBuffer& buffer,
 		DepthFatal("unsupported depth/stencil format pair");
 	}
 	const auto ideal_format = DepthAttachmentFormat(*policy, has_stencil);
-	const auto format = ResolveHostDepthAttachmentFormat(buffer, *policy, has_stencil, samples);
+	const auto format = ResolveHostDepthAttachmentFormat(buffer, *policy, has_stencil, &samples);
 	if (format == vk::Format::eUndefined) {
 		DepthFatal("no host depth/stencil format supports required usage for %s",
 		           vk::to_string(ideal_format).c_str());
+	}
+	if (samples != guest_samples) {
+		Common::DebugFlags::NoteOnce("CapyPS5-Msaa", depth_address,
+		    "depth target %ux%u: host does not support %u-sample depth; using %u",
+		    width, height, guest_samples, samples);
 	}
 	const auto     guest_format = policy->guest_format;
 	const uint32_t bytes        = policy->bytes_per_element;

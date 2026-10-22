@@ -195,6 +195,11 @@ namespace ImageOps {
 
 void                                 Validate(const ImageInfo& info);
 [[nodiscard]] Prospero::BufferFormat RenderTargetTransferFormat(uint32_t bytes_per_element);
+/** Highest host-supported sample count not above info.samples (8 -> 4 -> 2 -> 1), queried
+ * with the usage/flags the Image constructor will use. Unity titles ask for 8x MSAA that
+ * many host GPUs cannot do for every format; without the downgrade the image-format check
+ * terminates the emulator at boot. Guest-visible layout fields are not touched. */
+[[nodiscard]] uint32_t ResolveHostSampleCount(GraphicContext& graphics, const ImageInfo& info);
 
 } // namespace ImageOps
 
