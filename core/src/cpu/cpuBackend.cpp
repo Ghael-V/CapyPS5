@@ -112,6 +112,20 @@ int64_t HleNowNs() {
 	    .count();
 }
 
+// Trampoline registry, shared with the HLE watchdog below so hang reports can show
+// names (code inside namespace Cpu still finds it via unqualified lookup).
+std::mutex                               s_trampoline_mutex;
+std::unordered_map<uint64_t, uint64_t>   s_trampoline_cache;
+std::unordered_map<uint64_t, std::string> s_trampoline_names;
+
+// Resolves an HLE host function to the PS5 name registered for its trampoline
+// ("?" when unknown, e.g. raw syscall handlers).
+std::string HleFunctionName(uint64_t func) {
+	std::lock_guard<std::mutex> lock(s_trampoline_mutex);
+	const auto                  it = s_trampoline_names.find(func);
+	return it != s_trampoline_names.end() ? it->second : std::string("?");
+}
+
 thread_local uint64_t t_last_hle_func = 0;
 
 std::mutex           g_hle_stats_mutex;
@@ -236,8 +250,9 @@ void HleDumpInFlight() {
 			const auto func  = slot->func.load(std::memory_order_relaxed);
 			const auto start = slot->start_ns.load(std::memory_order_relaxed);
 			if (func != 0 && now_ns - start > 100000000) {
-				__android_log_print(ANDROID_LOG_WARN, "CapyPS5-Hle", "in flight: tid %d fn +0x%llx for %.0f ms",
-				                    slot->tid, static_cast<unsigned long long>(func - base),
+				__android_log_print(ANDROID_LOG_WARN, "CapyPS5-Hle", "in flight: tid %d fn %s +0x%llx for %.0f ms",
+				                    slot->tid, HleFunctionName(func).c_str(),
+				                    static_cast<unsigned long long>(func - base),
 				                    static_cast<double>(now_ns - start) / 1e6);
 				// Guest code addresses found on the guest stack (a rough backtrace).
 				const auto stack_addr = slot->guest_rsp.load(std::memory_order_relaxed);
@@ -313,8 +328,9 @@ void HleStatsRecord(uint64_t func, uint64_t ns) {
 			}
 			std::fclose(file);
 		}
-		__android_log_print(ANDROID_LOG_WARN, "CapyPS5-Hle", "tid %d [%s] fn +0x%llx calls %llu ms %.1f",
-		                    stat.tid, name, static_cast<unsigned long long>(stat.func - base),
+		__android_log_print(ANDROID_LOG_WARN, "CapyPS5-Hle", "tid %d [%s] fn %s +0x%llx calls %llu ms %.1f",
+		                    stat.tid, name, HleFunctionName(stat.func).c_str(),
+		                    static_cast<unsigned long long>(stat.func - base),
 		                    static_cast<unsigned long long>(stat.calls), static_cast<double>(stat.ns) / 1e6);
 	}
 	// Spinning threads make many short calls and never reach the by-time list.
@@ -322,8 +338,9 @@ void HleStatsRecord(uint64_t func, uint64_t ns) {
 	          [](const HleStat& a, const HleStat& b) { return a.calls > b.calls; });
 	for (size_t n = 0; n < g_hle_stats.size() && n < 10; n++) {
 		const auto& stat = g_hle_stats[n];
-		__android_log_print(ANDROID_LOG_WARN, "CapyPS5-Hle", "by calls: tid %d fn +0x%llx calls %llu ms %.1f",
-		                    stat.tid, static_cast<unsigned long long>(stat.func - base),
+		__android_log_print(ANDROID_LOG_WARN, "CapyPS5-Hle", "by calls: tid %d fn %s +0x%llx calls %llu ms %.1f",
+		                    stat.tid, HleFunctionName(stat.func).c_str(),
+		                    static_cast<unsigned long long>(stat.func - base),
 		                    static_cast<unsigned long long>(stat.calls), static_cast<double>(stat.ns) / 1e6);
 	}
 	HleDumpInFlight();
@@ -519,9 +536,6 @@ void CaptureHleCallerState() {
 	saved->filled     = true;
 }
 
-std::mutex s_trampoline_mutex;
-std::unordered_map<uint64_t, uint64_t> s_trampoline_cache;
-std::unordered_map<uint64_t, std::string> s_trampoline_names;
 uint8_t* s_trampoline_pool = nullptr;
 size_t s_trampoline_pool_used = 0;
 constexpr size_t TRAMPOLINE_POOL_SIZE = 4 * 1024 * 1024; // 4 MB
