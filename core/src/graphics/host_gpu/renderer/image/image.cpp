@@ -1024,6 +1024,29 @@ Prospero::BufferFormat RenderTargetTransferFormat(uint32_t bytes_per_element) {
 	}
 }
 
+/** See the declaration in image.h. The query mirrors the Image constructor, so a count
+ * accepted here is accepted there; a failed query returns the guest value untouched and
+ * lets the constructor report the real problem. */
+uint32_t ResolveHostSampleCount(GraphicContext& graphics, const ImageInfo& info) {
+	if (info.samples <= 1 || info.pixel_format == vk::Format::eUndefined) {
+		return info.samples;
+	}
+	const auto usage = ImageUsageFlags(graphics, info);
+	const auto flags = ImageCreateFlags(graphics, info);
+	vk::ImageFormatProperties properties {};
+	if (graphics.GetImageFormatProperties(info.pixel_format, HostImageType(info.type),
+	                                      vk::ImageTiling::eOptimal, usage, flags,
+	                                      &properties) != vk::Result::eSuccess) {
+		return info.samples;
+	}
+	auto resolved = info.samples;
+	while (resolved > 1 &&
+	       !static_cast<bool>(properties.sampleCounts & vulkan_sample_count(resolved))) {
+		resolved >>= 1;
+	}
+	return resolved;
+}
+
 } // namespace ImageOps
 
 Image::Image(GraphicContext& graphics, CommandScheduler& scheduler, const ImageInfo& image_info,

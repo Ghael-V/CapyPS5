@@ -231,6 +231,15 @@ void RenderExecutor::ResolveRenderColorTarget(CommandBuffer& buffer, RenderColor
 	if (!desc.info.data.Valid()) {
 		EXIT("render-target backing range is invalid\n");
 	}
+	// Unity titles request 8x MSAA that many host GPUs cannot do for every format; clamp to
+	// the best supported sample count instead of dying in the image-format check. The guest
+	// layout above keeps the game's own fragment count.
+	desc.info.samples = ImageOps::ResolveHostSampleCount(buffer.GetGraphics(), desc.info);
+	if (desc.info.samples != samples) {
+		Common::DebugFlags::NoteOnce("CapyPS5-Msaa", rt.base.addr,
+		    "color target %ux%u: host does not support %u-sample rendering; using %u",
+		    width, height, samples, desc.info.samples);
+	}
 	const bool has_dcc        = rt.info.dcc_compression_enable && rt.dcc_addr.addr != 0;
 	const bool has_cmask      = !rt.info.dcc_compression_enable && rt.info.cmask_fast_clear_enable &&
 	                            rt.cmask.addr != 0 && samples == 1 &&
