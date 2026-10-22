@@ -1,5 +1,8 @@
 # Build directories
 build/
+# Vendored xxHash ships its CMakeLists.txt under build/cmake; keep it.
+!core/3rdparty/xxHash/build/
+!core/3rdparty/xxHash/build/**
 build-*/
 cmake-build-*/
 .cxx/
