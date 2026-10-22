@@ -38,8 +38,14 @@ namespace Ngs2 {
 
 LIB_NAME("Ngs2", "Ngs2");
 
+constexpr int32_t NGS2_ERROR_INVALID_SYSTEM_HANDLE =
+    static_cast<int32_t>(0x804a8201u);
 constexpr int32_t NGS2_ERROR_INVALID_OUT_ADDRESS =
     static_cast<int32_t>(0x804a8010u);
+constexpr int32_t NGS2_ERROR_INVALID_NUM_WAVEFORM_BLOCKS =
+    static_cast<int32_t>(0x804a8053u);
+constexpr int32_t NGS2_ERROR_FULL_WAVEFORM_BLOCKS =
+    static_cast<int32_t>(0x804a8054u);
 constexpr int32_t NGS2_ERROR_INVALID_WAVEFORM_DATA =
     static_cast<int32_t>(0x804a8430u);
 constexpr int32_t NGS2_ERROR_INVALID_WAVEFORM_FORMAT =
@@ -348,7 +354,16 @@ enum class Ngs2RackType {
 	CustomSampler,
 };
 
-struct Ngs2UserFxContext {
+struct Ngs2UserFxProcessContext {
+	float**                  channels;
+	std::array<uintptr_t, 3> user_data;
+	uint32_t                 flags;
+	uint32_t                 num_channels;
+	uint32_t                 grain_samples;
+	uint32_t                 sample_rate;
+};
+
+struct Ngs2UserFx2Context {
 	void*     common;
 	void*     param;
 	void*     work;
@@ -358,7 +373,7 @@ struct Ngs2UserFxContext {
 	uint64_t  reserved[4] {};
 };
 
-struct Ngs2UserFxProcessContext {
+struct Ngs2UserFx2ProcessContext {
 	float**     channels;
 	void*       common;
 	const void* param;
@@ -374,17 +389,26 @@ struct Ngs2UserFxProcessContext {
 	uint64_t    reserved2[4] {};
 };
 
-struct Ngs2UserFxOption {
+struct Ngs2UserFx2Option {
 	Ngs2CustomModuleOption header;
-	int                    KYTY_SYSV_ABI (*setup)(Ngs2UserFxContext*);
-	int                    KYTY_SYSV_ABI (*cleanup)(Ngs2UserFxContext*);
+	int                    KYTY_SYSV_ABI (*setup)(Ngs2UserFx2Context*);
+	int                    KYTY_SYSV_ABI (*cleanup)(Ngs2UserFx2Context*);
 	uintptr_t              control;
-	int                    KYTY_SYSV_ABI (*process)(Ngs2UserFxProcessContext*);
+	int                    KYTY_SYSV_ABI (*process)(Ngs2UserFx2ProcessContext*);
 	size_t                 common_size;
 	size_t                 param_size;
 	size_t                 work_size;
 	uintptr_t              user_data;
 };
+
+static bool Ngs2RackIsCustom(Ngs2RackType type) {
+	switch (type) {
+		case Ngs2RackType::CustomSubmixer:
+		case Ngs2RackType::CustomMastering:
+		case Ngs2RackType::CustomSampler: return true;
+		default: return false;
+	}
+}
 
 struct Ngs2RackInternal {
 	Ngs2Internal*                        ngs  = nullptr;
@@ -394,7 +418,16 @@ struct Ngs2RackInternal {
 	Ngs2ContextBufferInfo                buffer_info;
 	Ngs2BufferAllocator                  allocator;
 	std::array<std::vector<uint8_t>, 24> common;
-	std::array<Ngs2UserFxOption, 24>     fx {};
+	std::array<Ngs2UserFx2Option, 24>    fx {};
+
+	[[nodiscard]] uint32_t NumBuffers() const {
+		return Ngs2RackIsCustom(type) ? option.custom_sampler.custom_rack_option.num_buffers : 1;
+	}
+
+	[[nodiscard]] uint32_t PortBufferId(size_t port) const {
+		const auto& custom = option.custom_sampler.custom_rack_option;
+		return Ngs2RackIsCustom(type) ? custom.port[port].source_buffer_id : 0;
+	}
 };
 
 enum class Ngs2VoicePlayState : uint32_t { Empty = 0, Playing = 3, Paused = 5, Stopped = 0xb };
@@ -518,15 +551,16 @@ struct Ngs2VoiceInternal {
 	struct Block {
 		const uint8_t*    data;
 		Ngs2WaveformBlock info;
-		uint32_t          cursor         = 0;
 		size_t            data_cursor    = 0;
 		uint32_t          repeated_count = 0;
 	};
 	struct Module {
-		std::vector<uint8_t> param, work, state;
-		uint32_t             flags = 1;
-		bool                 control_warned = false;
-		bool                 render_warned  = false;
+		std::vector<uint8_t>     param, work, state;
+		void                     KYTY_SYSV_ABI (*handler)(Ngs2UserFxProcessContext*) = nullptr;
+		std::array<uintptr_t, 3> user_data {};
+		uint32_t                 flags          = 1;
+		bool                     control_warned = false;
+		bool                     render_warned  = false;
 	};
 	Ngs2VoicePlayState              state          = Ngs2VoicePlayState::Empty;
 	uint32_t                        state_flags    = 0;
@@ -561,6 +595,7 @@ struct Ngs2VoiceInternal {
 	uint64_t                            sample_step        = 0;
 	uint64_t                            decoded_samples    = 0;
 	uint64_t                            decoded_bytes      = 0;
+	uint64_t                            source_generation  = 0;
 	uint32_t                            duration_remaining = 0;
 	uint32_t                            skip_remaining     = 0;
 	const uint8_t*                      waveform_end       = nullptr;
@@ -571,10 +606,24 @@ struct Ngs2VoiceInternal {
 			return waveform_end;
 		}
 		const auto& block = blocks.front();
-		return block.data + (decoder != nullptr
-		                         ? block.data_cursor
-		                         : (uint64_t(block.info.num_skip_samples) + block.cursor) *
-		                               channels * sizeof(int16_t));
+		if (decoder != nullptr) {
+			return block.data + block.data_cursor;
+		}
+		// PCM never reads skipped samples, so the next read starts past a pending skip.
+		const auto skip = block.info.num_samples != 0 && block.data_cursor == 0
+		                      ? block.info.num_skip_samples
+		                      : skip_remaining;
+		return block.data + std::min(block.data_cursor + size_t(skip) * channels * sizeof(int16_t),
+		                             block.info.data_size);
+	}
+
+	// Custom racks keep num_buffers consecutive channel-major buffers; other racks keep one.
+	void ClearSamples(uint32_t grain) {
+		samples.assign(size_t(grain) * channels * rack->NumBuffers(), 0.0f);
+	}
+
+	float* Buffer(uint32_t id, uint32_t grain) {
+		return samples.data() + size_t(id) * grain * channels;
 	}
 
 	void ResetSetupState() {
@@ -586,6 +635,19 @@ struct Ngs2VoiceInternal {
 		filters.clear();
 	}
 
+	void ClearWaveformBlocks() {
+		++source_generation;
+		blocks.clear();
+		sample_phase       = 0;
+		duration_remaining = 0;
+		skip_remaining     = 0;
+		compressed_input.clear();
+		frame_cursor       = 0;
+		frame_samples      = 0;
+		next_frame_samples = 0;
+		waveform_end       = nullptr;
+	}
+
 	void SetupSampler(const Ngs2WaveformFormat& format) {
 		const bool deferred = format.waveform_type == 0 && format.num_channels == 0 &&
 		                      format.sample_rate == 0 && format.config_data == 0 &&
@@ -594,23 +656,15 @@ struct Ngs2VoiceInternal {
 		                     (format.frame_margin != 0 || format.frame_offset != 0 ||
 		                      format.sample_rate == 0 || format.num_channels == 0));
 		ResetSetupState();
-		channels           = format.num_channels;
-		sample_rate        = format.sample_rate;
-		sample_phase       = 0;
-		sample_step        = uint64_t(sample_rate) << 32u;
-		decoded_samples    = 0;
-		decoded_bytes      = 0;
-		duration_remaining = 0;
-		skip_remaining     = 0;
-		waveform_end       = nullptr;
-		blocks.clear();
+		ClearWaveformBlocks();
+		channels        = format.num_channels;
+		sample_rate     = format.sample_rate;
+		sample_step     = uint64_t(sample_rate) << 32u;
+		decoded_samples = 0;
+		decoded_bytes   = 0;
 		decoder.reset();
 		decoded_frame.clear();
 		next_decoded_frame.clear();
-		compressed_input.clear();
-		frame_cursor       = 0;
-		frame_samples      = 0;
-		next_frame_samples = 0;
 		accepts_blocks = true;
 		if (deferred) {
 			return;
@@ -635,6 +689,57 @@ struct Ngs2VoiceInternal {
 		} else {
 			EXIT_NOT_IMPLEMENTED(format.waveform_type != 0x12);
 		}
+	}
+
+	int AddWaveformBlocks(const uint8_t* data, uint32_t flags, uint32_t count,
+	                      const Ngs2WaveformBlock* waveform_blocks) {
+		const auto capacity = rack->type == Ngs2RackType::Sampler
+		                          ? rack->option.sampler.max_waveform_blocks
+		                          : rack->option.custom_sampler.max_waveform_blocks;
+		if (count > capacity) {
+			return NGS2_ERROR_INVALID_NUM_WAVEFORM_BLOCKS;
+		}
+		EXIT_NOT_IMPLEMENTED(!accepts_blocks || (flags & ~0x17u) != 0);
+		const bool clear     = (flags & 4u) != 0;
+		const bool only_data = (flags & 2u) != 0;
+		const bool join      = only_data && (flags & 0x10u) == 0;
+		const auto retained = clear ? 0 : blocks.size();
+		Block      tail     = retained == 0 ? Block {} : blocks.back();
+		std::vector<Block> pending;
+		pending.reserve(count);
+		for (uint32_t i = 0; i < count; ++i) {
+			auto info = waveform_blocks[i];
+			if (!only_data && info.num_samples == 0 && info.data_size == 0) {
+				continue;
+			}
+			EXIT_NOT_IMPLEMENTED(!only_data && info.num_samples == 0);
+			if (only_data) {
+				info.num_repeats      = 0;
+				info.num_skip_samples = 0;
+				info.num_samples      = 0;
+			}
+			Block block {data + info.data_offset, info};
+			auto* previous = pending.empty() ? (retained == 0 ? nullptr : &tail)
+			                                 : &pending.back();
+			if (join && previous != nullptr &&
+			    previous->data + previous->info.data_size == block.data) {
+				previous->info.data_size += block.info.data_size;
+			} else {
+				pending.push_back(block);
+			}
+		}
+		// Validate the complete addition before clearing, extending, or closing the stream.
+		if (retained + pending.size() > capacity) {
+			return NGS2_ERROR_FULL_WAVEFORM_BLOCKS;
+		}
+		if (clear) {
+			ClearWaveformBlocks();
+		} else if (retained != 0) {
+			blocks.back().info.data_size = tail.info.data_size;
+		}
+		blocks.insert(blocks.end(), pending.begin(), pending.end());
+		accepts_blocks = (flags & 1u) != 0;
+		return OK;
 	}
 
 	void SetMatrix(uint32_t index, const float* levels, uint32_t count) {
@@ -782,9 +887,10 @@ static Ngs2RackInternal*    g_racks_list   = nullptr;
 static std::atomic_uint32_t g_next_ngs_uid = 1;
 static Common::Mutex        g_racks_mutex;
 
-static_assert(sizeof(Ngs2UserFxContext) == 72);
-static_assert(sizeof(Ngs2UserFxProcessContext) == 104);
-static_assert(sizeof(Ngs2UserFxOption) == 72);
+static_assert(sizeof(Ngs2UserFxProcessContext) == 48);
+static_assert(sizeof(Ngs2UserFx2Context) == 72);
+static_assert(sizeof(Ngs2UserFx2ProcessContext) == 104);
+static_assert(sizeof(Ngs2UserFx2Option) == 72);
 static_assert(sizeof(Ngs2SystemOption) == 144);
 static_assert(sizeof(Ngs2SystemInfo) == 184);
 static_assert(sizeof(Ngs2RackOption) == 176);
@@ -834,13 +940,13 @@ static Ngs2Internal* Ngs2CreateSystemInternal(const Ngs2SystemOption*      optio
 	return ngs;
 }
 
-static bool Ngs2RackIsCustom(Ngs2RackType type) {
-	switch (type) {
-		case Ngs2RackType::CustomSubmixer:
-		case Ngs2RackType::CustomMastering:
-		case Ngs2RackType::CustomSampler: return true;
-		default: return false;
+static Ngs2Internal* Ngs2FindSystem(uintptr_t system_handle) {
+	for (auto* ngs = g_ngs_list; ngs != nullptr; ngs = ngs->next) {
+		if (reinterpret_cast<uintptr_t>(ngs) == system_handle) {
+			return ngs;
+		}
 	}
+	return nullptr;
 }
 
 int KYTY_SYSV_ABI Ngs2SystemQueryBufferSize(const Ngs2SystemOption* option,
@@ -1055,7 +1161,6 @@ int KYTY_SYSV_ABI Ngs2SystemGetInfo(uintptr_t system_handle, Ngs2SystemInfo* inf
                                     size_t info_size) {
 	constexpr int32_t ERROR_INVALID_OUT_ADDRESS   = static_cast<int32_t>(0x804a8010u);
 	constexpr int32_t ERROR_INVALID_OUT_SIZE      = static_cast<int32_t>(0x804a8011u);
-	constexpr int32_t ERROR_INVALID_SYSTEM_HANDLE = static_cast<int32_t>(0x804a8201u);
 
 	if (info == nullptr) {
 		return ERROR_INVALID_OUT_ADDRESS;
@@ -1064,13 +1169,9 @@ int KYTY_SYSV_ABI Ngs2SystemGetInfo(uintptr_t system_handle, Ngs2SystemInfo* inf
 		return ERROR_INVALID_OUT_SIZE;
 	}
 
-	auto* ngs     = reinterpret_cast<Ngs2Internal*>(system_handle);
-	auto* current = g_ngs_list;
-	while (current != nullptr && current != ngs) {
-		current = current->next;
-	}
-	if (current == nullptr) {
-		return ERROR_INVALID_SYSTEM_HANDLE;
+	auto* ngs = Ngs2FindSystem(system_handle);
+	if (ngs == nullptr) {
+		return NGS2_ERROR_INVALID_SYSTEM_HANDLE;
 	}
 
 	Common::LockGuard lock(ngs->mutex);
@@ -1127,14 +1228,23 @@ static void Ngs2InitModules(Ngs2RackInternal& rack) {
 		return;
 	}
 	const auto& custom = rack.option.custom_sampler.custom_rack_option;
-	EXIT_NOT_IMPLEMENTED(custom.num_buffers != 1);
+	EXIT_NOT_IMPLEMENTED(custom.num_buffers == 0 || custom.num_buffers > 4 ||
+	                     rack.option.common.max_ports > 16);
+	for (uint32_t p = 0; p < rack.option.common.max_ports; ++p) {
+		EXIT_NOT_IMPLEMENTED(custom.port[p].source_buffer_id >= custom.num_buffers);
+	}
 	auto* voices = reinterpret_cast<Ngs2VoiceInternal*>(&rack + 1);
 	for (uint32_t m = 0; m < custom.num_modules; ++m) {
-		if (custom.module[m].module_id != 0x1f) {
+		const auto& info = custom.module[m];
+		// Modules process their source buffer in place, so skipped modules pass audio through.
+		EXIT_NOT_IMPLEMENTED(info.source_buffer_id != info.dest_buffer_id ||
+		                     std::max(info.source_buffer_id, info.extra_buffer_id) >=
+		                         custom.num_buffers);
+		if (info.module_id != 0x1f) {
 			continue;
 		}
 		auto& fx = rack.fx[m];
-		fx       = *reinterpret_cast<const Ngs2UserFxOption*>(custom.module[m].option);
+		fx       = *reinterpret_cast<const Ngs2UserFx2Option*>(info.option);
 		rack.common[m].resize(fx.common_size);
 		for (uint32_t i = 0; i < rack.option.common.max_voices; ++i) {
 			auto& module = voices[i].modules[m];
@@ -1142,7 +1252,7 @@ static void Ngs2InitModules(Ngs2RackInternal& rack) {
 			module.work.resize(fx.work_size);
 			module.state.resize(custom.module[m].state_size);
 			if (fx.setup != nullptr) {
-				Ngs2UserFxContext context {
+				Ngs2UserFx2Context context {
 				    rack.common[m].data(), module.param.data(),           module.work.data(),
 				    fx.user_data,          rack.option.common.max_voices, i};
 				EXIT_NOT_IMPLEMENTED(Cpu::CallGuest<int>(fx.setup, &context) != OK);
@@ -1369,12 +1479,12 @@ int KYTY_SYSV_ABI Ngs2RackDestroy(uintptr_t rack_handle, Ngs2ContextBufferInfo* 
 				const auto& fx = rack->fx[m];
 				if (fx.cleanup != nullptr) {
 					auto&             module = voices[i].modules[m];
-					Ngs2UserFxContext context {rack->common[m].data(),
-					                           module.param.data(),
-					                           module.work.data(),
-					                           fx.user_data,
-					                           rack->option.common.max_voices,
-					                           i};
+					Ngs2UserFx2Context context {rack->common[m].data(),
+					                            module.param.data(),
+					                            module.work.data(),
+					                            fx.user_data,
+					                            rack->option.common.max_voices,
+					                            i};
 					EXIT_NOT_IMPLEMENTED(Cpu::CallGuest<int>(fx.cleanup, &context) != OK);
 				}
 			}
@@ -1437,18 +1547,18 @@ static_assert(offsetof(Ngs2VoiceCallbackInfo, size) == 40 &&
               offsetof(Ngs2VoiceCallbackInfo, repeats) == 44 &&
               offsetof(Ngs2VoiceCallbackInfo, attributes) == 48);
 
-static void Ngs2FinishBlock(Ngs2VoiceInternal& voice) {
-	auto&      block   = voice.blocks.front();
-	const bool repeat  = block.info.num_repeats != 0;
+static bool Ngs2FinishBlock(Ngs2VoiceInternal& voice) {
+	const auto generation = voice.source_generation;
+	auto&      block      = voice.blocks.front();
+	const bool repeat     = block.info.num_repeats != 0;
 	voice.waveform_end = voice.WaveformData();
 	if (repeat) {
 		if (block.info.num_repeats != UINT32_MAX) {
 			--block.info.num_repeats;
 		}
 		++block.repeated_count;
-		block.cursor = 0;
+		block.data_cursor = 0;
 		if (voice.decoder != nullptr) {
-			block.data_cursor = 0;
 			voice.compressed_input.clear();
 			voice.decoder->Reset();
 		}
@@ -1470,32 +1580,12 @@ static void Ngs2FinishBlock(Ngs2VoiceInternal& voice) {
 		Cpu::CpuBackend::Instance()->CallGuestCallback(
 		    voice.callback, reinterpret_cast<uint64_t>(&info));
 	}
-}
-
-static void Ngs2AdvancePcm(Ngs2VoiceInternal& voice) {
-	const auto output_rate = uint64_t(voice.rack->ngs->option.sample_rate) << 32u;
-	// Completion callbacks may interrupt advancement across multiple blocks.
-	while (voice.state == Ngs2VoicePlayState::Playing && !voice.blocks.empty() &&
-	       voice.sample_phase >= output_rate) {
-		auto&      block     = voice.blocks.front();
-		const auto available = block.info.num_samples - block.cursor;
-		const auto advance   = std::min(voice.sample_phase / output_rate,
-		                                uint64_t(available));
-		block.cursor += static_cast<uint32_t>(advance);
-		voice.decoded_samples += advance;
-		voice.decoded_bytes += advance * voice.channels * sizeof(int16_t);
-		voice.sample_phase -= advance * output_rate;
-		if (block.cursor == block.info.num_samples) {
-			Ngs2FinishBlock(voice);
-		}
-	}
-	if (voice.blocks.empty() && !voice.accepts_blocks) {
-		voice.sample_phase = 0;
-	}
+	return voice.source_generation == generation;
 }
 
 static bool Ngs2DecodeFrame(Ngs2VoiceInternal& voice, std::vector<float>& frame,
                             uint32_t& frame_samples) {
+	frame_samples = 0;
 	while (voice.state == Ngs2VoicePlayState::Playing && !voice.blocks.empty()) {
 		auto& block = voice.blocks.front();
 		if (block.info.num_samples != 0 && block.data_cursor == 0) {
@@ -1503,7 +1593,44 @@ static bool Ngs2DecodeFrame(Ngs2VoiceInternal& voice, std::vector<float>& frame,
 			voice.skip_remaining     = block.info.num_skip_samples;
 		}
 		if (voice.duration_remaining == 0) {
-			Ngs2FinishBlock(voice);
+			if (!Ngs2FinishBlock(voice)) {
+				return false;
+			}
+			continue;
+		}
+		if (voice.decoder == nullptr) {
+			// PCM has no encoded frame size, so stage at most one system grain.
+			const auto quantum     = std::max(voice.rack->ngs->option.num_grain_samples, 1u);
+			const auto frame_bytes = voice.channels * sizeof(int16_t);
+			const auto available   = (block.info.data_size - block.data_cursor) / frame_bytes;
+			const auto skip        = std::min<size_t>(voice.skip_remaining, available);
+			const auto count =
+			    std::min<size_t>({available - skip, voice.duration_remaining, quantum});
+			frame.resize(size_t(quantum) * voice.channels);
+			const auto* pcm = reinterpret_cast<const int16_t*>(block.data + block.data_cursor) +
+			                  skip * voice.channels;
+			for (size_t i = 0; i < count * voice.channels; ++i) {
+				frame[i] = pcm[i] / 32768.0f;
+			}
+			voice.skip_remaining -= skip;
+			voice.duration_remaining -= count;
+			block.data_cursor += (skip + count) * frame_bytes;
+			voice.decoded_bytes += (skip + count) * frame_bytes;
+			voice.decoded_samples += count;
+			frame_samples = static_cast<uint32_t>(count);
+			if (voice.duration_remaining == 0 ||
+			    block.info.data_size - block.data_cursor < frame_bytes) {
+				// A repeating block restarts its duration, so it must hold all of it.
+				EXIT_NOT_IMPLEMENTED(voice.duration_remaining != 0 &&
+				                     (block.data_cursor != block.info.data_size ||
+				                      block.info.num_repeats != 0));
+				if (!Ngs2FinishBlock(voice)) {
+					return false;
+				}
+			}
+			if (count != 0) {
+				return true;
+			}
 			continue;
 		}
 		const auto skip =
@@ -1524,7 +1651,9 @@ static bool Ngs2DecodeFrame(Ngs2VoiceInternal& voice, std::vector<float>& frame,
 			block.data_cursor += bytes;
 			voice.decoded_bytes += bytes;
 			if (voice.compressed_input.size() < info.next_frame_size) {
-				Ngs2FinishBlock(voice);
+				if (!Ngs2FinishBlock(voice)) {
+					return false;
+				}
 				continue;
 			}
 		}
@@ -1541,7 +1670,9 @@ static bool Ngs2DecodeFrame(Ngs2VoiceInternal& voice, std::vector<float>& frame,
 			                              block.data + block.info.data_size);
 			voice.decoded_bytes += block.info.data_size - block.data_cursor;
 			block.data_cursor = block.info.data_size;
-			Ngs2FinishBlock(voice);
+			if (!Ngs2FinishBlock(voice)) {
+				return false;
+			}
 			continue;
 		}
 		EXIT_NOT_IMPLEMENTED(result.result != OK || result.input_consumed == 0);
@@ -1559,13 +1690,16 @@ static bool Ngs2DecodeFrame(Ngs2VoiceInternal& voice, std::vector<float>& frame,
 			EXIT_NOT_IMPLEMENTED(decoded_samples > voice.duration_remaining);
 			frame_samples = decoded_samples;
 			voice.duration_remaining -= decoded_samples;
+			voice.decoded_samples += decoded_samples;
 		}
 		if (voice.duration_remaining == 0 ||
 		    (block.data_cursor == block.info.data_size && voice.compressed_input.empty())) {
 			if (voice.duration_remaining == 0) {
 				voice.compressed_input.clear();
 			}
-			Ngs2FinishBlock(voice);
+			if (!Ngs2FinishBlock(voice)) {
+				return false;
+			}
 		}
 		if (decoded_samples != 0) {
 			return true;
@@ -1574,8 +1708,10 @@ static bool Ngs2DecodeFrame(Ngs2VoiceInternal& voice, std::vector<float>& frame,
 	return false;
 }
 
-static bool Ngs2CurrentAtracFrame(Ngs2VoiceInternal& voice) {
+static bool Ngs2CurrentFrame(Ngs2VoiceInternal& voice) {
 	if (voice.frame_cursor == voice.frame_samples) {
+		voice.frame_cursor  = 0;
+		voice.frame_samples = 0;
 		if (voice.next_frame_samples != 0) {
 			std::swap(voice.decoded_frame, voice.next_decoded_frame);
 			voice.frame_samples      = voice.next_frame_samples;
@@ -1583,21 +1719,21 @@ static bool Ngs2CurrentAtracFrame(Ngs2VoiceInternal& voice) {
 		} else if (!Ngs2DecodeFrame(voice, voice.decoded_frame, voice.frame_samples)) {
 			return false;
 		}
-		voice.frame_cursor = 0;
 	}
 	return voice.state == Ngs2VoicePlayState::Playing &&
 	       voice.frame_cursor < voice.frame_samples;
 }
 
-static void Ngs2AdvanceAtrac9(Ngs2VoiceInternal& voice) {
+static void Ngs2AdvanceSamples(Ngs2VoiceInternal& voice) {
 	const auto output_rate = uint64_t(voice.rack->ngs->option.sample_rate) << 32u;
 	while (voice.state == Ngs2VoicePlayState::Playing && voice.sample_phase >= output_rate) {
-		if (!Ngs2CurrentAtracFrame(voice)) {
+		if (!Ngs2CurrentFrame(voice)) {
 			break;
 		}
-		++voice.frame_cursor;
-		++voice.decoded_samples;
-		voice.sample_phase -= output_rate;
+		const auto advance = std::min(voice.sample_phase / output_rate,
+		                              uint64_t(voice.frame_samples - voice.frame_cursor));
+		voice.frame_cursor += static_cast<uint32_t>(advance);
+		voice.sample_phase -= advance * output_rate;
 	}
 	if (voice.blocks.empty() && voice.frame_cursor == voice.frame_samples &&
 	    voice.next_frame_samples == 0 && !voice.accepts_blocks) {
@@ -1606,42 +1742,14 @@ static void Ngs2AdvanceAtrac9(Ngs2VoiceInternal& voice) {
 }
 
 static void Ngs2ConsumeSamples(Ngs2VoiceInternal& voice, uint32_t grain) {
-	uint32_t output = 0;
+	const auto generation = voice.source_generation;
+	uint32_t   output     = 0;
 	const auto output_rate = uint64_t(voice.rack->ngs->option.sample_rate) << 32u;
 	while (voice.state == Ngs2VoicePlayState::Playing && output < grain &&
 	       (!voice.blocks.empty() || voice.frame_cursor < voice.frame_samples ||
 	        voice.next_frame_samples != 0)) {
-		if (voice.decoder == nullptr) {
-			Ngs2AdvancePcm(voice);
-			if (voice.state != Ngs2VoicePlayState::Playing || voice.blocks.empty()) {
-				break;
-			}
-			const auto& block = voice.blocks.front();
-			const auto* pcm   = reinterpret_cast<const int16_t*>(voice.WaveformData());
-			const auto* next = pcm;
-			if (block.cursor + 1 < block.info.num_samples) {
-				next += voice.channels;
-			} else if (block.info.num_repeats != 0) {
-				next = reinterpret_cast<const int16_t*>(block.data) +
-				       block.info.num_skip_samples * voice.channels;
-			} else if (voice.blocks.size() > 1) {
-				const auto& next_block = voice.blocks[1];
-				next = reinterpret_cast<const int16_t*>(next_block.data) +
-				       next_block.info.num_skip_samples * voice.channels;
-			}
-			const float fraction = static_cast<float>(voice.sample_phase) /
-			                       static_cast<float>(output_rate);
-			for (uint32_t c = 0; c < voice.channels; ++c) {
-				voice.samples[c * grain + output] =
-				    std::lerp(static_cast<float>(pcm[c]), static_cast<float>(next[c]), fraction) /
-				    32768.0f;
-			}
-			voice.sample_phase += voice.sample_step;
-			++output;
-			continue;
-		}
-		Ngs2AdvanceAtrac9(voice);
-		if (!Ngs2CurrentAtracFrame(voice)) {
+		Ngs2AdvanceSamples(voice);
+		if (voice.source_generation != generation || !Ngs2CurrentFrame(voice)) {
 			break;
 		}
 		if (voice.frame_cursor + 1 == voice.frame_samples && voice.sample_phase != 0) {
@@ -1651,7 +1759,8 @@ static void Ngs2ConsumeSamples(Ngs2VoiceInternal& voice, uint32_t grain) {
 				}
 				Ngs2DecodeFrame(voice, voice.next_decoded_frame, voice.next_frame_samples);
 			}
-			if (voice.state != Ngs2VoicePlayState::Playing ||
+			if (voice.source_generation != generation ||
+			    voice.state != Ngs2VoicePlayState::Playing ||
 			    voice.frame_cursor >= voice.frame_samples) {
 				break;
 			}
@@ -1669,10 +1778,13 @@ static void Ngs2ConsumeSamples(Ngs2VoiceInternal& voice, uint32_t grain) {
 		voice.sample_phase += voice.sample_step;
 		++output;
 	}
-	if (voice.decoder == nullptr) {
-		Ngs2AdvancePcm(voice);
-	} else {
-		Ngs2AdvanceAtrac9(voice);
+	if (voice.source_generation == generation) {
+		Ngs2AdvanceSamples(voice);
+	}
+	if (voice.source_generation != generation) {
+		// A callback replaced the source, possibly changing its channel layout.
+		voice.ClearSamples(grain);
+		output = 0;
 	}
 	voice.has_samples = output != 0;
 }
@@ -1689,7 +1801,7 @@ static void Ngs2RenderVoice(Ngs2VoiceInternal& voice, const std::vector<Ngs2Voic
 	}
 	EXIT_NOT_IMPLEMENTED(voice.rendering);
 	voice.rendering = true;
-	voice.samples.assign(grain * voice.channels, 0.0f);
+	voice.ClearSamples(grain);
 	voice.has_samples = false;
 	if (voice.state == Ngs2VoicePlayState::Playing) {
 		if (voice.rack->type == Ngs2RackType::Sampler ||
@@ -1712,7 +1824,8 @@ static void Ngs2RenderVoice(Ngs2VoiceInternal& voice, const std::vector<Ngs2Voic
 			}
 		}
 		for (auto* source: voices) {
-			for (const auto& port: source->ports) {
+			for (size_t p = 0; p < source->ports.size(); ++p) {
+				const auto& port = source->ports[p];
 				if (port.dest != &voice || port.volume == 0.0f) {
 					continue;
 				}
@@ -1720,7 +1833,10 @@ static void Ngs2RenderVoice(Ngs2VoiceInternal& voice, const std::vector<Ngs2Voic
 				if (!source->has_samples) {
 					continue;
 				}
-				EXIT_NOT_IMPLEMENTED(port.input != 0);
+				// Input N of a custom rack voice feeds its buffer N.
+				EXIT_NOT_IMPLEMENTED(port.input >= voice.rack->NumBuffers());
+				const auto* input  = source->Buffer(source->rack->PortBufferId(p), grain);
+				auto*       output = voice.Buffer(port.input, grain);
 				// A matrix the game never filled mixes like no matrix (Animal Well sends every
 				// sampler through matrix 0 without setting it, which mixed nothing).
 				const auto* matrix = port.matrix < 0 || source->matrices.at(port.matrix).empty()
@@ -1737,8 +1853,7 @@ static void Ngs2RenderVoice(Ngs2VoiceInternal& voice, const std::vector<Ngs2Voic
 						                       ? (src == dst || source->channels == 1 ? 1.0f : 0.0f)
 						                       : (*matrix)[dst * source->channels + src]);
 						for (uint32_t i = 0; i < grain; ++i) {
-							voice.samples[dst * grain + i] +=
-							    source->samples[src * grain + i] * level;
+							output[dst * grain + i] += input[src * grain + i] * level;
 						}
 					}
 				}
@@ -1747,36 +1862,50 @@ static void Ngs2RenderVoice(Ngs2VoiceInternal& voice, const std::vector<Ngs2Voic
 		}
 		if (voice.has_samples) {
 			const auto& custom = voice.rack->option.custom_sampler.custom_rack_option;
+			const auto  rate   = voice.rack->ngs->option.sample_rate;
 			for (size_t m = 0; m < voice.modules.size(); ++m) {
-				if (custom.module[m].module_id != 0x1f) {
-					if (!voice.modules[m].render_warned) {
+				const auto& info   = custom.module[m];
+				auto&       module = voice.modules[m];
+				if (info.module_id != 0x19 && info.module_id != 0x1f) {
+					if (!module.render_warned) {
 						Log::WriteToConsoleAndLog(fmt::sprintf(
 						    "warning: NGS2 custom module 0x%02x at index %zu is ignored during render\n",
-						    custom.module[m].module_id, m));
-						voice.modules[m].render_warned = true;
+						    info.module_id, m));
+						module.render_warned = true;
 					}
 					continue;
 				}
-				EXIT_NOT_IMPLEMENTED(custom.module[m].source_buffer_id != 0 ||
-				                     custom.module[m].dest_buffer_id != 0);
-				auto&               module = voice.modules[m];
-				const auto&         fx     = voice.rack->fx[m];
-				std::vector<float*> channels(voice.channels);
-				for (uint32_t c = 0; c < voice.channels; ++c) {
-					channels[c] = voice.samples.data() + c * grain;
+				if (info.module_id == 0x19 && module.handler == nullptr) {
+					continue;
 				}
-				Ngs2UserFxProcessContext context {channels.data(),
-				                                  voice.rack->common[m].data(),
-				                                  module.param.data(),
-				                                  module.work.data(),
-				                                  module.state.data(),
-				                                  fx.user_data,
-				                                  module.flags,
-				                                  voice.channels,
-				                                  voice.channels,
-				                                  grain,
-				                                  voice.rack->ngs->option.sample_rate};
-				EXIT_NOT_IMPLEMENTED(Cpu::CallGuest<int>(fx.process, &context) != OK);
+				// Handlers receive the source channels followed by the extra buffer's channels.
+				std::vector<float*> channels(2 * size_t(voice.channels));
+				auto*               source = voice.Buffer(info.source_buffer_id, grain);
+				auto*               extra  = voice.Buffer(info.extra_buffer_id, grain);
+				for (uint32_t c = 0; c < voice.channels; ++c) {
+					channels[c]                  = source + c * grain;
+					channels[voice.channels + c] = extra + c * grain;
+				}
+				if (info.module_id == 0x19) {
+					Ngs2UserFxProcessContext context {channels.data(), module.user_data,
+					                                  module.flags,    voice.channels,
+					                                  grain,           rate};
+					module.handler(&context);
+				} else {
+					const auto&               fx = voice.rack->fx[m];
+					Ngs2UserFx2ProcessContext context {channels.data(),
+					                                   voice.rack->common[m].data(),
+					                                   module.param.data(),
+					                                   module.work.data(),
+					                                   module.state.data(),
+					                                   fx.user_data,
+					                                   module.flags,
+					                                   voice.channels,
+					                                   voice.channels,
+					                                   grain,
+					                                   rate};
+					EXIT_NOT_IMPLEMENTED(Cpu::CallGuest<int>(fx.process, &context) != OK);
+				}
 				module.flags = 0;
 			}
 		}
@@ -1958,16 +2087,7 @@ static bool Ngs2FourCcEquals(const uint8_t* data, const char* four_cc) {
 
 static bool Ngs2GetAtrac9CodecInfo(const std::array<uint8_t, ATRAC9_CONFIG_DATA_SIZE>& config,
                                    Atrac9CodecInfo& codec) {
-	void* decoder = Atrac9GetHandle();
-	const bool valid = decoder != nullptr && Ajm::AjmAt9InitDecoder(decoder, config.data()) == 0 &&
-	                   Atrac9GetCodecInfo(decoder, &codec) == 0 && codec.channels > 0 &&
-	                   codec.samplingRate > 0 && codec.superframeSize > 0 &&
-	                   codec.framesInSuperframe > 0 && codec.frameSamples > 0 &&
-	                   codec.superframeSize % codec.framesInSuperframe == 0;
-	if (decoder != nullptr) {
-		Atrac9ReleaseHandle(decoder);
-	}
-	return valid;
+	return Ajm::AjmAt9GetCodecInfo(config.data(), codec);
 }
 
 static int Ngs2ParseAtrac9Riff(const void* data, size_t data_size, Ngs2WaveformInfo* info) {
@@ -2447,24 +2567,39 @@ int KYTY_SYSV_ABI Ngs2VoiceControl(uintptr_t voice_handle, const Ngs2VoiceParamH
 				EXIT_NOT_IMPLEMENTED(!Ngs2RackIsCustom(voice->rack->type));
 				const auto index = param->id & 0x1fu;
 				EXIT_NOT_IMPLEMENTED(index >= voice->modules.size());
-				if ((param->id & 0xffffffe0u) != 0x40001f00u ||
-				    voice->rack->option.custom_sampler.custom_rack_option.module[index].module_id !=
-				        0x1f) {
-					if (!voice->modules[index].control_warned) {
+				const auto module_id =
+				    voice->rack->option.custom_sampler.custom_rack_option.module[index].module_id;
+				auto& module = voice->modules[index];
+				if ((param->id & 0xffffffe0u) != (0x40000000u | module_id << 8u) ||
+				    (module_id != 0x19 && module_id != 0x1f)) {
+					if (!module.control_warned) {
 						Log::WriteToConsoleAndLog(fmt::sprintf(
 						    "warning: NGS2 custom control 0x%08" PRIx32 " is ignored\n",
 						    param->id));
-						voice->modules[index].control_warned = true;
+						module.control_warned = true;
 					}
 					break;
 				}
-				struct FxParam {
+				if (module_id == 0x19) {
+					struct FxParam {
+						Ngs2VoiceParamHeader     header;
+						decltype(module.handler) handler;
+						std::array<uintptr_t, 3> user_data;
+					};
+					EXIT_NOT_IMPLEMENTED(param->size != sizeof(FxParam));
+					const auto& fx = *reinterpret_cast<const FxParam*>(param);
+					// Enabling the handler requests a reset; later updates mark user data dirty.
+					module.flags |= module.handler == nullptr ? 1u : 2u;
+					module.handler   = fx.handler;
+					module.user_data = fx.user_data;
+					break;
+				}
+				struct Fx2Param {
 					Ngs2VoiceParamHeader header;
 					const void*          data;
 					size_t               size;
 				};
-				const auto& fx     = *reinterpret_cast<const FxParam*>(param);
-				auto&       module = voice->modules[index];
+				const auto& fx = *reinterpret_cast<const Fx2Param*>(param);
 				EXIT_NOT_IMPLEMENTED(voice->rack->fx[index].control != 0 ||
 				                     fx.size != module.param.size());
 				std::memcpy(module.param.data(), fx.data, fx.size);
@@ -2491,46 +2626,14 @@ int KYTY_SYSV_ABI Ngs2VoiceControl(uintptr_t voice_handle, const Ngs2VoiceParamH
 							const Ngs2WaveformBlock* blocks;
 						};
 						const auto& blocks = *reinterpret_cast<const BlocksParam*>(param);
-						EXIT_NOT_IMPLEMENTED(!voice->accepts_blocks ||
-						                     (blocks.flags & ~0x17u) != 0);
-						if ((blocks.flags & 0x4u) != 0) {
-							voice->blocks.clear();
-							voice->sample_phase       = 0;
-							voice->duration_remaining = 0;
-							voice->skip_remaining     = 0;
-							voice->compressed_input.clear();
-							voice->frame_cursor       = 0;
-							voice->frame_samples      = 0;
-							voice->next_frame_samples = 0;
-							voice->waveform_end  = nullptr;
-						}
-						voice->accepts_blocks = (blocks.flags & 1u) != 0;
-						const bool only_data  = (blocks.flags & 2u) != 0;
-						EXIT_NOT_IMPLEMENTED(only_data && voice->decoder == nullptr);
-						for (uint32_t i = 0; i < blocks.count; ++i) {
-							auto block = blocks.blocks[i];
-							if (!only_data && block.num_samples == 0 && block.data_size == 0) {
-								continue;
-							}
-							EXIT_NOT_IMPLEMENTED(!only_data && block.num_samples == 0);
-							if (only_data) {
-								block.num_repeats      = 0;
-								block.num_skip_samples = 0;
-								block.num_samples      = 0;
-							}
-							EXIT_NOT_IMPLEMENTED(block.num_repeats != 0 &&
-							                     voice->rack->type != Ngs2RackType::Sampler);
-							EXIT_NOT_IMPLEMENTED(
-							    voice->decoder == nullptr &&
-							    (uint64_t(block.num_skip_samples) + block.num_samples) *
-							            voice->channels * 2 >
-							        block.data_size);
-							voice->blocks.push_back({blocks.data + block.data_offset, block});
+						const auto result = voice->AddWaveformBlocks(
+						    blocks.data, blocks.flags, blocks.count, blocks.blocks);
+						if (result != OK) {
+							return result;
 						}
 						break;
 					}
 					case 4: {
-						EXIT_NOT_IMPLEMENTED(voice->rack->type != Ngs2RackType::Sampler);
 						for (auto& block: voice->blocks) {
 							if (block.info.num_repeats != 0) {
 								block.info.num_repeats = 0;
@@ -2699,6 +2802,15 @@ int KYTY_SYSV_ABI Ngs2RackGetInfo(uintptr_t rack_handle, void* info, size_t info
 	return OK;
 }
 
+template <typename State>
+static void Ngs2FillSamplerState(const Ngs2VoiceInternal& voice, State& state) {
+	state.voice_state.state_flags = Ngs2GetStateFlags(&voice);
+	state.num_decoded_samples     = voice.decoded_samples;
+	state.decoded_data_size       = voice.decoded_bytes;
+	state.waveform_data           = voice.WaveformData();
+	state.user_data               = voice.blocks.empty() ? 0 : voice.blocks.front().info.user_data;
+}
+
 int KYTY_SYSV_ABI Ngs2VoiceGetState(uintptr_t voice_handle, Ngs2VoiceState* state,
                                     size_t state_size) {
 	PRINT_NAME();
@@ -2735,7 +2847,7 @@ int KYTY_SYSV_ABI Ngs2VoiceGetState(uintptr_t voice_handle, Ngs2VoiceState* stat
 			EXIT_NOT_IMPLEMENTED(state_size != configured_size);
 			std::memset(state, 0, state_size);
 			auto* sampler = reinterpret_cast<Ngs2CustomSamplerVoiceState*>(state);
-			sampler->voice_state.state_flags = Ngs2GetStateFlags(voice);
+			Ngs2FillSamplerState(*voice, *sampler);
 			break;
 		}
 		case Ngs2RackType::Sampler: {
@@ -2756,12 +2868,7 @@ int KYTY_SYSV_ABI Ngs2VoiceGetState(uintptr_t voice_handle, Ngs2VoiceState* stat
 			sampler->envelope_height     = 1.0f;
 			sampler->peak_height         = 0.0f;
 			sampler->reserved            = 0;
-			sampler->num_decoded_samples = voice->decoded_samples;
-			sampler->decoded_data_size   = voice->decoded_bytes;
-			sampler->waveform_data       = voice->WaveformData();
-			if (!voice->blocks.empty()) {
-				sampler->user_data = voice->blocks.front().info.user_data;
-			}
+			Ngs2FillSamplerState(*voice, *sampler);
 			break;
 		}
 		default: EXIT("unknown type: %s\n", magic_enum::enum_name(voice->rack->type));
@@ -2781,6 +2888,32 @@ int KYTY_SYSV_ABI Ngs2VoiceGetStateFlags(uintptr_t voice_handle, uint32_t* state
 	Common::LockGuard lock(voice->rack->ngs->mutex);
 
 	*state_flags = Ngs2GetStateFlags(voice);
+
+	return OK;
+}
+
+int KYTY_SYSV_ABI Ngs2SystemLock(uintptr_t system_handle) {
+	PRINT_NAME();
+
+	auto* ngs = Ngs2FindSystem(system_handle);
+	if (ngs == nullptr) {
+		return NGS2_ERROR_INVALID_SYSTEM_HANDLE;
+	}
+
+	ngs->mutex.Lock();
+
+	return OK;
+}
+
+int KYTY_SYSV_ABI Ngs2SystemUnlock(uintptr_t system_handle) {
+	PRINT_NAME();
+
+	auto* ngs = Ngs2FindSystem(system_handle);
+	if (ngs == nullptr) {
+		return NGS2_ERROR_INVALID_SYSTEM_HANDLE;
+	}
+
+	ngs->mutex.Unlock();
 
 	return OK;
 }
