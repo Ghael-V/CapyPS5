@@ -1365,7 +1365,11 @@ KYTY_SYSV_ABI int VideoOutSetFlipRate(int handle, int rate) {
 
 	LOGF("\trate = %d\n", rate);
 #if defined(__ANDROID__)
-	__android_log_print(ANDROID_LOG_WARN, "CapyPS5-VideoOut", "SetFlipRate rate=%d", rate);
+	// Some games (Greak) set the rate before every flip: log changes only.
+	static std::atomic<int> logged_rate {-1};
+	if (logged_rate.exchange(rate) != rate) {
+		__android_log_print(ANDROID_LOG_WARN, "CapyPS5-VideoOut", "SetFlipRate rate=%d", rate);
+	}
 #endif
 
 	auto* ctx = DriverState().Get(handle);

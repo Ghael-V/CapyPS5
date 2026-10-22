@@ -113,7 +113,7 @@
 
     <!-- About -->
     <string name="license">License</string>
-    <string name="license_desc">Free software under GPL v2. Includes Kyty (GPL-2.0), FEX (MIT), SDL (zlib), FFmpeg (LGPL-2.1), libadrenotools (BSD-2) and other open-source components. Contains no Sony software or keys.</string>
+    <string name="license_desc">Free software under GPL v2 (GPL-2.0-only), based on KytyPS5 and the original Kyty by InoriRus (MIT). Includes FEX (MIT), SDL (zlib), FFmpeg (LGPL-2.1), libadrenotools (BSD-2) and other open-source components. Contains no Sony software or keys.</string>
     <string name="device">Device</string>
 
     <!-- In game -->

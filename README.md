@@ -1,17 +1,26 @@
 # CapyPS5
 
-Emulador experimental de PS5 para Android, basado en Kyty y en el JIT x86-64 de FEX.
+Emulador de PS5 para Android, basado en KytyPS5 y en el JIT x86-64 de FEX.
 
-> **Pre-alpha (v0.0.1).** Muy pocos juegos funcionan y casi ninguno a velocidad completa. Es una
-> versión para probar y reportar fallos, no para jugar.
+> **Alpha (v0.0.1).** Pocos juegos funcionan y muchos no van a velocidad completa. Es una versión
+> para probar y reportar fallos. La app avisa cuando hay una versión nueva.
+
+Código fuente: <https://git.capyps5.org/CapyPS5/CapyPS5> (mirror:
+<https://github.com/Ghael-V/CapyPS5>). Cada release tiene su etiqueta (`v0.0.1`, …) con el código
+exacto con el que se compiló.
 
 ## Requisitos
 
 - Android 12 o superior, arm64.
-- GPU Qualcomm Adreno reciente con Vulkan 1.3 (probado en Adreno 830, AYN Odin 3).
+- GPU con Vulkan 1.3. **Solo está probado en Qualcomm Adreno 830 (AYN Odin 3).** Otras Adreno y
+  las GPU Mali pueden funcionar o no; también se pueden probar drivers propios (Turnip, PanVK) en
+  **Ajustes → Gráficos → Driver de GPU**.
 - 12 GB de RAM o más recomendados.
-- Tus propios volcados de juegos de PS5 (carpeta con `eboot.bin` y `sce_sys/`). CapyPS5 no
-  incluye juegos, firmware ni claves de Sony.
+- Tus propios volcados de juegos de PS5 (carpeta con `eboot.bin` y `sce_sys/`).
+
+**CapyPS5 no incluye juegos, BIOS, firmware ni claves de Sony, y no hace falta ninguno de ellos.**
+Usa solo juegos que hayas volcado tú de tu propia consola. CapyPS5 no está afiliado a Sony
+Interactive Entertainment; PlayStation y PS5 son marcas de sus respectivos propietarios.
 
 ## Uso
 
@@ -27,17 +36,28 @@ log (en `CapyPS5/logs/`). Adjúntalo al reportar el fallo.
 
 ## Compatibilidad (v0.0.1, AYN Odin 3)
 
+Los juegos de Unreal Engine usan por defecto el 25 % de resolución (configurable en Ajustes).
+
 | Juego | Estado |
 |---|---|
 | Dead Cells | Jugable, 60 FPS |
 | Blasphemous | Jugable, 60 FPS |
+| Animal Well | Jugable, 60 FPS |
+| Greak: Memories of Azur | Jugable, 60 FPS |
+| The Binding of Isaac: Repentance | Jugable, 60 FPS |
+| Monster Boy and the Cursed Kingdom | Jugable, ~60 FPS |
 | Rogue Prince of Persia | Jugable, ~30 FPS, fotogramas sueltos mal |
 | Unbound: Worlds Apart | Jugable, ~20 FPS |
 | MARVEL Cosmic Invasion | Funciona |
+| Born of Bread | Jugable al 25 %, 16-28 FPS; el suelo de algunas zonas desaparece |
+| Earth Defense Force | ~14-16 FPS |
+| Guri | ~8 FPS |
 | Astérix y Obélix XXL2 | ~20 FPS, un edificio lejano parpadea |
 | Stray | Arranca, ~4-7 FPS |
 | Castlevania: Belmont's Curse | Arranca, ~4 FPS, cargas muy largas |
-| Little Nightmares | No arranca (shaders con llamadas por tabla) |
+| Little Nightmares Enhanced Edition | Arranca y se juega, ~4-6 FPS (sin trazado de rayos) |
+| Sonic Origins Plus | Se cierra al arrancar |
+| Sackboy: A Big Adventure | Carga infinita |
 
 ## Compilar
 
