@@ -386,7 +386,7 @@ int KYTY_SYSV_ABI ImeDialogInit(const Param* param, const ExtendedParam* extende
 		LOGF("[ImeDialog] Init rejected: 0x%08x (type=%u, option=0x%x, input_method=%u, "
 		     "max_text_length=%u, user_id=0x%x)\n",
 		     static_cast<unsigned>(validation),
-		     static_cast<unsigned>(param != nullptr ? param->type : 0),
+		     param != nullptr ? static_cast<unsigned>(param->type) : 0u,
 		     param != nullptr ? param->option : 0u,
 		     param != nullptr ? param->input_method : 0u,
 		     param != nullptr ? param->max_text_length : 0u,
