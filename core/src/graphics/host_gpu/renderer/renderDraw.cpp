@@ -1918,6 +1918,24 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 	if (GpuProfiler::Enabled() && !m_context.GetCommandScheduler().Current().IsRendering()) {
 		GpuProfiler::SetPassLabel(rt0_addr, rendering.width, rendering.height, split_addr);
 	}
+	// Without the global barriers of partial flushes (`debug.capy.event_barriers 0`), a draw that
+	// writes memory waits for earlier accesses to it, as dispatches do. Only outside a pass: an
+	// open pass is not split for it.
+	static Common::DebugFlags::CachedValue event_barriers("debug.capy.event_barriers", 1);
+	if (event_barriers.Get() == 0 && !m_context.GetCommandScheduler().Current().IsRendering()) {
+		vk::PipelineStageFlags write_stages = {};
+		for (const auto& stage: vertex_stages) {
+			if (HasShaderBufferWrites(stage.stage)) {
+				write_stages |= ShaderPipelineStages(ProgramShaderStage(*stage.stage.program));
+			}
+		}
+		if (state.ps_active && HasShaderBufferWrites(state.ps_input_info.stage)) {
+			write_stages |= vk::PipelineStageFlagBits::eFragmentShader;
+		}
+		if (write_stages) {
+			ShaderWriteHazardBarrier(vk_buffer, write_stages);
+		}
+	}
 	m_context.GetCommandScheduler().BeginRendering(rendering);
 	GpuProfiler::NoteDraw();
 	vk_buffer.bindPipeline(vk::PipelineBindPoint::eGraphics, pipeline.pipeline);

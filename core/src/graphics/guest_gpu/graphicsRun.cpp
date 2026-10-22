@@ -1873,7 +1873,19 @@ void CommandProcessor::EmitGlobalBarrier() {
 	CurrentBuffer().Handle().pipelineBarrier2(dependency);
 }
 
+// Partial flushes, cache writebacks and releases only order GPU work, which the renderer's
+// resource barriers (compute write hazards, draw write barriers, texture cache transitions)
+// already order; KytyPS5 dropped these global barriers (70668fb). Experimental here:
+// `setprop debug.capy.event_barriers 0` skips them, 1 (default) keeps them.
+static bool EventBarriers() {
+	static Common::DebugFlags::CachedValue event_barriers("debug.capy.event_barriers", 1);
+	return event_barriers.Get() != 0;
+}
+
 void CommandProcessor::EmitReleaseBarrier() {
+	if (!EventBarriers()) {
+		return;
+	}
 	// Release labels are written when the packet is parsed, and later GPU work that depends on
 	// earlier writes is ordered by its own events or the texture cache. UE4 releases after every
 	// occlusion query, so ending the pass here split it at each 4800x2700 depth-only draw.
@@ -1913,7 +1925,9 @@ void CommandProcessor::TriggerEvent(uint32_t event_type, uint32_t event_index,
 		case 0x00000007:
 		case 0x0000000f:
 		case 0x00000010:
-		case 0x00000026: EmitGlobalBarrier(); break;
+		case 0x00000026:
+			if (EventBarriers()) EmitGlobalBarrier();
+			break;
 		// CbDbDataWritebackInvalidate, CbDataWritebackInvalidate.
 		case 0x00000016:
 		case 0x00000031:
@@ -1921,7 +1935,7 @@ void CommandProcessor::TriggerEvent(uint32_t event_type, uint32_t event_index,
 		case 0x0000002a:
 		case 0x0000002c:
 		case 0x0000002e:
-			EmitGlobalBarrier();
+			if (EventBarriers()) EmitGlobalBarrier();
 			break;
 		case 0x0000000d:
 		case 0x0000000e:
