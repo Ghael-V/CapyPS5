@@ -1,78 +1,83 @@
 # CapyPS5
 
-Emulador de PS5 para Android, basado en KytyPS5 y en el JIT x86-64 de FEX.
+**English** · [Español](README.es.md)
 
-> **Alpha (v0.0.1).** Pocos juegos funcionan y muchos no van a velocidad completa. Es una versión
-> para probar y reportar fallos. La app avisa cuando hay una versión nueva.
+The first PlayStation 5 emulator for Android, built on KytyPS5 and the FEX x86-64 JIT.
 
-Código fuente: <https://git.capyps5.org/CapyPS5/CapyPS5> (mirror:
-<https://github.com/Ghael-V/CapyPS5>). Cada release tiene su etiqueta (`v0.0.1`, …) con el código
-exacto con el que se compiló.
+**Website:** <https://capyps5.org> · **Discord:** <https://discord.com/invite/PEE7Q5TVM5>
 
-## Requisitos
+> **Alpha (v0.0.1).** Few games work and many don't run at full speed. This release is for testing
+> and reporting problems. The app tells you when a new version is out.
 
-- Android 12 o superior, arm64.
-- GPU con Vulkan 1.3. **Solo está probado en Qualcomm Adreno 830 (AYN Odin 3).** Otras Adreno y
-  las GPU Mali pueden funcionar o no; también se pueden probar drivers propios (Turnip, PanVK) en
-  **Ajustes → Gráficos → Driver de GPU**.
-- 12 GB de RAM o más recomendados.
-- Tus propios volcados de juegos de PS5 (carpeta con `eboot.bin` y `sce_sys/`).
+Source code: <https://git.capyps5.org/CapyPS5/CapyPS5> (mirror: <https://github.com/Ghael-V/CapyPS5>).
+Every release has a tag (`v0.0.1`, …) with the exact code it was built from.
 
-**CapyPS5 no incluye juegos, BIOS, firmware ni claves de Sony, y no hace falta ninguno de ellos.**
-Usa solo juegos que hayas volcado tú de tu propia consola. CapyPS5 no está afiliado a Sony
-Interactive Entertainment; PlayStation y PS5 son marcas de sus respectivos propietarios.
+## Requirements
 
-## Uso
+- Android 12 or later, arm64.
+- A GPU with Vulkan 1.3. **Only tested on Qualcomm Adreno 830 (AYN Odin 3)** with the system driver.
+  On other Adreno GPUs (for example the 750 in the Galaxy S24 Ultra) use a Turnip driver, and on Mali
+  try PanVK: the app downloads them in **Settings → Graphics → Download drivers**.
+- 12 GB of RAM or more recommended.
+- Your own PS5 game dumps (a folder with `eboot.bin` and `sce_sys/`).
 
-1. Instala la APK y concede el permiso de acceso a todos los archivos (la app lo pide al abrirse).
-2. Copia cada juego como una carpeta dentro de `CapyPS5/` en el almacenamiento interno, o añade
-   tus carpetas en **Ajustes → Carpetas de juegos**.
-3. Elige un juego y pulsa **Jugar**. Con **Ⓨ** o **⋯** cambias las opciones de ese juego.
-4. En partida, desliza desde el borde izquierdo (o pulsa el botón central del mando, o
-   Select + Start) para abrir el menú.
+**CapyPS5 includes no games, BIOS, firmware or Sony keys, and needs none of them.** Only use games
+you dumped from your own console. CapyPS5 is not affiliated with Sony Interactive Entertainment;
+PlayStation and PS5 are trademarks of their respective owners.
 
-Si un juego se cierra por un error, al volver a la biblioteca verás el motivo y podrás guardar el
-log (en `CapyPS5/logs/`). Adjúntalo al reportar el fallo.
+## Usage
 
-## Compatibilidad (v0.0.1, AYN Odin 3)
+1. Install the APK and grant all-files access (the app asks for it on first start).
+2. Copy each game as a folder into `CapyPS5/` on internal storage, or add your folders in
+   **Settings → Game folders**.
+3. Pick a game and press **Play**. **Ⓨ** or **⋯** opens that game's own options.
+4. In game, swipe from the left edge, press the back button, the controller's home button or
+   Select + Start to open the menu.
 
-Los juegos de Unreal Engine usan por defecto el 25 % de resolución (configurable en Ajustes).
+If a game closes because of an error, the library shows why when you return and can save the log
+(to `CapyPS5/logs/`). Attach it when you report the problem.
 
-| Juego | Estado |
+## Compatibility (v0.0.1, AYN Odin 3)
+
+Unreal Engine games start at 25% resolution (configurable in Settings).
+
+| Game | State |
 |---|---|
-| Dead Cells | Jugable, 60 FPS |
-| Blasphemous | Jugable, 60 FPS |
-| Animal Well | Jugable, 60 FPS |
-| Greak: Memories of Azur | Jugable, 60 FPS |
-| The Binding of Isaac: Repentance | Jugable, 60 FPS |
-| Monster Boy and the Cursed Kingdom | Jugable, ~60 FPS |
-| Rogue Prince of Persia | Jugable, ~30 FPS, fotogramas sueltos mal |
-| Unbound: Worlds Apart | Jugable, ~20 FPS |
-| MARVEL Cosmic Invasion | Funciona |
-| Born of Bread | Jugable al 25 %, 16-28 FPS; el suelo de algunas zonas desaparece |
+| Dead Cells | Playable, 60 FPS |
+| Blasphemous | Playable, 60 FPS |
+| Animal Well | Playable, 60 FPS |
+| Greak: Memories of Azur | Playable, 60 FPS |
+| The Binding of Isaac: Repentance | Playable, 60 FPS |
+| Monster Boy and the Cursed Kingdom | Playable, ~60 FPS |
+| Rogue Prince of Persia | Playable, ~30 FPS, occasional bad frames |
+| Unbound: Worlds Apart | Playable, ~20 FPS |
+| MARVEL Cosmic Invasion | Works |
+| Born of Bread | Playable at 25%, 16-28 FPS; the floor of some rooms is missing |
 | Earth Defense Force | ~14-16 FPS |
 | Guri | ~8 FPS |
-| Astérix y Obélix XXL2 | ~20 FPS, un edificio lejano parpadea |
-| Stray | Arranca, ~4-7 FPS |
-| Castlevania: Belmont's Curse | Arranca, ~4 FPS, cargas muy largas |
-| Little Nightmares Enhanced Edition | Arranca y se juega, ~4-6 FPS (sin trazado de rayos) |
-| Sonic Origins Plus | Se cierra al arrancar |
-| Sackboy: A Big Adventure | Carga infinita |
+| Astérix & Obélix XXL2 | ~20 FPS, a distant building flickers |
+| Stray | Boots, ~4-7 FPS |
+| Castlevania: Belmont's Curse | Boots, ~4 FPS, very long loads |
+| Little Nightmares Enhanced Edition | Boots and plays, ~4-6 FPS (no ray tracing) |
+| Sonic Origins Plus | Closes at start |
+| Sackboy: A Big Adventure | Endless loading |
 
-## Compilar
+## Building
 
-Ver `tools/build_android.ps1` (NDK 28.2, CMake 3.31, Ninja). `tools/sign_release.ps1` genera y
-firma la APK de release.
+See `tools/build_android.ps1` (NDK 28.2, CMake 3.31, Ninja). `tools/sign_release.ps1` builds and
+signs the release APK.
 
-## Agradecimientos
+## Credits
 
-- **Madelein**, por el logo de CapyPS5.
+- **Ghael-V**, author of CapyPS5.
+- **Madelein**, for the CapyPS5 logo.
+- KytyPS5 and the original Kyty by InoriRus, and the FEX project, which CapyPS5 is built on.
 
-## Licencia
+## License
 
-CapyPS5 es software libre bajo la **GNU General Public License v2** (`GPL-2.0-only`, `LICENSE`).
-Cada archivo de código indica en su cabecera SPDX sus titulares de copyright y su licencia: el código
-propio es © 2026 CapyPS5 Project, y el derivado conserva el crédito de KytyPS5 y del Kyty original de
-InoriRus (MIT, aviso en `LICENSES/Kyty-MIT.txt`). Quien redistribuya o haga un fork debe conservar
-esas cabeceras y ofrecer el código fuente. Los componentes de terceros y sus licencias están en
+CapyPS5 is free software under the **GNU General Public License v2** (`GPL-2.0-only`, `LICENSE`).
+Every source file names its copyright holders and license in an SPDX header: CapyPS5's own code is
+© 2026 CapyPS5 Project, and derived files keep the credit of KytyPS5 and of the original Kyty by
+InoriRus (MIT, notice in `LICENSES/Kyty-MIT.txt`). Anyone who redistributes or forks it must keep
+those headers and offer the source code. Third-party components and their licenses are listed in
 `docs/THIRD_PARTY_NOTICES.md`.

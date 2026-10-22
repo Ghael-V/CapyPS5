@@ -40,3 +40,19 @@ Thumbs.db
 # Native libs are copied in from build-android-arm64
 android/app/src/main/jniLibs/
 dist/
+
+# Internal development notes and AI assistant files: never published
+docs/HANDOFF.md
+.claude/
+.codex/
+.cursor/
+.gemini/
+.aider*
+.windsurf/
+.continue/
+CLAUDE.md
+CLAUDE.local.md
+AGENTS.md
+GEMINI.md
+.cursorrules
+.clinerules
