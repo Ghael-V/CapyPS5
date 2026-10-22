@@ -13,6 +13,11 @@ struct HostFeatures {
 	bool output_layer = true;
 	bool output_viewport_index = true;
 	bool buffer_int64_atomics = true;
+	// 8-bit storage buffer access (VK_KHR_8bit_storage). Adreno 6xx + Turnip does not
+	// expose it; when false, 8-bit buffer loads/stores are compiled against the 32-bit
+	// buffer alias and the SPIR-V subword emulators handle the shift/mask extraction
+	// and the atomic read-modify-write stores.
+	bool buffer_u8 = true;
 	// gl_BaseVertex/gl_BaseInstance, needed for GPU-side indirect draws.
 	bool draw_parameters = false;
 	// BaryCoordKHR for pixel inputs read per vertex. Without it those inputs are declared as

@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-2.0-only
 
 #include "common/assert.h"
+#include "graphics/shader/recompiler/HostFeatures.h"
 #include "graphics/shader/recompiler/ir/ShaderIR.h"
 #include "graphics/shader/recompiler/BufferFormat.h"
 
@@ -211,13 +212,22 @@ Value ResolveActiveU32(Value value, Value active) {
 }
 
 uint32_t StorageBufferElementBits(const Program& program, const MemoryInfo& memory) {
-	if (!memory.formatted) return memory.data_bits;
-	const auto format = memory.typed
-	                        ? Format::DecodeTBufferFormat(memory.data_format, memory.number_format)
-	                        : program.info.buffers[memory.resource].descriptor_format;
-	const auto info = Format::GetFormatInfo(format);
-	return info.type == Format::ComponentType::Unknown || info.packed_bitfield
-	           ? 32u : info.component_bits[0];
+	uint32_t bits;
+	if (!memory.formatted) {
+		bits = memory.data_bits;
+	} else {
+		const auto format = memory.typed
+		                        ? Format::DecodeTBufferFormat(memory.data_format, memory.number_format)
+		                        : program.info.buffers[memory.resource].descriptor_format;
+		const auto info = Format::GetFormatInfo(format);
+		bits = info.type == Format::ComponentType::Unknown || info.packed_bitfield
+		                   ? 32u : info.component_bits[0];
+	}
+	// Devices without VK_KHR_8bit_storage (Adreno 6xx + Turnip) compile 8-bit buffer
+	// accesses against the 32-bit alias: the subword emitters already implement the
+	// shift/mask loads and the atomic read-modify-write stores for that layout.
+	if (bits == 8u && !g_host_features.buffer_u8) return 32u;
+	return bits;
 }
 
 bool HasShaderMemoryWrites(const Program& program) {

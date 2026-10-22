@@ -1,12 +1,20 @@
+#ifdef CAPY_NO_8BIT_STORAGE
+// Devices without VK_KHR_8bit_storage (e.g. Adreno 660 + Turnip): the byte copies
+// below go through the 32-bit buffers, with an atomic compare-and-swap loop on the
+// write side. This variant is selected at runtime by TileManager::GetPipeline.
+#else
 #extension GL_EXT_shader_8bit_storage : require
+#endif
 #extension GL_EXT_shader_16bit_storage : require
 
 layout(local_size_x = 64) in;
 
 layout(set = 0, binding = 0, std430) readonly buffer Input { uint data[]; } input_buffer;
 layout(set = 0, binding = 1, std430) buffer Output { uint data[]; } output_buffer;
+#ifndef CAPY_NO_8BIT_STORAGE
 layout(set = 0, binding = 0, std430) readonly buffer Input8 { uint8_t data[]; } input_buffer8;
 layout(set = 0, binding = 1, std430) buffer Output8 { uint8_t data[]; } output_buffer8;
+#endif
 layout(set = 0, binding = 0, std430) readonly buffer Input16 { uint16_t data[]; } input_buffer16;
 layout(set = 0, binding = 1, std430) buffer Output16 { uint16_t data[]; } output_buffer16;
 
@@ -47,7 +55,25 @@ void copy_element(uint src, uint dst) {
 	} else if (ELEMENT_BYTES == 2) {
 		output_buffer16.data[dst >> 1] = input_buffer16.data[src >> 1];
 	} else {
+#ifdef CAPY_NO_8BIT_STORAGE
+		// Read the byte through the 32-bit alias. The store needs an atomic
+		// compare-and-swap loop: several invocations of this kernel write adjacent
+		// bytes of the same 32-bit word, and a plain read-modify-write would lose them.
+		uint byte_value = (input_buffer.data[src >> 2u] >> ((src & 3u) * 8u)) & 0xFFu;
+		uint shift = (dst & 3u) * 8u;
+		uint mask = 0xFFu << shift;
+		uint word_index = dst >> 2u;
+		uint expected = output_buffer.data[word_index];
+		for (uint attempt = 0u; attempt < 32u; ++attempt) {
+			uint merged = (expected & ~mask) | (byte_value << shift);
+			uint previous = atomicCompSwap(output_buffer.data[word_index], expected, merged);
+			if (previous == expected) return;
+			expected = previous;
+		}
+		output_buffer.data[word_index] = (expected & ~mask) | (byte_value << shift);
+#else
 		output_buffer8.data[dst] = input_buffer8.data[src];
+#endif
 	}
 }
 

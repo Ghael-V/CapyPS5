@@ -292,8 +292,10 @@ static void VulkanFindPhysicalDevice(vk::Instance instance, vk::SurfaceKHR surfa
 		              required_features12.samplerMirrorClampToEdge);
 		check_feature(features11.storageBuffer16BitAccess, "storageBuffer16BitAccess",
 		              WindowContext::RequiredVulkan11Features().storageBuffer16BitAccess);
-		check_feature(features12.storageBuffer8BitAccess, "storageBuffer8BitAccess",
-		              required_features12.storageBuffer8BitAccess);
+		// Adreno 6xx + Turnip reports storageBuffer8BitAccess = false. Instead of
+		// rejecting the device, the shader recompiler and the texture tiler fall back
+		// to 32-bit buffer accesses (see g_host_features.buffer_u8).
+		optional_feature(features12.storageBuffer8BitAccess, "storageBuffer8BitAccess");
 		check_feature(features12.timelineSemaphore, "timelineSemaphore",
 		              required_features12.timelineSemaphore);
 		check_feature(features12.shaderOutputLayer, "shaderOutputLayer",
@@ -581,6 +583,23 @@ static vk::Device VulkanCreateDevice(GraphicContext& graphics,
 	ShaderRecompiler::g_host_features.output_layer = features12.shaderOutputLayer == VK_TRUE;
 	ShaderRecompiler::g_host_features.output_viewport_index =
 	    features12.shaderOutputViewportIndex == VK_TRUE;
+	// 8-bit storage is optional: Adreno 6xx + Turnip reports storageBuffer8BitAccess
+	// = false. Only request the feature at device creation when the driver exposes it
+	// (requesting an unsupported feature fails vkCreateDevice), and let the shader
+	// recompiler and the texture tiler fall back to 32-bit accesses otherwise.
+	const bool storage_buffer_8bit = supported_features12.storageBuffer8BitAccess == VK_TRUE;
+	features12.storageBuffer8BitAccess = storage_buffer_8bit ? VK_TRUE : VK_FALSE;
+	ShaderRecompiler::g_host_features.buffer_u8 = storage_buffer_8bit;
+#if defined(__ANDROID__) || defined(ANDROID) || defined(KYTY_PLATFORM_ANDROID)
+	// Bisection aid: `setprop debug.capy.no_buffer_u8 1` forces the 32-bit emulation
+	// path even on drivers that expose the feature.
+	static Common::DebugFlags::CachedValue no_buffer_u8("debug.capy.no_buffer_u8", 0);
+	if (no_buffer_u8.Get() != 0) {
+	        features12.storageBuffer8BitAccess         = VK_FALSE;
+	        ShaderRecompiler::g_host_features.buffer_u8 = false;
+	}
+#endif
+	graphics.storage_buffer_8bit_enabled = ShaderRecompiler::g_host_features.buffer_u8;
 	vk::PhysicalDeviceWorkgroupMemoryExplicitLayoutFeaturesKHR workgroup_layout {};
 	workgroup_layout.workgroupMemoryExplicitLayout =
 	    supported_workgroup_layout.workgroupMemoryExplicitLayout;
@@ -687,7 +706,7 @@ static vk::Device VulkanCreateDevice(GraphicContext& graphics,
 	ShaderRecompiler::g_host_features.cull_distance = device_features.shaderCullDistance == VK_TRUE;
 	LOGF("Vulkan optional features: colorWrite=%d minLod=%d depthClipControl=%d depthBounds=%d "
 	     "multiViewport=%d fillModeNonSolid=%d clipDistance=%d cullDistance=%d outputLayer=%d "
-	     "outputViewportIndex=%d bufferInt64Atomics=%d\n",
+	     "outputViewportIndex=%d bufferInt64Atomics=%d storageBuffer8Bit=%d\n",
 	     graphics.color_write_enable_enabled, graphics.image_view_min_lod_enabled,
 	     graphics.depth_clip_control_enabled, graphics.depth_bounds_enabled,
 	     graphics.multi_viewport_enabled, graphics.fill_mode_non_solid_enabled,
@@ -695,7 +714,8 @@ static vk::Device VulkanCreateDevice(GraphicContext& graphics,
 	     ShaderRecompiler::g_host_features.cull_distance,
 	     ShaderRecompiler::g_host_features.output_layer,
 	     ShaderRecompiler::g_host_features.output_viewport_index,
-	     ShaderRecompiler::g_host_features.buffer_int64_atomics);
+	     ShaderRecompiler::g_host_features.buffer_int64_atomics,
+	     graphics.storage_buffer_8bit_enabled);
 	device_features.vertexPipelineStoresAndAtomics       = VK_TRUE;
 	graphics.sample_rate_shading_enabled                 = true;
 	device_features.shaderInt64 = VK_TRUE;

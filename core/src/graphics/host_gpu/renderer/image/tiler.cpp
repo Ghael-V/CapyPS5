@@ -228,18 +228,31 @@ vk::Pipeline TileManager::GetPipeline(uint32_t slot) {
 	struct Shader {
 		const uint32_t* code;
 		size_t          words;
+		// Variant compiled without 8-bit storage (Adreno 6xx + Turnip).
+		const uint32_t* no8bit_code;
+		size_t          no8bit_words;
 	};
 	static constexpr std::array<Shader, FamilyCount> shaders {{
-	    {GPU_TILER_STANDARD256_SPV, std::size(GPU_TILER_STANDARD256_SPV)},
-	    {GPU_TILER_STANDARD4_SPV, std::size(GPU_TILER_STANDARD4_SPV)},
-	    {GPU_TILER_STANDARD4_3D_SPV, std::size(GPU_TILER_STANDARD4_3D_SPV)},
-	    {GPU_TILER_STANDARD64_SPV, std::size(GPU_TILER_STANDARD64_SPV)},
-	    {GPU_TILER_STANDARD64_3D_SPV, std::size(GPU_TILER_STANDARD64_3D_SPV)},
-	    {GPU_TILER_PRT_SPV, std::size(GPU_TILER_PRT_SPV)},
-	    {GPU_TILER_PRT_3D_SPV, std::size(GPU_TILER_PRT_3D_SPV)},
-	    {GPU_TILER_RENDER_TARGET_SPV, std::size(GPU_TILER_RENDER_TARGET_SPV)},
-	    {GPU_TILER_DEPTH_SPV, std::size(GPU_TILER_DEPTH_SPV)},
-	    {GPU_TILER_DISPLAYABLE4_SPV, std::size(GPU_TILER_DISPLAYABLE4_SPV)},
+	    {GPU_TILER_STANDARD256_SPV, std::size(GPU_TILER_STANDARD256_SPV),
+	     GPU_TILER_STANDARD256_NO8BIT_SPV, std::size(GPU_TILER_STANDARD256_NO8BIT_SPV)},
+	    {GPU_TILER_STANDARD4_SPV, std::size(GPU_TILER_STANDARD4_SPV),
+	     GPU_TILER_STANDARD4_NO8BIT_SPV, std::size(GPU_TILER_STANDARD4_NO8BIT_SPV)},
+	    {GPU_TILER_STANDARD4_3D_SPV, std::size(GPU_TILER_STANDARD4_3D_SPV),
+	     GPU_TILER_STANDARD4_3D_NO8BIT_SPV, std::size(GPU_TILER_STANDARD4_3D_NO8BIT_SPV)},
+	    {GPU_TILER_STANDARD64_SPV, std::size(GPU_TILER_STANDARD64_SPV),
+	     GPU_TILER_STANDARD64_NO8BIT_SPV, std::size(GPU_TILER_STANDARD64_NO8BIT_SPV)},
+	    {GPU_TILER_STANDARD64_3D_SPV, std::size(GPU_TILER_STANDARD64_3D_SPV),
+	     GPU_TILER_STANDARD64_3D_NO8BIT_SPV, std::size(GPU_TILER_STANDARD64_3D_NO8BIT_SPV)},
+	    {GPU_TILER_PRT_SPV, std::size(GPU_TILER_PRT_SPV),
+	     GPU_TILER_PRT_NO8BIT_SPV, std::size(GPU_TILER_PRT_NO8BIT_SPV)},
+	    {GPU_TILER_PRT_3D_SPV, std::size(GPU_TILER_PRT_3D_SPV),
+	     GPU_TILER_PRT_3D_NO8BIT_SPV, std::size(GPU_TILER_PRT_3D_NO8BIT_SPV)},
+	    {GPU_TILER_RENDER_TARGET_SPV, std::size(GPU_TILER_RENDER_TARGET_SPV),
+	     GPU_TILER_RENDER_TARGET_NO8BIT_SPV, std::size(GPU_TILER_RENDER_TARGET_NO8BIT_SPV)},
+	    {GPU_TILER_DEPTH_SPV, std::size(GPU_TILER_DEPTH_SPV),
+	     GPU_TILER_DEPTH_NO8BIT_SPV, std::size(GPU_TILER_DEPTH_NO8BIT_SPV)},
+	    {GPU_TILER_DISPLAYABLE4_SPV, std::size(GPU_TILER_DISPLAYABLE4_SPV),
+	     GPU_TILER_DISPLAYABLE4_NO8BIT_SPV, std::size(GPU_TILER_DISPLAYABLE4_NO8BIT_SPV)},
 	}};
 	const uint32_t                                   element_index = slot % BytesPerElementCount;
 	const uint32_t                   direction_index = slot / (FamilyCount * BytesPerElementCount);
@@ -247,8 +260,14 @@ vk::Pipeline TileManager::GetPipeline(uint32_t slot) {
 	const uint32_t                   values[] {1u << element_index, direction_index};
 	const vk::SpecializationMapEntry entries[] {{0, 0, 4}, {1, 4, 4}};
 	const vk::SpecializationInfo     specialization {2, entries, sizeof(values), values};
-	const auto module =
-	    CompileSPV({shaders[family_index].code, shaders[family_index].words}, m_graphics.device);
+	// Adreno 6xx + Turnip lacks VK_KHR_8bit_storage: use the compute shader variant that
+	// touches the buffers only through 32-bit words (shift/mask loads, atomic CAS stores).
+	const auto& family = shaders[family_index];
+	const bool  no8bit = !m_graphics.storage_buffer_8bit_enabled && family.no8bit_code != nullptr;
+	const auto  module =
+	    CompileSPV({no8bit ? family.no8bit_code : family.code,
+	                   no8bit ? family.no8bit_words : family.words},
+	                  m_graphics.device);
 	vk::PipelineShaderStageCreateInfo stage {};
 	stage.stage               = vk::ShaderStageFlagBits::eCompute;
 	stage.module              = module;
