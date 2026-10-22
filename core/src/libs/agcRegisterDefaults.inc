@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: Copyright 2026 CapyPS5 Project
+// SPDX-FileCopyrightText: Copyright KytyPS5 contributors; based on Kyty, Copyright (c) 2021 InoriRus (MIT)
+// SPDX-License-Identifier: GPL-2.0-only
+
 // No-feature, non-0x840f00 AgcGetRegisterDefaults2 dispatch, versions 0..13.
 // Type entries keep the pointer index in bits 0..9; higher bits are AGC flags.
 

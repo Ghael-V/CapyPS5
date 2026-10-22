@@ -1,5 +1,8 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- SPDX-FileCopyrightText: Copyright 2026 CapyPS5 Project -->
+<!-- SPDX-FileCopyrightText: Copyright KytyPS5 contributors; based on Kyty, Copyright (c) 2021 InoriRus (MIT) -->
+<!-- SPDX-License-Identifier: GPL-2.0-only -->
 <plist version="1.0">
 <dict>
     <key>com.apple.security.cs.allow-jit</key>

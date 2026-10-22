@@ -1,4 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!-- SPDX-FileCopyrightText: Copyright 2026 CapyPS5 Project -->
+<!-- SPDX-License-Identifier: GPL-2.0-only -->
 <resources>
     <color name="ic_launcher_background">#080D20</color>
 </resources>

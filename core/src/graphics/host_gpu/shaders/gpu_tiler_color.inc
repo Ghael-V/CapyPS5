@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: Copyright 2026 CapyPS5 Project
+// SPDX-FileCopyrightText: Copyright KytyPS5 contributors; based on Kyty, Copyright (c) 2021 InoriRus (MIT)
+// SPDX-License-Identifier: GPL-2.0-only
+
 // ColorTransform values match imageInfo.h. Preserve the floating-point bit fields exactly.
 uvec2 transform_color(uvec2 value, uint transform, bool to_host) {
 	switch (transform) {

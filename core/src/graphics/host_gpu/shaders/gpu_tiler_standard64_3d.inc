@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: Copyright 2026 CapyPS5 Project
+// SPDX-FileCopyrightText: Copyright KytyPS5 contributors; based on Kyty, Copyright (c) 2021 InoriRus (MIT)
+// SPDX-License-Identifier: GPL-2.0-only
+
 #include "gpu_tiler_standard4_3d.inc"
 uvec3 standard64_3d_extent() {
 	if (ELEMENT_BYTES == 1) return uvec3(64, 32, 32);

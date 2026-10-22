@@ -1,4 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!-- SPDX-FileCopyrightText: Copyright 2026 CapyPS5 Project -->
+<!-- SPDX-License-Identifier: GPL-2.0-only -->
 <!-- Español. El inglés (por defecto) está en values/strings.xml; mantener ambos al día. -->
 <resources>
     <!-- Común -->
@@ -154,4 +156,16 @@
     <string name="support_discord">Únete a nuestro Discord</string>
     <string name="support_kofi">Apóyanos en Ko-fi</string>
     <string name="support_buymeacoffee">Invítanos a un café</string>
+    <string name="trophies">Trofeos</string>
+    <string name="trophies_desc">Lista de trofeos y los que has conseguido</string>
+    <string name="trophies_progress">%1$d de %2$d conseguidos · %3$d%%</string>
+    <string name="trophies_loading">Leyendo trofeos…</string>
+    <string name="trophies_none">Este juego no trae lista de trofeos (sce_sys/trophy2).</string>
+    <string name="trophy_hidden">Trofeo oculto</string>
+    <string name="trophy_hidden_desc">Sigue jugando para descubrirlo.</string>
+    <string name="trophy_unlocked_on">Conseguido el %1$s</string>
+    <string name="trophy_platinum">Platino</string>
+    <string name="trophy_gold">Oro</string>
+    <string name="trophy_silver">Plata</string>
+    <string name="trophy_bronze">Bronce</string>
 </resources>

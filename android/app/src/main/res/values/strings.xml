@@ -1,4 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!-- SPDX-FileCopyrightText: Copyright 2026 CapyPS5 Project -->
+<!-- SPDX-License-Identifier: GPL-2.0-only -->
 <!-- English (default). Spanish lives in values-es/strings.xml; keep both in sync. -->
 <resources>
     <string name="app_name">CapyPS5</string>
@@ -159,4 +161,16 @@
     <string name="discord_link" translatable="false">https://discord.com/invite/PEE7Q5TVM5</string>
     <string name="kofi_link" translatable="false">https://ko-fi.com/LemonProject</string>
     <string name="buymeacoffee_link" translatable="false">https://buymeacoffee.com/ghael</string>
+    <string name="trophies">Trophies</string>
+    <string name="trophies_desc">Trophy list and what you have earned</string>
+    <string name="trophies_progress">%1$d of %2$d earned · %3$d%%</string>
+    <string name="trophies_loading">Reading trophies…</string>
+    <string name="trophies_none">This game has no trophy list (sce_sys/trophy2).</string>
+    <string name="trophy_hidden">Hidden trophy</string>
+    <string name="trophy_hidden_desc">Keep playing to reveal it.</string>
+    <string name="trophy_unlocked_on">Earned %1$s</string>
+    <string name="trophy_platinum">Platinum</string>
+    <string name="trophy_gold">Gold</string>
+    <string name="trophy_silver">Silver</string>
+    <string name="trophy_bronze">Bronze</string>
 </resources>

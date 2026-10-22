@@ -1,4 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!-- SPDX-FileCopyrightText: Copyright 2026 CapyPS5 Project -->
+<!-- SPDX-License-Identifier: GPL-2.0-only -->
 <resources>
     <style name="Theme.CapyPS5" parent="android:Theme.Material.NoActionBar">
         <item name="android:windowBackground">@color/capy_background</item>

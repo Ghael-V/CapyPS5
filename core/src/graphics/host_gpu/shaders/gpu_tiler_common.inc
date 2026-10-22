@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: Copyright 2026 CapyPS5 Project
+// SPDX-FileCopyrightText: Copyright KytyPS5 contributors; based on Kyty, Copyright (c) 2021 InoriRus (MIT)
+// SPDX-License-Identifier: GPL-2.0-only
+
 #ifdef CAPY_NO_8BIT_STORAGE
 // Devices without VK_KHR_8bit_storage (e.g. Adreno 660 + Turnip): the byte copies
 // below go through the 32-bit buffers, with an atomic compare-and-swap loop on the

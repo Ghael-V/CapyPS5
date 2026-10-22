@@ -1,4 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
+<!-- SPDX-FileCopyrightText: Copyright 2026 CapyPS5 Project -->
+<!-- SPDX-FileCopyrightText: Copyright KytyPS5 contributors; based on Kyty, Copyright (c) 2021 InoriRus (MIT) -->
+<!-- SPDX-License-Identifier: GPL-2.0-only -->
 <ui version="4.0">
  <class>ConfigurationListWidget</class>
  <widget class="QWidget" name="ConfigurationListWidget">
