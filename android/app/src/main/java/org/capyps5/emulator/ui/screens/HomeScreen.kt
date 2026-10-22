@@ -43,6 +43,7 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.EmojiEvents
 import androidx.compose.material.icons.filled.MoreHoriz
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Refresh
@@ -81,6 +82,7 @@ import org.capyps5.emulator.model.GameItem
 import org.capyps5.emulator.ui.NavKey
 import org.capyps5.emulator.ui.OnNavKey
 import org.capyps5.emulator.ui.rememberImage
+import org.capyps5.emulator.Trophies
 import org.capyps5.emulator.ui.theme.Capy
 import androidx.compose.ui.res.stringResource
 import java.text.SimpleDateFormat
@@ -113,6 +115,7 @@ fun HomeScreen(
     var selected by remember { mutableIntStateOf(0) }
     var showSettings by remember { mutableStateOf(false) }
     var optionsFor by remember { mutableStateOf<GameItem?>(null) }
+    var trophiesFor by remember { mutableStateOf<GameItem?>(null) }
     val current = games.getOrNull(selected.coerceIn(0, (games.size - 1).coerceAtLeast(0)))
 
     val filePicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri: Uri? ->
@@ -138,7 +141,7 @@ fun HomeScreen(
         }
     }
 
-    OnNavKey(enabled = !showSettings && optionsFor == null && !overlayActive) { key ->
+    OnNavKey(enabled = !showSettings && optionsFor == null && trophiesFor == null && !overlayActive) { key ->
         val count = games.size
         when (key) {
             NavKey.TabLeft -> tab = 0
@@ -189,7 +192,7 @@ fun HomeScreen(
                     GameRow(games, selected, onSelect = { i -> if (i == selected) onGameSelected(games[i]) else selected = i })
                     Spacer(Modifier.weight(1f))
                     current?.let {
-                        GameDetails(it, onPlay = { onGameSelected(it) }, onOptions = { optionsFor = it })
+                        GameDetails(it, onPlay = { onGameSelected(it) }, onOptions = { optionsFor = it }, onTrophies = { trophiesFor = it })
                     }
                 }
                 else -> {
@@ -218,9 +221,12 @@ fun HomeScreen(
                 settings = settings,
                 onPlay = { optionsFor = null; onGameSelected(game) },
                 onClearShaderCache = { onClearShaderCache(game.titleId) },
+                onTrophies = { optionsFor = null; trophiesFor = game },
                 onClose = { optionsFor = null },
             )
         }
+
+        trophiesFor?.let { game -> TrophyScreen(game, onClose = { trophiesFor = null }) }
 
         AnimatedVisibility(visible = showSettings, enter = fadeIn(), exit = fadeOut()) {
             SettingsScreen(
@@ -392,7 +398,7 @@ private fun GameTile(game: GameItem, selected: Boolean, modifier: Modifier, onCl
 }
 
 @Composable
-private fun GameDetails(game: GameItem, onPlay: () -> Unit, onOptions: () -> Unit) {
+private fun GameDetails(game: GameItem, onPlay: () -> Unit, onOptions: () -> Unit, onTrophies: () -> Unit) {
     Column(Modifier.widthIn(max = 560.dp)) {
         Text(game.titleName, style = MaterialTheme.typography.displaySmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
         Spacer(Modifier.height(4.dp))
@@ -420,6 +426,13 @@ private fun GameDetails(game: GameItem, onPlay: () -> Unit, onOptions: () -> Uni
             ) {
                 Icon(Icons.Filled.MoreHoriz, stringResource(R.string.game_options), Modifier.size(20.dp), tint = Capy.TextPrimary)
             }
+            if (remember(game.directoryPath) { Trophies.hasTrophies(game.directoryPath) }) {
+                Box(
+                    Modifier.clip(RoundedCornerShape(50)).background(Color(0x33FFFFFF)).clickable(onClick = onTrophies).padding(11.dp),
+                ) {
+                    Icon(Icons.Filled.EmojiEvents, stringResource(R.string.trophies), Modifier.size(20.dp), tint = Capy.TextPrimary)
+                }
+            }
         }
     }
 }
@@ -431,6 +444,7 @@ private fun GameOptionsPanel(
     settings: Settings,
     onPlay: () -> Unit,
     onClearShaderCache: () -> String,
+    onTrophies: () -> Unit,
     onClose: () -> Unit,
 ) {
     var message by remember { mutableStateOf<String?>(null) }
@@ -465,7 +479,10 @@ private fun GameOptionsPanel(
                     },
                 onStep = { settings.updateGameOption(game.titleId, option, cycle(choices, override, it)) },
             )
-        } + listOf(
+        } + listOfNotNull(
+            if (Trophies.hasTrophies(game.directoryPath)) {
+                SettingItem(context.getString(R.string.trophies), context.getString(R.string.trophies_desc), onConfirm = onTrophies)
+            } else null,
             SettingItem(
                 context.getString(R.string.clear_game_shader_cache), context.getString(R.string.clear_shader_cache_desc),
                 danger = true,
