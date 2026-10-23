@@ -173,4 +173,7 @@
     <string name="trophy_gold">Gold</string>
     <string name="trophy_silver">Silver</string>
     <string name="trophy_bronze">Bronze</string>
+    <string name="trophies_share">Share</string>
+    <string name="trophies_share_text">%1$s: %2$d of %3$d trophies on CapyPS5 · capyps5.org</string>
+    <string name="trophies_card_none">No trophies yet. Time to play.</string>
 </resources>

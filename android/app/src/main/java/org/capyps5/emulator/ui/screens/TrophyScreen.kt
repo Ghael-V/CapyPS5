@@ -24,6 +24,9 @@ import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Share
+import androidx.compose.material3.Icon
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -31,7 +34,9 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -48,11 +53,13 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.capyps5.emulator.Grade
 import org.capyps5.emulator.R
 import org.capyps5.emulator.Trophies
 import org.capyps5.emulator.Trophy
+import org.capyps5.emulator.TrophyCard
 import org.capyps5.emulator.TrophySet
 import org.capyps5.emulator.model.GameItem
 import org.capyps5.emulator.ui.NavKey
@@ -94,13 +101,27 @@ fun TrophyScreen(game: GameItem, onClose: () -> Unit) {
     }
     LaunchedEffect(row) { if (trophies.isNotEmpty()) listState.animateScrollToItem(row) }
 
+    // Rendering the card reads the trophy icons; keep it off the main thread.
+    val scope = rememberCoroutineScope()
+    var sharing by remember { mutableStateOf(false) }
+    fun share() {
+        val loaded = set?.getOrNull() ?: return
+        if (sharing) return
+        sharing = true
+        scope.launch {
+            withContext(Dispatchers.IO) { runCatching { TrophyCard.share(context, game, loaded) } }
+            sharing = false
+        }
+    }
+
     OnNavKey { key ->
         when (key) {
             NavKey.Up -> row = (row - 1).coerceAtLeast(0)
             NavKey.Down -> row = (row + 1).coerceAtMost((trophies.size - 1).coerceAtLeast(0))
             NavKey.TabLeft -> row = (row - 8).coerceAtLeast(0)
             NavKey.TabRight -> row = (row + 8).coerceAtMost((trophies.size - 1).coerceAtLeast(0))
-            NavKey.Back, NavKey.Menu, NavKey.Secondary -> onClose()
+            NavKey.Secondary -> share()
+            NavKey.Back, NavKey.Menu -> onClose()
             else -> Unit
         }
     }
@@ -141,8 +162,29 @@ fun TrophyScreen(game: GameItem, onClose: () -> Unit) {
                             Text("$earned / $all", style = MaterialTheme.typography.bodyMedium, color = Capy.TextSecondary)
                         }
                     }
+                    Spacer(Modifier.height(10.dp))
+                    Row(
+                        Modifier
+                            .clip(RoundedCornerShape(50))
+                            .background(Color.White)
+                            .clickable { share() }
+                            .padding(horizontal = 20.dp, vertical = 9.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Icon(Icons.Filled.Share, null, Modifier.size(18.dp), tint = Color.Black)
+                        Spacer(Modifier.width(8.dp))
+                        Text(stringResource(R.string.trophies_share), style = MaterialTheme.typography.titleSmall, color = Color.Black)
+                    }
                 }
             }
+            Spacer(Modifier.weight(1f))
+            HintBar(
+                listOf(
+                    "Ⓨ" to stringResource(R.string.trophies_share),
+                    "Ⓑ" to stringResource(R.string.hint_back),
+                ),
+                Modifier.padding(horizontal = 24.dp),
+            )
         }
         Column(Modifier.weight(1f).fillMaxHeight().padding(horizontal = 28.dp, vertical = 22.dp)) {
             when {
