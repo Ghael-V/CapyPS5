@@ -68,13 +68,13 @@ Measured on an AYN Odin 3 (Snapdragon 8 Elite) and reported by testers on other 
 | Astérix & Obélix XXL3 | Playable | 60 FPS | Graphical glitches |
 | Minecraft | Playable | – | Low FPS in some scenes |
 | Rogue Prince of Persia | Playable | ~30 FPS | Occasional bad frames |
-| Prince of Persia: The Lost Crown | Slow | 20–30 FPS |  |
-| Unicorn Overlord | Slow | <30 FPS | Crashes on some devices |
-| God of War: Sons of Sparta | Slow | <35 FPS | Slower in battles on Mali |
-| TriFox | Slow | <35 FPS | Texture glitches |
-| Ghost Song | Slow | <30 FPS |  |
-| Lost Epic | Slow | <30 FPS |  |
-| Graveyard Keeper II | Slow | – | Low FPS |
+| Prince of Persia: The Lost Crown | Playable | 20–30 FPS |  |
+| Unicorn Overlord | Playable | <30 FPS | Crashes on some devices |
+| God of War: Sons of Sparta | Playable | <35 FPS | Slower in battles on Mali |
+| TriFox | Playable | <35 FPS | Texture glitches |
+| Ghost Song | Playable | <30 FPS |  |
+| Lost Epic | Playable | <30 FPS |  |
+| Graveyard Keeper II | Playable | – | Low FPS in places |
 | Born of Bread | Slow | 7–28 FPS | Unreal Engine; floor missing in some rooms |
 | Unbound: Worlds Apart | Slow | 10–20 FPS | Unreal Engine 4 |
 | Earth Defense Force: World Brothers 2 | Slow | 14–16 FPS | Closes at start on some devices |
