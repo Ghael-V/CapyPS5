@@ -403,7 +403,7 @@ private fun GameDetails(game: GameItem, onPlay: () -> Unit, onOptions: () -> Uni
         Text(game.titleName, style = MaterialTheme.typography.displaySmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
         Spacer(Modifier.height(4.dp))
         Text(
-            listOfNotNull(game.titleId, game.version?.let { "v$it" }).joinToString("  ·  "),
+            listOfNotNull(game.titleId, game.version?.let { "v$it" }, "PS4".takeIf { game.isPs4 }).joinToString("  ·  "),
             style = MaterialTheme.typography.bodyMedium,
             color = Capy.TextSecondary,
         )
