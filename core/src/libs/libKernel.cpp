@@ -1789,6 +1789,8 @@ int KYTY_SYSV_ABI KernelGetModuleInfoForUnwind(uint64_t addr, int flags,
 	return OK;
 }
 
+// Fills SceKernelModuleInfoEx: name, id, TLS, init/fini, unwind tables and segments. The PS4 libc
+// reads all of it (PS5 games only looked at the id).
 static int KYTY_SYSV_ABI KernelGetModuleInfoFromAddr(uint64_t addr, int n, ModuleInfo* r) {
 	PRINT_NAME();
 
@@ -1796,7 +1798,7 @@ static int KYTY_SYSV_ABI KernelGetModuleInfoFromAddr(uint64_t addr, int n, Modul
 	     "\tn = %d\n",
 	     addr, n);
 
-	EXIT_NOT_IMPLEMENTED(n != 2);
+	EXIT_NOT_IMPLEMENTED(n != 1 && n != 2);
 	EXIT_NOT_IMPLEMENTED(r == nullptr);
 
 	auto* rt = Common::Singleton<Loader::RuntimeLinker>::Instance();
@@ -1809,7 +1811,44 @@ static int KYTY_SYSV_ABI KernelGetModuleInfoFromAddr(uint64_t addr, int n, Modul
 		return -1;
 	}
 
+	auto* bytes = reinterpret_cast<uint8_t*>(r);
+	std::memset(bytes + 8, 0, sizeof(ModuleInfo) - 8);
+	const auto put32 = [&](size_t offset, uint32_t value) { std::memcpy(bytes + offset, &value, 4); };
+	const auto put64 = [&](size_t offset, uint64_t value) { std::memcpy(bytes + offset, &value, 8); };
+
+	ModuleInfoForUnwind unwind {};
+	unwind.st_size = sizeof(unwind);
+	if (KernelGetModuleInfoForUnwind(addr, 0, &unwind) == OK) {
+		std::memcpy(bytes + 8, unwind.name, sizeof(unwind.name));
+		put64(328, unwind.eh_frame_hdr_addr);
+		put64(336, unwind.eh_frame_addr);
+		put32(348, static_cast<uint32_t>(unwind.eh_frame_size));
+	}
 	r->handle = p->unique_id;
+	put32(268, static_cast<uint32_t>(p->unique_id));
+	put64(272, p->tls.image_vaddr);
+	put32(280, static_cast<uint32_t>(p->tls.init_size));
+	put32(284, static_cast<uint32_t>(p->tls.image_size));
+	put32(288, static_cast<uint32_t>(p->tls.tcb_offset));
+	put32(292, 16);
+	if (p->dynamic_info != nullptr) {
+		if (p->dynamic_info->init_vaddr != 0) put64(296, p->dynamic_info->init_vaddr + p->base_vaddr);
+		if (p->dynamic_info->fini_vaddr != 0) put64(304, p->dynamic_info->fini_vaddr + p->base_vaddr);
+	}
+	const auto* ehdr = p->elf != nullptr ? p->elf->GetEhdr() : nullptr;
+	const auto* phdr = p->elf != nullptr ? p->elf->GetPhdr() : nullptr;
+	uint32_t    segments = 0;
+	for (int i = 0; ehdr != nullptr && phdr != nullptr && i < ehdr->e_phnum && segments < 4; i++) {
+		if (phdr[i].p_type != Loader::PT_LOAD || phdr[i].p_memsz == 0) {
+			continue;
+		}
+		const size_t entry = 352 + segments * 16;
+		put64(entry, p->base_vaddr + phdr[i].p_vaddr);
+		put32(entry + 8, static_cast<uint32_t>(phdr[i].p_memsz));
+		put32(entry + 12, phdr[i].p_flags & 7u);
+		segments++;
+	}
+	put32(416, segments);
 
 	LOGF("\thandle: %d\n", r->handle);
 
@@ -1999,6 +2038,27 @@ LIB_DEFINE(InitLibKernelWriteThrottling) {
 namespace Posix {
 
 LIB_VERSION("Posix", 1, "libkernel", 1, 1);
+
+// The PS4 libc masks signals around its own locks. Guest signals are never delivered
+// asynchronously here, so there is no mask to keep; report an empty one.
+int KYTY_SYSV_ABI sigprocmask(int how, const void* set, uint64_t* old_set) {
+	PRINT_NAME();
+	(void)how;
+	(void)set;
+	if (old_set != nullptr) {
+		old_set[0] = old_set[1] = 0;
+	}
+	return 0;
+}
+
+// Guest memory is ordinary host memory and file mappings are written through: nothing to flush.
+int KYTY_SYSV_ABI msync(void* addr, size_t len, int flags) {
+	PRINT_NAME();
+	(void)addr;
+	(void)len;
+	(void)flags;
+	return 0;
+}
 
 int KYTY_SYSV_ABI getpagesize() {
 	PRINT_NAME();
@@ -2300,6 +2360,8 @@ int KYTY_SYSV_ABI UmtxOp(volatile void* address, int operation, uint64_t value,
 }
 
 LIB_DEFINE(InitLibKernel_1_Posix) {
+	LIB_FUNC("aPcyptbOiZs", sigprocmask);
+	LIB_FUNC("tZY4+SZNFhA", msync);
 	LIB_FUNC("k+AXqu2-eBc", getpagesize);
 	LIB_FUNC("lLMT9vJAck0", clock_gettime);
 	LIB_FUNC("smIj7eqzZE8", clock_getres);
@@ -3506,6 +3568,8 @@ static void AddLibkernelUnityFunc(Loader::SymbolDatabase* s, const char* nid, ui
 
 LIB_DEFINE(InitLibKernel_1) {
 	LIB_FUNC("04AjkP0jO9U", Posix::UmtxOp);
+	LIB_FUNC("aPcyptbOiZs", Posix::sigprocmask);
+	LIB_FUNC("tZY4+SZNFhA", Posix::msync);
 	InitLibKernel_1_FS(s);
 	InitLibKernel_1_Mem(s);
 	InitLibKernel_1_Equeue(s);
