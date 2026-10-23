@@ -123,6 +123,8 @@ object TrophyCard {
         // The latest trophies earned, newest first, then visible ones still to earn (greyed).
         val earnedRow = set.trophies.filter { it.unlocked }.sortedByDescending { it.unlockedAt ?: 0L }.take(8)
         val lockedRow = set.trophies.filter { !it.unlocked && !it.hidden }.take(8 - earnedRow.size)
+        // Hidden trophies still to earn fill the rest as blank tiles, never revealing their icon.
+        val hiddenCount = minOf(set.trophies.count { !it.unlocked && it.hidden }, 8 - earnedRow.size - lockedRow.size)
         val label = TextPaint(Paint.ANTI_ALIAS_FLAG).apply { color = TEXT_MUTED; textSize = 24f }
         canvas.drawText(
             context.getString(if (earnedRow.isEmpty()) R.string.trophies_card_next else R.string.trophies_card_recent),
@@ -133,6 +135,18 @@ object TrophyCard {
         val locked = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             colorFilter = ColorMatrixColorFilter(ColorMatrix().apply { setSaturation(0f) })
             alpha = 90
+        }
+        val shown = earnedRow.size + lockedRow.size
+        val mark = TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = TEXT_MUTED
+            textSize = 48f
+            textAlign = Paint.Align.CENTER
+            typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
+        }
+        for (i in shown until shown + hiddenCount) {
+            val rect = RectF(MARGIN + i * (size + 22f), rowTop, MARGIN + i * (size + 22f) + size, rowTop + size)
+            canvas.drawRoundRect(rect, 16f, 16f, Paint(Paint.ANTI_ALIAS_FLAG).apply { color = SURFACE })
+            canvas.drawText("?", rect.centerX(), rect.centerY() + 17f, mark)
         }
         (earnedRow + lockedRow).forEachIndexed { i, trophy ->
             val rect = RectF(MARGIN + i * (size + 22f), rowTop, MARGIN + i * (size + 22f) + size, rowTop + size)
