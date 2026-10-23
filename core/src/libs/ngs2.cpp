@@ -1083,6 +1083,31 @@ static void Ngs2FillDefaultRackOption(uint32_t rack_id, Ngs2RackOptionUnion* opt
 	}
 }
 
+// PS4 games (backward compatibility) pass the first SDK's rack option: a 16-byte name, no voice or
+// output channel counts and 128 bytes in all, followed by the rack's own fields. Converts it to the
+// layout used here; PS5 options are larger and pass through untouched.
+static const Ngs2RackOption* Ngs2NativeRackOption(const Ngs2RackOption* option, Ngs2RackOptionUnion* out) {
+	constexpr size_t Ps4CommonSize = 128;
+	if (option == nullptr || option->size >= sizeof(Ngs2RackOption) || option->size < Ps4CommonSize) {
+		return option;
+	}
+	const auto* raw    = reinterpret_cast<const uint8_t*>(option);
+	auto*       common = &out->common;
+	std::memcpy(common->name, raw + 8, 16);
+	uint32_t fields[6] = {};
+	std::memcpy(fields, raw + 24, sizeof(fields));
+	common->flags                  = fields[0];
+	common->max_grain_samples      = fields[1];
+	common->max_voices             = fields[2];
+	common->max_input_delay_blocks = fields[3];
+	common->max_matrices           = fields[4];
+	common->max_ports              = fields[5];
+	const size_t tail = std::min(option->size - Ps4CommonSize, sizeof(*out) - sizeof(Ngs2RackOption));
+	std::memcpy(reinterpret_cast<uint8_t*>(out) + sizeof(Ngs2RackOption), raw + Ps4CommonSize, tail);
+	common->size = sizeof(Ngs2RackOption) + tail;
+	return common;
+}
+
 int KYTY_SYSV_ABI Ngs2RackQueryBufferSize(uint32_t rack_id, const Ngs2RackOption* option,
                                           Ngs2ContextBufferInfo* buffer_info) {
 	PRINT_NAME();
@@ -1095,6 +1120,8 @@ int KYTY_SYSV_ABI Ngs2RackQueryBufferSize(uint32_t rack_id, const Ngs2RackOption
 		option = &default_option.common;
 		LOGF("\t option     = nullptr, using reset defaults for rack_id 0x%" PRIx32 "\n", rack_id);
 	}
+	Ngs2RackOptionUnion native_option {};
+	option = Ngs2NativeRackOption(option, &native_option);
 
 	LOGF("\t rack_id    = 0x%" PRIx32 "\n"
 	     "\t max_voices = %u\n",
@@ -1301,6 +1328,8 @@ int KYTY_SYSV_ABI Ngs2RackCreate(uintptr_t system_handle, uint32_t rack_id,
 		     "\n",
 		     rack_id);
 	}
+	Ngs2RackOptionUnion native_option {};
+	option = Ngs2NativeRackOption(option, &native_option);
 
 	EXIT_NOT_IMPLEMENTED(option->size < sizeof(Ngs2RackOption));
 
@@ -1418,6 +1447,8 @@ int KYTY_SYSV_ABI Ngs2RackCreateWithAllocator(uintptr_t system_handle, uint32_t 
 		     "\n",
 		     rack_id);
 	}
+	Ngs2RackOptionUnion native_option {};
+	option = Ngs2NativeRackOption(option, &native_option);
 
 	EXIT_NOT_IMPLEMENTED(option->size < sizeof(Ngs2RackOption));
 
