@@ -13,6 +13,7 @@ namespace Libs::Graphics {
 
 struct Shader;
 struct ShaderRegister;
+class RenderContext;
 
 struct SizeAlign {
 	uint64_t m_size;
@@ -34,6 +35,9 @@ struct Lifecycle {
 };
 
 void GraphicsDbgDumpDcb(const char* type, uint32_t num_dw, const uint32_t* cmd_buffer);
+
+// The renderer both GPU drivers submit to: AGC (PS5) and GNM (PS4 backward compatibility).
+[[nodiscard]] RenderContext& GetRenderContext();
 
 namespace Gen5 {
 
