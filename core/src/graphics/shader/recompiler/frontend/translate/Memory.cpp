@@ -4,6 +4,7 @@
 
 #include "common/assert.h"
 #include "common/logging/log.h"
+#include "graphics/shader/recompiler/HostFeatures.h"
 #include "graphics/shader/recompiler/frontend/translate/Translator.h"
 #include "graphics/shader/recompiler/frontend/decode/ImageOps.h"
 
@@ -995,6 +996,11 @@ void Translator::EmitMemory(const Decoder::Instruction& inst) {
 		case Decoder::Opcode::S_BUFFER_LOAD_DWORDX8:
 		case Decoder::Opcode::S_BUFFER_LOAD_DWORDX16: return S_LOAD(inst, false);
 		case Decoder::Opcode::S_MEMREALTIME: {
+			if (g_host_features.device_clock_period_ps != 0u) {
+				return WriteU32Pair(inst.dst,
+				                    ExtractU64(IR::U64(ir.Emit(IR::ValueOpcode::ReadRealtimeClock))));
+			}
+			// Without a device clock the constant placeholder stays (upstream fails the shader).
 			static std::atomic_flag warned = ATOMIC_FLAG_INIT;
 			if (!warned.test_and_set(std::memory_order_relaxed)) {
 				Log::WriteToConsoleAndLog(
