@@ -310,6 +310,10 @@ bool Elf64::IsShared() const {
 	return (m_ehdr->e_type == ET_DYNAMIC || m_ehdr->e_type == ET_DYN);
 }
 
+bool Elf64::IsFixedAddress() const {
+	return m_ehdr->e_type == ET_SCE_EXEC;
+}
+
 bool Elf64::IsNextGen() const {
 	return (m_ehdr->e_ident[EI_ABIVERSION] == 2);
 }
@@ -505,7 +509,8 @@ bool Elf64::IsValid() const {
 		return false;
 	}
 
-	if (m_ehdr->e_type != ET_DYNEXEC && m_ehdr->e_type != ET_DYNAMIC && m_ehdr->e_type != ET_DYN) {
+	if (m_ehdr->e_type != ET_SCE_EXEC && m_ehdr->e_type != ET_DYNEXEC &&
+	    m_ehdr->e_type != ET_DYNAMIC && m_ehdr->e_type != ET_DYN) {
 		LOGF("ehdr->e_type (%04x) != ET_DYNEXEC && m_ehdr->e_type != ET_DYNAMIC\n", m_ehdr->e_type);
 		return false;
 	}
