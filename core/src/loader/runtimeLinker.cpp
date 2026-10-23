@@ -1401,9 +1401,26 @@ void RuntimeLinker::Execute(const std::filesystem::path& game_patch) {
 	}
 #endif
 
-	// The runtime automatically loads libc; other PRXs are requested by the application.
+	// The runtime automatically loads libc; other PRXs are requested by the application. PS4
+	// executables also get the modules they import that the game ships in sce_module (Fios2,
+	// NpToolkit...): the PS4 system loads those at startup.
 	const auto libc_path = Libs::LibKernel::FileSystem::GetRealFilename("/app0/sce_module/libc.prx");
 	auto* libc = Common::File::IsFileExisting(libc_path) ? LoadProgram(libc_path) : nullptr;
+	std::vector<Program*> shipped_modules;
+	if (auto* main_program = m_programs.empty() ? nullptr : m_programs.front();
+	    main_program != nullptr && main_program->elf != nullptr && !main_program->elf->IsNextGen() &&
+	    main_program->dynamic_info != nullptr) {
+		for (const auto& module: main_program->dynamic_info->import_modules) {
+			if (module.name.empty() || module.name == "libc") {
+				continue;
+			}
+			const auto path = Libs::LibKernel::FileSystem::GetRealFilename("/app0/sce_module/" +
+			                                                               module.name + ".prx");
+			if (Common::File::IsFileExisting(path)) {
+				shipped_modules.push_back(LoadProgram(path));
+			}
+		}
+	}
 	RelocateAll();
 
 	if (!game_patch.empty()) {
@@ -1414,6 +1431,11 @@ void RuntimeLinker::Execute(const std::filesystem::path& game_patch) {
 	}
 	if (libc != nullptr && libc->dynamic_info->init_vaddr != 0) {
 		StartModule(libc, 0, nullptr, nullptr);
+	}
+	for (auto* module: shipped_modules) {
+		if (module != nullptr && module->dynamic_info->init_vaddr != 0) {
+			StartModule(module, 0, nullptr, nullptr);
+		}
 	}
 
 	LOGF_COLOR(Log::Color::BrightYellow, "---\n--- Execute: %s\n---\n", "Main");
