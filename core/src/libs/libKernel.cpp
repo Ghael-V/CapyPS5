@@ -1811,8 +1811,10 @@ static int KYTY_SYSV_ABI KernelGetModuleInfoFromAddr(uint64_t addr, int n, Modul
 		return -1;
 	}
 
-	auto* bytes = reinterpret_cast<uint8_t*>(r);
-	std::memset(bytes + 8, 0, sizeof(ModuleInfo) - 8);
+	// Fill a full copy and hand back only what the caller's st_size covers: a smaller buffer
+	// (an older SDK's structure) must not be overrun.
+	ModuleInfo info {};
+	auto*      bytes = reinterpret_cast<uint8_t*>(&info);
 	const auto put32 = [&](size_t offset, uint32_t value) { std::memcpy(bytes + offset, &value, 4); };
 	const auto put64 = [&](size_t offset, uint64_t value) { std::memcpy(bytes + offset, &value, 8); };
 
@@ -1824,7 +1826,7 @@ static int KYTY_SYSV_ABI KernelGetModuleInfoFromAddr(uint64_t addr, int n, Modul
 		put64(336, unwind.eh_frame_addr);
 		put32(348, static_cast<uint32_t>(unwind.eh_frame_size));
 	}
-	r->handle = p->unique_id;
+	info.handle = p->unique_id;
 	put32(268, static_cast<uint32_t>(p->unique_id));
 	put64(272, p->tls.image_vaddr);
 	put32(280, static_cast<uint32_t>(p->tls.init_size));
@@ -1850,7 +1852,12 @@ static int KYTY_SYSV_ABI KernelGetModuleInfoFromAddr(uint64_t addr, int n, Modul
 	}
 	put32(416, segments);
 
-	LOGF("\thandle: %d\n", r->handle);
+	const uint64_t size = r->size >= 8 + sizeof(info.info) + sizeof(info.handle) && r->size < sizeof(ModuleInfo)
+	                          ? r->size
+	                          : sizeof(ModuleInfo);
+	std::memcpy(reinterpret_cast<uint8_t*>(r) + 8, bytes + 8, size - 8);
+
+	LOGF("\tst_size: %" PRIu64 ", handle: %d\n", r->size, r->handle);
 
 	return 0;
 }

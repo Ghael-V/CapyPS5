@@ -1429,10 +1429,34 @@ void RuntimeLinker::Execute(const std::filesystem::path& game_patch) {
 			EXIT("Failed to apply game cheat\n");
 		}
 	}
+	// The PS4 libc has no DT_INIT: its startup (heap, the game's malloc replacement) sits in
+	// DT_PREINIT_ARRAY, which the PS4 dynamic linker runs before anything else. PS5 modules are
+	// left as they were.
+	const auto run_preinit = [](Program* program) {
+		if (program == nullptr || program->elf == nullptr || program->elf->IsNextGen()) {
+			return;
+		}
+		const auto& info = *program->dynamic_info;
+		for (uint64_t i = 0; info.preinit_array_vaddr != 0 && i < info.preinit_array_size / 8; i++) {
+			const auto func = *reinterpret_cast<const uint64_t*>(program->base_vaddr + info.preinit_array_vaddr + i * 8);
+			if (func == 0 || func == ~uint64_t {0}) {
+				continue;
+			}
+			LOGF("--- Preinit: %s [%" PRIu64 "] = 0x%016" PRIx64 "\n", Common::PathToString(program->file_name).c_str(), i,
+			     func);
+#if !defined(__x86_64__) && !defined(_M_X64)
+			Cpu::CpuBackend::Instance()->RunModuleInit(func, 0, nullptr, nullptr);
+#else
+			reinterpret_cast<module_ini_fini_func_t>(func)(0, nullptr, nullptr);
+#endif
+		}
+	};
+	run_preinit(libc);
 	if (libc != nullptr && libc->dynamic_info->init_vaddr != 0) {
 		StartModule(libc, 0, nullptr, nullptr);
 	}
 	for (auto* module: shipped_modules) {
+		run_preinit(module);
 		if (module != nullptr && module->dynamic_info->init_vaddr != 0) {
 			StartModule(module, 0, nullptr, nullptr);
 		}
@@ -1557,11 +1581,7 @@ void RuntimeLinker::Resolve(const std::string& name, SymbolType type, Program* p
 
 			const SymbolRecord* rec = nullptr;
 
-			if (m_symbols != nullptr) {
-				rec = m_symbols->Find(sr);
-			}
-
-			if (rec == nullptr) {
+			const auto find_in_programs = [&]() -> const SymbolRecord* {
 				for (auto* p: m_programs) {
 					const auto& libs = p->dynamic_info->export_libs;
 					const auto& modules = p->dynamic_info->export_modules;
@@ -1570,14 +1590,31 @@ void RuntimeLinker::Resolve(const std::string& name, SymbolType type, Program* p
 					    std::find(modules.begin(), modules.end(), *m) == modules.end()) {
 						continue;
 					}
-					rec = p->export_symbols->Find(sr);
-					if (rec != nullptr) {
+					if (const auto* found = p->export_symbols->Find(sr); found != nullptr) {
 						if (bind_self != nullptr) {
 							*bind_self = (p == program);
 						}
-						break;
+						return found;
 					}
 				}
+				return nullptr;
+			};
+
+			// PS4 executables (backward compatibility) run the system modules they ship, as on a
+			// PS4: libc.prx's own startup sets up its heap and the game's malloc replacement, which
+			// the HLE libc written for PS5 games would bypass. HLE covers what no module exports.
+			// Keyed on the main executable so PS5 games keep HLE first even for PS4-built modules.
+			const auto* main_program  = m_programs.empty() ? nullptr : m_programs.front();
+			const bool  modules_first = main_program != nullptr && main_program->elf != nullptr &&
+			                           !main_program->elf->IsNextGen();
+			if (modules_first) {
+				rec = find_in_programs();
+			}
+			if (rec == nullptr && m_symbols != nullptr) {
+				rec = m_symbols->Find(sr);
+			}
+			if (rec == nullptr && !modules_first) {
+				rec = find_in_programs();
 			}
 
 			if (rec == nullptr) {

@@ -150,6 +150,11 @@ void StackDumpHandler(int /*signal*/, siginfo_t* /*info*/, void* context) {
 			used += std::snprintf(line + used, sizeof(line) - used, " 0x%llx", static_cast<unsigned long long>(address));
 		}
 	};
+	// A thread running JIT code also reports where it is in the guest.
+	if (const auto guest_rip = Cpu::GuestRipFromHostPc(uc->uc_mcontext.pc); guest_rip != 0) {
+		used += std::snprintf(line + used, sizeof(line) - used, " guest_rip=0x%llx",
+		                      static_cast<unsigned long long>(guest_rip));
+	}
 	add(uc->uc_mcontext.pc);
 	add(uc->uc_mcontext.regs[30]);
 	uint64_t fp = uc->uc_mcontext.regs[29];
@@ -700,10 +705,19 @@ public:
 		Frame->State.rip = call_rip + 2;
 	}
 
-	FEXCore::HLE::ExecutableRangeInfo QueryGuestExecutableRange(FEXCore::Core::InternalThreadState* /*Thread*/, uint64_t /*Address*/) override {
+	FEXCore::HLE::ExecutableRangeInfo QueryGuestExecutableRange(FEXCore::Core::InternalThreadState* /*Thread*/, uint64_t Address) override {
+		constexpr uint64_t UserSpaceEnd = 0x0000800000000000ULL; // 128TB
+		// Above user space nothing is executable. Answering with the same range would make the
+		// decoder ask again forever when a guest jumps to a bogus address; an empty range turns
+		// it into a fault.
+		if (Address >= UserSpaceEnd) {
+			ALOGW("CapySyscallHandler: guest jumped outside user space (0x%llx)",
+			      static_cast<unsigned long long>(Address));
+			return FEXCore::HLE::ExecutableRangeInfo {.Base = Address, .Size = 0, .Writable = false};
+		}
 		return FEXCore::HLE::ExecutableRangeInfo {
 			.Base = 0,
-			.Size = 0x0000800000000000ULL, // 128TB
+			.Size = UserSpaceEnd,
 			.Writable = true,
 		};
 	}
