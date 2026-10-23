@@ -172,4 +172,14 @@
     <string name="trophies_share_text">%1$s: %2$d de %3$d trofeos en CapyPS5 · capyps5.org</string>
     <string name="trophies_card_recent">Últimos trofeos</string>
     <string name="trophies_card_next">Por conseguir</string>
+    <string name="whats_new_title">Lo nuevo en la v%1$s</string>
+    <string-array name="whats_new_items">
+        <item>Trofeos: la lista de cada juego y una tarjeta para compartir tu progreso.</item>
+        <item>Mando virtual: ya se pueden pulsar varios botones a la vez.</item>
+        <item>Mandos físicos: el stick izquierdo ya no activa la cruceta.</item>
+        <item>Audio: Dead Cells recupera su música y sus efectos, y hay mejoras de NGS2 y ATRAC9.</item>
+        <item>Las GPU Adreno 6xx con Turnip (como la Adreno 660) ya arrancan.</item>
+        <item>Más de 35 mejoras de KytyPS5: shaders, teselación, planos de recorte y menos cierres.</item>
+        <item>Lista de compatibilidad actualizada con 60 juegos en capyps5.org.</item>
+    </string-array>
 </resources>

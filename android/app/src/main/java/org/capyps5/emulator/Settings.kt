@@ -210,6 +210,11 @@ class Settings(context: Context) {
         get() = prefs.getString("skipped_release", "").orEmpty()
         set(value) = prefs.edit().putString("skipped_release", value).apply()
 
+    /** Version whose "what's new" card was last shown; empty before the first one. */
+    var lastSeenVersion: String
+        get() = prefs.getString("last_seen_version", "").orEmpty()
+        set(value) = prefs.edit().putString("last_seen_version", value).apply()
+
     /** Counts launcher starts and returns the new count (the support card shows every 10th). */
     fun countLaunch(): Int {
         val count = prefs.getInt("launch_count", 0) + 1

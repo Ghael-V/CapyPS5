@@ -38,30 +38,72 @@ Interactive Entertainment; PlayStation y PS5 son marcas de sus respectivos propi
 Si un juego se cierra por un error, al volver a la biblioteca verás el motivo y podrás guardar el
 log (en `CapyPS5/logs/`). Adjúntalo al reportar el fallo.
 
-## Compatibilidad (v0.0.1, AYN Odin 3)
+## Compatibilidad (v0.0.2)
 
-Los juegos de Unreal Engine usan por defecto el 25 % de resolución (configurable en Ajustes).
+Medido en una AYN Odin 3 (Snapdragon 8 Elite) y según los testers en otros móviles (Snapdragon 8 Elite, 8 Gen 3 y 888, Dimensity con Mali). Los resultados cambian con la GPU y el driver. Los juegos de Unreal Engine empiezan al 25 % de resolución (se cambia en Ajustes).
 
-| Juego | Estado |
-|---|---|
-| Dead Cells | Jugable, 60 FPS |
-| Blasphemous | Jugable, 60 FPS |
-| Animal Well | Jugable, 60 FPS |
-| Greak: Memories of Azur | Jugable, 60 FPS |
-| The Binding of Isaac: Repentance | Jugable, 60 FPS |
-| Monster Boy and the Cursed Kingdom | Jugable, ~60 FPS |
-| Rogue Prince of Persia | Jugable, ~30 FPS, fotogramas sueltos mal |
-| Unbound: Worlds Apart | Jugable, ~20 FPS |
-| MARVEL Cosmic Invasion | Funciona |
-| Born of Bread | Jugable al 25 %, 16-28 FPS; el suelo de algunas zonas desaparece |
-| Earth Defense Force | ~14-16 FPS |
-| Guri | ~8 FPS |
-| Astérix y Obélix XXL2 | ~20 FPS, un edificio lejano parpadea |
-| Stray | Arranca, ~4-7 FPS |
-| Castlevania: Belmont's Curse | Arranca, ~4 FPS, cargas muy largas |
-| Little Nightmares Enhanced Edition | Arranca y se juega, ~4-6 FPS (sin trazado de rayos) |
-| Sonic Origins Plus | Se cierra al arrancar |
-| Sackboy: A Big Adventure | Carga infinita |
+| Juego | Estado | Velocidad | Notas |
+|---|---|---|---|
+| Dead Cells | Jugable | 60 FPS |  |
+| Animal Well | Jugable | 60 FPS |  |
+| Blasphemous | Jugable | 60 FPS |  |
+| Blasphemous 2 | Jugable | 55–61 FPS | No arranca en Mali G720 |
+| Greak: Memories of Azur | Jugable | 60 FPS | Se ha visto audio a tirones |
+| The Binding of Isaac: Repentance | Jugable | 60 FPS | Se cierra al arrancar en algunos dispositivos |
+| Monster Boy and the Cursed Kingdom | Jugable | ~60 FPS | Se cierra al arrancar en algunos dispositivos |
+| The Messenger | Jugable | 60 FPS |  |
+| MARVEL Cosmic Invasion | Jugable | 60 FPS |  |
+| Dreaming Sarah | Jugable | 60 FPS | Adreno 660 arreglado en v0.0.2 |
+| Jitsu Squad | Jugable | 60 FPS |  |
+| New Joe & Mac: Caveman Ninja | Jugable | 60 FPS |  |
+| R-Type Delta: HD Boosted | Jugable | 60 FPS |  |
+| Skautfold: Into the Fray | Jugable | 60 FPS |  |
+| Mighty Morphin Power Rangers | Jugable | 60 FPS |  |
+| Astérix & Obélix: Slap Them All! 2 | Jugable | 60 FPS |  |
+| Atari 50: The Anniversary Celebration | Jugable | 50–60 FPS |  |
+| BloodRayne: Betrayal | Jugable | 40–60 FPS |  |
+| Cult of the Lamb | Jugable | – |  |
+| Tomb Raider I-III Remastered | Jugable | – |  |
+| Mewgenics | Jugable | – | El cursor saltaba con el stick; probablemente arreglado en v0.0.2 |
+| Astérix & Obélix XXL2 | Jugable | 20–60 FPS | Fallos de texturas, un edificio lejano parpadea |
+| Astérix & Obélix XXL3 | Jugable | 60 FPS | Fallos gráficos |
+| Minecraft | Jugable | – | FPS bajos en algunas escenas |
+| Rogue Prince of Persia | Jugable | ~30 FPS | Algún fotograma suelto mal |
+| Prince of Persia: The Lost Crown | Lento | 20–30 FPS |  |
+| Unicorn Overlord | Lento | <30 FPS | Se cierra en algunos dispositivos |
+| God of War: Sons of Sparta | Lento | <35 FPS | Más lento en combate en Mali |
+| TriFox | Lento | <35 FPS | Fallos de texturas |
+| Ghost Song | Lento | <30 FPS |  |
+| Lost Epic | Lento | <30 FPS |  |
+| Graveyard Keeper II | Lento | – | FPS bajos |
+| Born of Bread | Lento | 7–28 FPS | Unreal Engine; falta el suelo en algunas salas |
+| Unbound: Worlds Apart | Lento | 10–20 FPS | Unreal Engine 4 |
+| Earth Defense Force: World Brothers 2 | Lento | 14–16 FPS | Se cierra al arrancar en algunos dispositivos |
+| Gori: Cuddly Carnage | Lento | ~8 FPS | Se cierra al arrancar en algunos dispositivos |
+| Stray | Lento | 4–7 FPS |  |
+| Little Nightmares Enhanced Edition | Lento | 4–6 FPS | Sin trazado de rayos |
+| Castlevania: Belmont's Curse | Lento | ~4 FPS | Cargas muy largas |
+| DNF Duel | En partida, con problemas | – | Se cierra en partida |
+| Little Nightmares III | En partida, con problemas | – | FPS bajos, destellos negros |
+| Crown Wars: The Black Prince | En partida, con problemas | – | Pantalla negra y se cierra |
+| 63 Days | En partida, con problemas | <20 FPS | Se cierra tras la pantalla de carga |
+| Valkyrie Elysium | En partida, con problemas | 5–16 FPS | Se cierra en una pantalla de carga |
+| Avatar: The Last Airbender – Quest for Balance | En partida, con problemas | 20–60 FPS | Se congela en la cinemática del título |
+| Void Terrarium | En partida, con problemas | – | Se congela en partida |
+| Sackboy: A Big Adventure | En partida, con problemas | 60 FPS | Carga infinita |
+| Hollow Knight | No arranca | – | Mali G720 |
+| The Adventures of Elliot | No arranca | – |  |
+| Astro Bot | No arranca | – |  |
+| Bloodborne | No arranca | – |  |
+| Demon's Souls | No arranca | – |  |
+| Ghost of Yōtei | No arranca | – |  |
+| Marvel's Wolverine | No arranca | – |  |
+| Flashback 2 | No arranca | – |  |
+| Mega Man Star Force Legacy Collection | No arranca | – |  |
+| Sonic Origins Plus | No arranca | – |  |
+| Earthion | No arranca | – |  |
+| Squirrel with a Gun | No arranca | – |  |
+| Big Helmet Heroes | No arranca | – |  |
 
 ## Compilar
 

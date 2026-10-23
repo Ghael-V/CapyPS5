@@ -50,6 +50,7 @@ import androidx.lifecycle.lifecycleScope
 import kotlinx.coroutines.launch
 import org.capyps5.emulator.ui.components.SupportDialog
 import org.capyps5.emulator.ui.components.UpdateDialog
+import org.capyps5.emulator.ui.components.WhatsNewDialog
 
 /** Launcher: game library and settings. Each game runs in GameActivity, in its own process. */
 class MainActivity : CapyActivity() {
@@ -63,6 +64,8 @@ class MainActivity : CapyActivity() {
     // Newer release found at start, and whether this launch shows the support card.
     private var update by mutableStateOf<Release?>(null)
     private var showSupport by mutableStateOf(false)
+    // First start after an update: the "what's new" card for the installed version.
+    private var showWhatsNew by mutableStateOf(false)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -82,7 +85,13 @@ class MainActivity : CapyActivity() {
         val versionText = Updater.versionText(this)
         val installed = Updater.installedVersion(this)
         if (savedInstanceState == null) {
-            showSupport = settings.countLaunch() % SUPPORT_EVERY == 0
+            val launches = settings.countLaunch()
+            showSupport = launches % SUPPORT_EVERY == 0
+            // Shown after an update, not on a fresh install; v0.0.1 did not record a version, so
+            // an earlier launch also counts as an update.
+            val seen = settings.lastSeenVersion
+            showWhatsNew = seen != installed && (seen.isNotEmpty() || launches > 1)
+            settings.lastSeenVersion = installed
             if (settings.updateChecks) {
                 lifecycleScope.launch {
                     update = Updater.checkForUpdate(installed)?.takeIf { it.tag != settings.skippedRelease }
@@ -133,9 +142,9 @@ class MainActivity : CapyActivity() {
                         onLibraryPicked = { settings.addLibraryPath(it) },
                         onClearShaderCache = ::clearShaderCache,
                         onSaveLog = ::saveLog,
-                        overlayActive = lastError != null || update != null || showSupport,
+                        overlayActive = lastError != null || showWhatsNew || update != null || showSupport,
                     )
-                    // One notice at a time: the crash report, then an update, then the support card.
+                    // One notice at a time: the crash report, what's new, an update, the support card.
                     val report = lastError
                     val pending = update
                     when {
@@ -144,6 +153,7 @@ class MainActivity : CapyActivity() {
                             onSaveLog = ::saveLog,
                             onClose = { lastError = null },
                         )
+                        showWhatsNew -> WhatsNewDialog(version = installed, onClose = { showWhatsNew = false })
                         pending != null -> UpdateDialog(
                             release = pending,
                             installed = installed,

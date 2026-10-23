@@ -24,6 +24,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Forum
 import androidx.compose.material.icons.outlined.LocalCafe
+import androidx.compose.material.icons.outlined.NewReleases
 import androidx.compose.material.icons.outlined.SystemUpdate
 import androidx.compose.material.icons.outlined.VolunteerActivism
 import androidx.compose.material3.Icon
@@ -43,6 +44,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringArrayResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.launch
@@ -251,5 +253,30 @@ fun SupportDialog(onClose: () -> Unit) {
             style = MaterialTheme.typography.bodyMedium,
             color = Capy.TextSecondary,
         )
+    }
+}
+
+/** First start after an update: what changed in [version], from the whats_new_items list. */
+@Composable
+fun WhatsNewDialog(version: String, onClose: () -> Unit) {
+    val items = stringArrayResource(R.array.whats_new_items)
+    NoticeDialog(
+        title = stringResource(R.string.whats_new_title, version),
+        icon = Icons.Outlined.NewReleases,
+        actions = listOf(NoticeAction(stringResource(R.string.close), onClick = onClose)),
+        onBack = onClose,
+    ) {
+        Column(
+            Modifier.heightIn(max = 300.dp).verticalScroll(rememberScrollState()),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            items.forEach { item ->
+                Row {
+                    Text("•", style = MaterialTheme.typography.bodyMedium, color = Capy.Accent)
+                    Spacer(Modifier.width(10.dp))
+                    Text(item, style = MaterialTheme.typography.bodyMedium, color = Capy.TextSecondary)
+                }
+            }
+        }
     }
 }
