@@ -93,6 +93,8 @@ LIB_DEFINE(InitFontFt_1);
 LIB_DEFINE(InitAgcDriver_1);
 LIB_DEFINE(InitGnmDriver_1);
 LIB_DEFINE(InitHmd2_1);
+LIB_DEFINE(InitJpegDec_1);
+LIB_DEFINE(InitJpegEnc_1);
 LIB_DEFINE(InitLibKernel_1);
 LIB_DEFINE(InitNet_1);
 LIB_DEFINE(InitPad_1);
@@ -133,6 +135,8 @@ void InitAll(Loader::SymbolDatabase* s) {
 	InitDeviceService_1(s);
 	InitUsbd_1(s);
 	InitHmd2_1(s);
+	InitJpegDec_1(s);
+	InitJpegEnc_1(s);
 	InitLibKernel_1(s);
 	LibMouse::InitMouse_1(s);
 	LibKeyboard::InitKeyboard_1(s);
