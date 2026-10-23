@@ -780,7 +780,11 @@ struct Ngs2VoiceInternal {
 					state = Ngs2VoicePlayState::Playing;
 				}
 				break;
-			default: EXIT("unknown event_id: 0x%08" PRIx32 "\n", id);
+			// PS4 games send events (such as 0) that change nothing here.
+			default:
+				Common::DebugFlags::NoteOnce("CapyPS5-Ngs2", 0x4e475332'00000000ull | id, "ignored voice event 0x%08x",
+				                             id);
+				break;
 		}
 	}
 };
@@ -927,6 +931,26 @@ int KYTY_SYSV_ABI Ngs2SystemResetOption(Ngs2SystemOption* option) {
 	return OK;
 }
 
+// The first SDK's system option (PS4 games): a 16-byte name, no job scheduler options, flags and
+// grain/rate fields right after. Converted to the layout used here; PS5 options pass through.
+static const Ngs2SystemOption* Ngs2NativeSystemOption(const Ngs2SystemOption* option, Ngs2SystemOption* out) {
+	constexpr size_t Ps4FieldsEnd = 40;
+	if (option == nullptr || option->size >= sizeof(Ngs2SystemOption) || option->size < Ps4FieldsEnd) {
+		return option;
+	}
+	const auto* raw = reinterpret_cast<const uint8_t*>(option);
+	*out            = {};
+	out->size       = sizeof(Ngs2SystemOption);
+	std::memcpy(out->name, raw + 8, 16);
+	uint32_t fields[4] = {};
+	std::memcpy(fields, raw + 24, sizeof(fields));
+	out->flags             = fields[0];
+	out->max_grain_samples = fields[1];
+	out->num_grain_samples = fields[2];
+	out->sample_rate       = fields[3];
+	return out;
+}
+
 static Ngs2Internal* Ngs2CreateSystemInternal(const Ngs2SystemOption*      option,
                                               const Ngs2ContextBufferInfo* buffer_info) {
 	auto* ngs = new (buffer_info->host_buffer) Ngs2Internal;
@@ -960,6 +984,8 @@ int KYTY_SYSV_ABI Ngs2SystemQueryBufferSize(const Ngs2SystemOption* option,
 		option = &default_option;
 		LOGF("\t option            = nullptr, using reset defaults\n");
 	}
+	Ngs2SystemOption native_option {};
+	option = Ngs2NativeSystemOption(option, &native_option);
 
 	EXIT_NOT_IMPLEMENTED(option->size != sizeof(Ngs2SystemOption));
 
@@ -983,6 +1009,8 @@ int KYTY_SYSV_ABI Ngs2SystemCreate(const Ngs2SystemOption*      option,
 		option = &default_option;
 		LOGF("\t option            = nullptr, using reset defaults\n");
 	}
+	Ngs2SystemOption native_option {};
+	option = Ngs2NativeSystemOption(option, &native_option);
 
 	EXIT_NOT_IMPLEMENTED(option->size != sizeof(Ngs2SystemOption));
 
@@ -1148,6 +1176,8 @@ int KYTY_SYSV_ABI Ngs2SystemCreateWithAllocator(const Ngs2SystemOption*    optio
 		option = &default_option;
 		LOGF("\t option            = nullptr, using reset defaults\n");
 	}
+	Ngs2SystemOption native_option {};
+	option = Ngs2NativeSystemOption(option, &native_option);
 
 	EXIT_NOT_IMPLEMENTED(option->size != sizeof(Ngs2SystemOption));
 
