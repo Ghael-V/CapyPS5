@@ -1228,6 +1228,27 @@ static void Ngs2InitModules(Ngs2RackInternal& rack) {
 		return;
 	}
 	const auto& custom = rack.option.custom_sampler.custom_rack_option;
+#if defined(__ANDROID__)
+	// `debug.capy.ngs2_log 1`: describe each custom rack (tag CapyPS5-Ngs2).
+	static Common::DebugFlags::CachedValue ngs2_log("debug.capy.ngs2_log", 0);
+	if (ngs2_log.Get() != 0) {
+		__android_log_print(ANDROID_LOG_WARN, "CapyPS5-Ngs2",
+		                    "custom rack type=%d buffers=%u modules=%u ports=%u voices=%u",
+		                    static_cast<int>(rack.type), custom.num_buffers, custom.num_modules,
+		                    rack.option.common.max_ports, rack.option.common.max_voices);
+		for (uint32_t m = 0; m < custom.num_modules; ++m) {
+			const auto& info = custom.module[m];
+			const auto* raw  = reinterpret_cast<const uint32_t*>(info.option);
+			__android_log_print(ANDROID_LOG_WARN, "CapyPS5-Ngs2",
+			                    "  module %u id=0x%02x src=%u extra=%u dst=%u state=%u+%u "
+			                    "option=%08x %08x %08x %08x %08x %08x",
+			                    m, info.module_id, info.source_buffer_id, info.extra_buffer_id,
+			                    info.dest_buffer_id, info.state_offset, info.state_size,
+			                    raw ? raw[0] : 0, raw ? raw[1] : 0, raw ? raw[2] : 0,
+			                    raw ? raw[3] : 0, raw ? raw[4] : 0, raw ? raw[5] : 0);
+		}
+	}
+#endif
 	EXIT_NOT_IMPLEMENTED(custom.num_buffers == 0 || custom.num_buffers > 4 ||
 	                     rack.option.common.max_ports > 16);
 	for (uint32_t p = 0; p < rack.option.common.max_ports; ++p) {
@@ -2387,6 +2408,24 @@ int KYTY_SYSV_ABI Ngs2GeomApply(const Ngs2GeomListenerWork* listener,
 	return OK;
 }
 
+// A patch destination may be a rack handle: Dead Cells sends its samplers and reverb to the
+// mastering rack itself, which stands for that rack's first voice.
+static Ngs2VoiceInternal* Ngs2PatchDestination(uintptr_t handle) {
+	if (handle == 0) {
+		return nullptr;
+	}
+	Common::LockGuard racks_lock(g_racks_mutex);
+	for (auto* rack = g_racks_list; rack != nullptr; rack = rack->next) {
+		if (reinterpret_cast<uintptr_t>(rack) == handle) {
+			if (rack->option.common.max_voices == 0) {
+				return nullptr;
+			}
+			return reinterpret_cast<Ngs2VoiceInternal*>(handle + sizeof(Ngs2RackInternal));
+		}
+	}
+	return reinterpret_cast<Ngs2VoiceInternal*>(handle);
+}
+
 int KYTY_SYSV_ABI Ngs2RackGetVoiceHandle(uintptr_t rack_handle, uint32_t voice_id,
                                          uintptr_t* handle) {
 	PRINT_NAME();
@@ -2465,8 +2504,7 @@ int KYTY_SYSV_ABI Ngs2VoiceControl(uintptr_t voice_handle, const Ngs2VoiceParamH
 						EXIT_NOT_IMPLEMENTED(param->size != sizeof(Ngs2VoicePatchParam));
 						const auto* patch = reinterpret_cast<const Ngs2VoicePatchParam*>(param);
 						EXIT_NOT_IMPLEMENTED(patch->port >= voice->ports.size());
-						voice->ports[patch->port].dest =
-						    reinterpret_cast<Ngs2VoiceInternal*>(patch->dest_handle);
+						voice->ports[patch->port].dest = Ngs2PatchDestination(patch->dest_handle);
 						voice->ports[patch->port].input = patch->dest_input_id;
 						break;
 					}
@@ -2578,6 +2616,19 @@ int KYTY_SYSV_ABI Ngs2VoiceControl(uintptr_t voice_handle, const Ngs2VoiceParamH
 						    param->id));
 						module.control_warned = true;
 					}
+#if defined(__ANDROID__)
+					static Common::DebugFlags::CachedValue ngs2_log("debug.capy.ngs2_log", 0);
+					static std::atomic<uint32_t> ignored_logs {0};
+					if (ngs2_log.Get() != 0 && ignored_logs.fetch_add(1) < 64) {
+						const auto* raw = reinterpret_cast<const uint32_t*>(param + 1);
+						__android_log_print(ANDROID_LOG_WARN, "CapyPS5-Ngs2",
+						                    "ignored control 0x%08x voice=%p size=%u data=%08x %08x "
+						                    "%08x %08x %08x %08x %08x %08x",
+						                    param->id, static_cast<void*>(voice),
+						                    static_cast<unsigned>(param->size), raw[0], raw[1],
+						                    raw[2], raw[3], raw[4], raw[5], raw[6], raw[7]);
+					}
+#endif
 					break;
 				}
 				if (module_id == 0x19) {
@@ -2615,6 +2666,18 @@ int KYTY_SYSV_ABI Ngs2VoiceControl(uintptr_t voice_handle, const Ngs2VoiceParamH
 					case 0: {
 						const auto& format =
 						    *reinterpret_cast<const Ngs2WaveformFormat*>(param + 1);
+#if defined(__ANDROID__)
+						static Common::DebugFlags::CachedValue ngs2_log("debug.capy.ngs2_log", 0);
+						static std::atomic<uint32_t> format_logs {0};
+						if (ngs2_log.Get() != 0 && format_logs.fetch_add(1) < 64) {
+							__android_log_print(ANDROID_LOG_WARN, "CapyPS5-Ngs2",
+							                    "voice %p rack=0x%x format type=0x%x ch=%u rate=%u "
+							                    "config=%08x",
+							                    static_cast<void*>(voice), rack_id,
+							                    format.waveform_type, format.num_channels,
+							                    format.sample_rate, format.config_data);
+						}
+#endif
 						voice->SetupSampler(format);
 						break;
 					}
