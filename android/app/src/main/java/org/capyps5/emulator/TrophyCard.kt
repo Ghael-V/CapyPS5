@@ -11,6 +11,8 @@ import android.graphics.BitmapFactory
 import android.graphics.BitmapShader
 import android.graphics.Canvas
 import android.graphics.Color
+import android.graphics.ColorMatrix
+import android.graphics.ColorMatrixColorFilter
 import android.graphics.LinearGradient
 import android.graphics.Matrix
 import android.graphics.Paint
@@ -118,24 +120,34 @@ object TrophyCard {
             x += 28f + countPaint.measureText(label) + 36f
         }
 
-        // The most recent trophies earned, newest first.
-        val recent = set.trophies.filter { it.unlocked }.sortedByDescending { it.unlockedAt ?: 0L }.take(8)
-        val rowTop = 340f
-        if (recent.isEmpty()) {
-            canvas.drawText(context.getString(R.string.trophies_card_none), MARGIN, rowTop + 60f, body)
-        } else {
-            val size = 112f
-            recent.forEachIndexed { i, trophy ->
-                val rect = RectF(MARGIN + i * (size + 22f), rowTop, MARGIN + i * (size + 22f) + size, rowTop + size)
-                val bytes = Trophies.readIcon(set, trophy)
-                val bitmapIcon = bytes?.let { BitmapFactory.decodeByteArray(it, 0, it.size) }
-                if (bitmapIcon != null) drawRounded(canvas, bitmapIcon, rect, 16f)
-                else canvas.drawRoundRect(rect, 16f, 16f, Paint(Paint.ANTI_ALIAS_FLAG).apply { color = SURFACE })
-                canvas.drawRoundRect(
-                    rect, 16f, 16f,
-                    Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE; strokeWidth = 4f; color = gradeColor(trophy.grade) },
-                )
-            }
+        // The latest trophies earned, newest first, then visible ones still to earn (greyed).
+        val earnedRow = set.trophies.filter { it.unlocked }.sortedByDescending { it.unlockedAt ?: 0L }.take(8)
+        val lockedRow = set.trophies.filter { !it.unlocked && !it.hidden }.take(8 - earnedRow.size)
+        val label = TextPaint(Paint.ANTI_ALIAS_FLAG).apply { color = TEXT_MUTED; textSize = 24f }
+        canvas.drawText(
+            context.getString(if (earnedRow.isEmpty()) R.string.trophies_card_next else R.string.trophies_card_recent),
+            MARGIN, 330f, label,
+        )
+        val size = 112f
+        val rowTop = 352f
+        val locked = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            colorFilter = ColorMatrixColorFilter(ColorMatrix().apply { setSaturation(0f) })
+            alpha = 90
+        }
+        (earnedRow + lockedRow).forEachIndexed { i, trophy ->
+            val rect = RectF(MARGIN + i * (size + 22f), rowTop, MARGIN + i * (size + 22f) + size, rowTop + size)
+            val bytes = Trophies.readIcon(set, trophy)
+            val bitmapIcon = bytes?.let { BitmapFactory.decodeByteArray(it, 0, it.size) }
+            if (bitmapIcon != null) drawRounded(canvas, bitmapIcon, rect, 16f, if (trophy.unlocked) null else locked)
+            else canvas.drawRoundRect(rect, 16f, 16f, Paint(Paint.ANTI_ALIAS_FLAG).apply { color = SURFACE })
+            canvas.drawRoundRect(
+                rect, 16f, 16f,
+                Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                    style = Paint.Style.STROKE
+                    strokeWidth = 4f
+                    color = if (trophy.unlocked) gradeColor(trophy.grade) else SURFACE
+                },
+            )
         }
 
         // Footer: the emulator's logo and name.
@@ -197,7 +209,7 @@ object TrophyCard {
         return RectF(target.centerX() - w / 2, target.centerY() - h / 2, target.centerX() + w / 2, target.centerY() + h / 2)
     }
 
-    private fun drawRounded(canvas: Canvas, bitmap: Bitmap, rect: RectF, radius: Float) {
+    private fun drawRounded(canvas: Canvas, bitmap: Bitmap, rect: RectF, radius: Float, base: Paint? = null) {
         val shader = BitmapShader(bitmap, Shader.TileMode.CLAMP, Shader.TileMode.CLAMP)
         val dest = cropRect(bitmap, rect)
         shader.setLocalMatrix(
@@ -206,6 +218,7 @@ object TrophyCard {
                 postTranslate(dest.left, dest.top)
             },
         )
-        canvas.drawRoundRect(rect, radius, radius, Paint(Paint.ANTI_ALIAS_FLAG).apply { this.shader = shader })
+        val paint = if (base != null) Paint(base) else Paint(Paint.ANTI_ALIAS_FLAG)
+        canvas.drawRoundRect(rect, radius, radius, paint.apply { this.shader = shader })
     }
 }

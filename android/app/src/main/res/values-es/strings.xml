@@ -170,5 +170,6 @@
     <string name="trophy_bronze">Bronce</string>
     <string name="trophies_share">Compartir</string>
     <string name="trophies_share_text">%1$s: %2$d de %3$d trofeos en CapyPS5 · capyps5.org</string>
-    <string name="trophies_card_none">Aún sin trofeos. Toca jugar.</string>
+    <string name="trophies_card_recent">Últimos trofeos</string>
+    <string name="trophies_card_next">Por conseguir</string>
 </resources>
