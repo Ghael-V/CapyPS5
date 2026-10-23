@@ -2051,6 +2051,51 @@ int KYTY_SYSV_ABI sigprocmask(int how, const void* set, uint64_t* old_set) {
 	return 0;
 }
 
+int KYTY_SYSV_ABI sigfillset(uint64_t* set) {
+	PRINT_NAME();
+	if (set == nullptr) {
+		*GetErrorAddr() = POSIX_EINVAL;
+		return -1;
+	}
+	set[0] = set[1] = ~uint64_t {0};
+	return 0;
+}
+
+// POSIX mmap, which the PS4 libc uses for its heap: anonymous and stack mappings are flexible
+// memory, MAP_VOID reserves address space. File mappings are not supported yet.
+void* KYTY_SYSV_ABI mmap(void* addr, size_t len, int prot, int flags, int fd, int64_t offset) {
+	PRINT_NAME();
+	constexpr int MapFixed = 0x10;
+	constexpr int MapVoid  = 0x100;
+	constexpr int MapStack = 0x400;
+	constexpr int MapAnon  = 0x1000;
+	auto* const   failed   = reinterpret_cast<void*>(-1);
+
+	LOGF("\t addr = %p, len = 0x%" PRIx64 ", prot = 0x%x, flags = 0x%x, fd = %d, offset = 0x%" PRIx64 "\n",
+	     addr, static_cast<uint64_t>(len), prot, flags, fd, static_cast<uint64_t>(offset));
+	if (len == 0) {
+		*GetErrorAddr() = POSIX_EINVAL;
+		return failed;
+	}
+	const size_t aligned = (len + 0x3fffu) & ~size_t {0x3fff};
+	void*        out     = addr;
+	int          result  = OK;
+	if ((flags & MapVoid) != 0) {
+		result = LibKernel::Memory::KernelReserveVirtualRange(&out, aligned, flags & MapFixed, 0);
+	} else if ((flags & (MapAnon | MapStack)) != 0) {
+		result = LibKernel::Memory::KernelMapFlexibleMemory(&out, aligned, prot, flags & MapFixed);
+	} else {
+		LOGF("\t file mappings are not supported (fd = %d)\n", fd);
+		*GetErrorAddr() = POSIX_ENODEV;
+		return failed;
+	}
+	if (result != OK) {
+		*GetErrorAddr() = LibKernel::KernelToPosix(result);
+		return failed;
+	}
+	return out;
+}
+
 // Guest memory is ordinary host memory and file mappings are written through: nothing to flush.
 int KYTY_SYSV_ABI msync(void* addr, size_t len, int flags) {
 	PRINT_NAME();
@@ -2362,6 +2407,8 @@ int KYTY_SYSV_ABI UmtxOp(volatile void* address, int operation, uint64_t value,
 LIB_DEFINE(InitLibKernel_1_Posix) {
 	LIB_FUNC("aPcyptbOiZs", sigprocmask);
 	LIB_FUNC("tZY4+SZNFhA", msync);
+	LIB_FUNC("VkTAsrZDcJ0", sigfillset);
+	LIB_FUNC("BPE9s9vQQXo", mmap);
 	LIB_FUNC("k+AXqu2-eBc", getpagesize);
 	LIB_FUNC("lLMT9vJAck0", clock_gettime);
 	LIB_FUNC("smIj7eqzZE8", clock_getres);
@@ -3570,6 +3617,8 @@ LIB_DEFINE(InitLibKernel_1) {
 	LIB_FUNC("04AjkP0jO9U", Posix::UmtxOp);
 	LIB_FUNC("aPcyptbOiZs", Posix::sigprocmask);
 	LIB_FUNC("tZY4+SZNFhA", Posix::msync);
+	LIB_FUNC("VkTAsrZDcJ0", Posix::sigfillset);
+	LIB_FUNC("BPE9s9vQQXo", Posix::mmap);
 	InitLibKernel_1_FS(s);
 	InitLibKernel_1_Mem(s);
 	InitLibKernel_1_Equeue(s);
