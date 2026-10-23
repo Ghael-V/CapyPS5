@@ -3,6 +3,8 @@
 
 #pragma once
 
+#include <cstdint>
+
 namespace Libs::Graphics::ShaderRecompiler {
 
 // Optional Vulkan features of the selected device that change the emitted SPIR-V. They are set
@@ -23,6 +25,9 @@ struct HostFeatures {
 	// BaryCoordKHR for pixel inputs read per vertex. Without it those inputs are declared as
 	// ordinary interpolated (or flat) inputs, and per-vertex reads get the interpolated value.
 	bool fragment_barycentric = true;
+	// OpReadClockKHR Device tick in picoseconds (VK_KHR_shader_clock shaderDeviceClock); 0 without
+	// it, and S_MEMREALTIME then keeps a constant.
+	uint32_t device_clock_period_ps = 0;
 };
 
 inline HostFeatures g_host_features;

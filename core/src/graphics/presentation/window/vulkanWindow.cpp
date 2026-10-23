@@ -39,6 +39,7 @@
 #include "loader/systemContent.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <fmt/format.h>
@@ -570,8 +571,21 @@ static vk::Device VulkanCreateDevice(GraphicContext& graphics,
 		image_atomic_int64.pNext = supported_features2.pNext;
 		supported_features2.pNext = &image_atomic_int64;
 	}
+	const bool shader_clock_extension = HasExtension(device_extensions, VK_KHR_SHADER_CLOCK_EXTENSION_NAME);
+	vk::PhysicalDeviceShaderClockFeaturesKHR shader_clock {};
+	if (shader_clock_extension) {
+		shader_clock.pNext        = supported_features2.pNext;
+		supported_features2.pNext = &shader_clock;
+	}
 	physical_device.getFeatures2(&supported_features2);
 	graphics.shader_image_int64_atomics_enabled = image_atomic_int64.shaderImageInt64Atomics;
+	// S_MEMREALTIME reads the device clock, which ticks at timestampPeriod nanoseconds.
+	const bool device_clock = shader_clock_extension && shader_clock.shaderDeviceClock == VK_TRUE;
+	ShaderRecompiler::g_host_features.device_clock_period_ps =
+	    device_clock ? static_cast<uint32_t>(
+	                       std::lround(graphics.physical_device_properties.limits.timestampPeriod * 1000.0f))
+	                 : 0u;
+	LOGF("Vulkan shader device clock: %s\n", device_clock ? "true" : "false");
 
 	auto features12 = WindowContext::RequiredVulkan12Features();
 	features12.shaderSharedInt64Atomics = supported_features12.shaderSharedInt64Atomics;
@@ -783,6 +797,11 @@ static vk::Device VulkanCreateDevice(GraphicContext& graphics,
 	if (graphics.depth_color_copy_enabled) {
 		maintenance8.pNext = const_cast<void*>(create_info.pNext);
 		create_info.pNext = &maintenance8;
+	}
+	if (ShaderRecompiler::g_host_features.device_clock_period_ps != 0u) {
+		shader_clock.shaderSubgroupClock = VK_FALSE;
+		shader_clock.pNext               = const_cast<void*>(create_info.pNext);
+		create_info.pNext                = &shader_clock;
 	}
 	create_info.pQueueCreateInfos       = &queue_create_info;
 	create_info.queueCreateInfoCount    = 1;
@@ -1276,6 +1295,7 @@ void WindowContext::CreateVulkan() {
 		                             VK_KHR_MAINTENANCE_8_EXTENSION_NAME,
 		                             VK_EXT_SHADER_IMAGE_ATOMIC_INT64_EXTENSION_NAME,
 		                             VK_EXT_PROVOKING_VERTEX_EXTENSION_NAME,
+		                             VK_KHR_SHADER_CLOCK_EXTENSION_NAME,
 		                             VK_EXT_MESH_SHADER_EXTENSION_NAME,
 		                             VK_KHR_WORKGROUP_MEMORY_EXPLICIT_LAYOUT_EXTENSION_NAME,
 		                             VK_EXT_DEPTH_RANGE_UNRESTRICTED_EXTENSION_NAME,
