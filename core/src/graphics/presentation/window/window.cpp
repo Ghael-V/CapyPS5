@@ -38,8 +38,6 @@
 #include <vulkan/vk_platform.h>
 #include <filesystem>
 
-#define STB_IMAGE_IMPLEMENTATION
-#define STBI_NO_SIMD
 #include "stb_image.h"
 
 // IWYU pragma: no_include <intrin.h>
