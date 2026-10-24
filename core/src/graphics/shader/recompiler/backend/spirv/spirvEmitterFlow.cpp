@@ -225,9 +225,24 @@ uint32_t EmitDppWriteCondition(ValueEmitContext& ctx, const IR::DppMoveFlags& fl
 	// Only row shifts (0x101-0x10f, 0x111-0x11f) can vacate a lane; other controls always read one.
 	const bool row_shift = flags.control > 0x100u && flags.control < 0x120u &&
 	                       flags.control != 0x110u;
-	if (!flags.bound_control && row_shift) {
+	if (flags.bound_control || (flags.fetch_inactive && !row_shift)) {
+		return writable;
+	}
+	// Without BOUND_CTRL, a vacated source or, without FI, an EXEC-disabled one disables the write.
+	const auto target = EmitDppTargetLane(state, flags);
+	if (row_shift) {
+		writable = Binary(state, spv::OpLogicalAnd, TypeBool(state), writable, target.valid);
+	}
+	if (!flags.fetch_inactive) {
+		// Vacated lanes target outside their row; wrapping keeps the ballot index in range.
+		auto source = target.lane;
+		if (row_shift) {
+			lane   = lane != 0 ? lane : EmitSubgroupLocalInvocationId(state);
+			source = EmitNative<spv::OpBitFieldInsert, IR::Type::U32>(
+			    state, lane, source, ConstantU32(state, 0), ConstantU32(state, 4));
+		}
 		writable = Binary(state, spv::OpLogicalAnd, TypeBool(state), writable,
-		                  EmitDppTargetLane(state, flags).valid);
+		                  EmitSourceLaneActive(ctx, exec, source));
 	}
 	return writable;
 }
