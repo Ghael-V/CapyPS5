@@ -908,27 +908,23 @@ uint32_t EmitWriteLane(ValueEmitContext& ctx, const IR::Inst& inst) {
 }
 
 uint32_t EmitPermlane16U32(ValueEmitContext& ctx, const IR::Inst& inst) {
-	auto&      state     = ctx.state;
-	const auto flags     = inst.Flags<IR::PermlaneFlags>();
-	const auto subid     = EmitSubgroupLocalInvocationId(state);
-	const auto row       = state.builder.AllocateId();
-	const auto row_value = state.builder.AllocateId();
-	const auto lane      = state.builder.AllocateId();
-	const auto lane8     = state.builder.AllocateId();
-	const auto shift     = state.builder.AllocateId();
-	const auto upper     = state.builder.AllocateId();
-	const auto selected  = state.builder.AllocateId();
-	const auto shifted   = state.builder.AllocateId();
-	const auto index     = state.builder.AllocateId();
-	const auto target    = state.builder.AllocateId();
+	auto&      state    = ctx.state;
+	const auto flags    = inst.Flags<IR::PermlaneFlags>();
+	const auto subid    = EmitSubgroupLocalInvocationId(state);
+	const auto row      = state.builder.AllocateId();
+	const auto lane     = state.builder.AllocateId();
+	const auto lane8    = state.builder.AllocateId();
+	const auto shift    = state.builder.AllocateId();
+	const auto upper    = state.builder.AllocateId();
+	const auto selected = state.builder.AllocateId();
+	const auto shifted  = state.builder.AllocateId();
+	const auto index    = state.builder.AllocateId();
+	const auto target   = state.builder.AllocateId();
 	state.builder.AddFunction(spv::OpBitwiseAnd, TypeU32(state), row, subid,
 	                          ConstantU32(state, 0xfffffff0u));
-	if (flags.x16) {
-		state.builder.AddFunction(spv::OpBitwiseXor, TypeU32(state), row_value, row,
-		                          ConstantU32(state, 16));
-	} else {
-		state.builder.AddFunction(spv::OpCopyObject, TypeU32(state), row_value, row);
-	}
+	const auto row_value =
+	    flags.x16 ? Binary(state, spv::OpBitwiseXor, TypeU32(state), row, ConstantU32(state, 16))
+		          : row;
 	state.builder.AddFunction(spv::OpBitwiseAnd, TypeU32(state), lane, subid,
 	                          ConstantU32(state, 15));
 	state.builder.AddFunction(spv::OpBitwiseAnd, TypeU32(state), lane8, lane,
