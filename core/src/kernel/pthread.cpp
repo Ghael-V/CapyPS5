@@ -160,9 +160,32 @@ static uint64_t GetHostThreadId() {
 }
 #endif
 
+#if defined(__aarch64__)
+// The counter guest RDTSC returns under FEXCore: CNTVCT_EL0 shifted left until its frequency
+// reaches 1 GHz (SmallTSCScale, on by default). The kernel's TSC uses the same counter, so
+// sceKernelReadTsc, sceKernelGetTscFrequency and guest RDTSC agree.
+static uint32_t KernelFexTscScale() {
+	static const uint32_t scale = [] {
+		uint64_t frequency = 0;
+		asm volatile("mrs %0, cntfrq_el0" : "=r"(frequency));
+		uint32_t shift = 0;
+		while (frequency != 0 && frequency < 1'000'000'000u) {
+			frequency <<= 1u;
+			shift++;
+		}
+		return shift;
+	}();
+	return scale;
+}
+#endif
+
 static uint64_t KernelReadTscNative() {
 #if defined(_M_X64) || defined(__x86_64__)
 	return __rdtsc();
+#elif defined(__aarch64__)
+	uint64_t counter = 0;
+	asm volatile("mrs %0, cntvct_el0" : "=r"(counter));
+	return counter << KernelFexTscScale();
 #else
 	return Common::Timer::QueryPerformanceCounter();
 #endif
@@ -200,6 +223,10 @@ static uint64_t KernelGetTscFrequencyNative() {
 		freq = (mod >= ROUND_TO / 2 ? freq - mod + ROUND_TO : freq - mod);
 
 		return freq != 0 ? freq : host_frequency;
+#elif defined(__aarch64__)
+		uint64_t frequency = 0;
+		asm volatile("mrs %0, cntfrq_el0" : "=r"(frequency));
+		return frequency << KernelFexTscScale();
 #else
 		return Common::Timer::QueryPerformanceFrequency();
 #endif
@@ -3935,6 +3962,37 @@ uint64_t KYTY_SYSV_ABI KernelGetProcessTime() {
 uint64_t KYTY_SYSV_ABI KernelGetProcessTimeCounter() {
 	return KernelGetElapsedTsc();
 }
+
+#if defined(__aarch64__)
+// Guest-native counter reads (Cpu::RegisterGuestNative): UE titles read the process time counter
+// about a million times a second, each a trap into the host. Guest RDTSC returns the same scaled
+// counter as KernelReadTscNative, so x86 code does it. From tarek369/KytyPS5-Android def7519d,
+// ported by hand.
+static std::vector<uint8_t> GuestReadTscCode(bool since_start) {
+	std::vector<uint8_t> code = {
+	    0x0F, 0x31,             // rdtsc
+	    0x48, 0xC1, 0xE2, 0x20, // shl rdx, 32
+	    0x48, 0x09, 0xD0,       // or rax, rdx
+	};
+	if (since_start) {
+		const uint64_t initial = KernelGetInitialTsc();
+		code.insert(code.end(), {0x48, 0xBA}); // movabs rdx, initial
+		for (int i = 0; i < 8; i++) {
+			code.push_back(static_cast<uint8_t>(initial >> (8 * i)));
+		}
+		code.insert(code.end(), {0x48, 0x29, 0xD0}); // sub rax, rdx
+	}
+	code.push_back(0xC3); // ret
+	return code;
+}
+
+[[maybe_unused]] static const bool g_guest_native_tsc = [] {
+	Cpu::RegisterGuestNative(reinterpret_cast<uint64_t>(&KernelGetProcessTimeCounter),
+	                         [] { return GuestReadTscCode(true); });
+	Cpu::RegisterGuestNative(reinterpret_cast<uint64_t>(&KernelReadTsc), [] { return GuestReadTscCode(false); });
+	return true;
+}();
+#endif
 
 uint64_t KYTY_SYSV_ABI KernelGetProcessTimeCounterFrequency() {
 	return KernelGetTscFrequencyNative();

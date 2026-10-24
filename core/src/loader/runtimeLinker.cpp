@@ -2396,8 +2396,26 @@ void RuntimeLinker::SetupTlsHandler(Program* program) {
 #if !defined(__x86_64__) && !defined(_M_X64)
 	// The stub is guest x86 code: on ARM64 it must call an HLE trampoline, not the host function
 	// (Unity games jumped into TlsMainGetAddr's ARM bytes and faulted).
-	code->SetFunc(reinterpret_cast<Jit::SafeCall::func_t>(Cpu::GetOrCreateHleTrampoline(
-	    reinterpret_cast<uint64_t>(TlsMainGetAddr), "TlsMainGetAddr")));
+	// Every guest thread runs with its main TCB as FS base (ExecuteGuestCode installs
+	// GetCurrentTcb), so the handler reads it in guest code: UE titles call it millions of times a
+	// second. An FS base of 0 falls back to the trap. From tarek369/KytyPS5-Android def7519d.
+	const uint64_t slow = Cpu::GetOrCreateHleTrampoline(reinterpret_cast<uint64_t>(TlsMainGetAddr), "TlsMainGetAddr");
+	static Common::DebugFlags::CachedValue guest_native("debug.capy.guest_native", 1);
+	uint64_t                               target = slow;
+	if (guest_native.Get() != 0) {
+		std::vector<uint8_t> fast = {
+		    0xF3, 0x48, 0x0F, 0xAE, 0xC0,       // rdfsbase rax
+		    0x48, 0x85, 0xC0,                   // test rax, rax
+		    0x74, 0x01,                         // jz slow
+		    0xC3,                               // ret
+		    0xFF, 0x25, 0x00, 0x00, 0x00, 0x00, // slow: jmp [rip] -> trap
+		};
+		for (int i = 0; i < 8; i++) {
+			fast.push_back(static_cast<uint8_t>(slow >> (8 * i)));
+		}
+		target = Cpu::AllocateGuestCode(fast);
+	}
+	code->SetFunc(reinterpret_cast<Jit::SafeCall::func_t>(target));
 #else
 	code->SetFunc(TlsMainGetAddr);
 #endif

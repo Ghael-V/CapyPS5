@@ -10,6 +10,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <vector>
 
 namespace Loader {
 struct EntryParams;
@@ -102,6 +103,14 @@ Ret CallGuest(Func func, Args... args) {
 
 // Create a guest-callable trampoline that forwards an x86_64 call to an ARM64 host function
 uint64_t GetOrCreateHleTrampoline(uint64_t host_func_ptr, const char* name = nullptr);
+
+// Guest-native replacement for an HLE function: when the trampoline of `host_func_ptr` is created,
+// the guest gets the x86 code `factory` returns instead of a trap, so hot calls that need no host
+// state (a counter read, a TLS base) skip the round trip. The factory runs once, on first use.
+using GuestNativeFactory = std::vector<uint8_t> (*)();
+void RegisterGuestNative(uint64_t host_func_ptr, GuestNativeFactory factory);
+// Copies x86 code to executable guest memory and returns its address (never freed).
+uint64_t AllocateGuestCode(const std::vector<uint8_t>& code);
 
 // x86 registers of the guest thread running on this host thread, as of its current HLE call.
 struct GuestRegisters {
