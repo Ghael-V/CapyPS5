@@ -117,6 +117,7 @@ private:
 	void DS_ORDERED_COUNT(const Decoder::Instruction& inst);
 
 	IR::F32 SelectF32(IR::U1 condition, IR::F32 true_value, IR::F32 false_value);
+	void V_FRACT(const Decoder::Instruction& inst, IR::Type type);
 	IR::U32 ConvertF32ToU32Saturated(IR::F32 value, float upper_bound, float safe_upper,
 	                                 uint32_t high_result);
 	IR::U32 ConvertF32ToI32Saturated(IR::F32 value, float lower_bound, float upper_bound,
