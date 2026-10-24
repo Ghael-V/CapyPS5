@@ -2442,6 +2442,7 @@ LIB_DEFINE(InitLibKernel_1_Posix) {
 	LIB_FUNC("EotR8a3ASf4", Posix::pthread_self);
 	LIB_FUNC("9vyP6Z7bqzc", Posix::pthread_rename_np);
 	LIB_FUNC("lZzFeSxPl08", Posix::pthread_setcancelstate);
+	LIB_FUNC("2dEhvvjlq30", Posix::pthread_setcanceltype);
 	LIB_FUNC("a2P9wYGeZvc", Posix::pthread_setprio);
 	LIB_FUNC("FIs3-UQT9sg", Posix::pthread_getschedparam);
 	LIB_FUNC("P41kTWUS3EI", Posix::pthread_getschedparam);
@@ -3374,6 +3375,7 @@ LIB_DEFINE(InitLibKernel_1_FS) {
 	LIB_FUNC("mBd4AfLP+u8", FileSystem::KernelPwritev);
 	LIB_FUNC("eV9wAD2riIA", FileSystem::KernelStat);
 	LIB_FUNC("kBwCPsYX-m4", FileSystem::KernelFstat);
+	LIB_FUNC("VW3TVZiM4-E", FileSystem::KernelFtruncate);
 	LIB_FUNC("AUXVxWeJU-A", FileSystem::KernelUnlink);
 	LIB_FUNC("52NcYU9+lEo", FileSystem::KernelRename);
 	LIB_FUNC("taRWhTJFTgE", FileSystem::KernelGetdirentries);
