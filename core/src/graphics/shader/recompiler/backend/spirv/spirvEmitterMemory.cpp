@@ -805,6 +805,17 @@ uint32_t EncodeFormattedStoreComponent(ValueEmitContext& ctx,
                                        uint32_t component, uint32_t data, uint32_t data_bits) {
 	auto& state = ctx.state;
 	const auto bits = info.component_bits[component];
+	if (info.type == Format::ComponentType::Float && bits < 16u) {
+		// Truncate to f16, whose bias the unsigned 11/10-bit floats share, and drop mantissa
+		// bits; negatives and NaN, whose f16 bits lie above +inf, store zero.
+		const auto half = data_bits == 16u
+		                      ? EmitAndConstant(state, data, 0xffffu)
+		                      : EmitF32ToF16RtzBits(state, EmitBitCastF32U32(state, data));
+		return Select(state, TypeU32(state),
+		              EmitCompareU32Constant(state, spv::OpUGreaterThan, half, 0x7c00u),
+		              ConstantU32(state, 0),
+		              EmitBinaryU32(state, spv::OpShiftRightLogical, half, ConstantU32(state, 15u - bits)));
+	}
 	if (data_bits == 16u) {
 		if (info.type == Format::ComponentType::Uint) {
 			data = EmitBitFieldUExtract(state, data, ConstantU32(state, 0), ConstantU32(state, 16));
