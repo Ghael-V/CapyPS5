@@ -181,4 +181,19 @@ IR::U32 Translator::PackU16Lanes(IR::U32 low, IR::U32 high) {
 	                    ir.ShiftLeftLogical(ir.BitwiseAnd(high, mask), IR::U32(IR::Value(16u))));
 }
 
+IR::U32 Translator::Saturate16(IR::U32 value, bool signed_value) {
+	if (!signed_value) {
+		return IR::U32(ir.Emit(IR::ValueOpcode::UMin32, {value, IR::Value(0xffffu)}));
+	}
+	const auto low = ir.Emit(IR::ValueOpcode::SMax32, {value, IR::Value(0xffff8000u)});
+	return IR::U32(ir.Emit(IR::ValueOpcode::SMin32, {low, IR::Value(0x7fffu)}));
+}
+
+// V_CVT_PK_U16_U32 / V_CVT_PK_I16_I32 saturate each source to 16 bits before packing.
+void Translator::V_CVT_PK_16_32(const Decoder::Instruction& inst, bool signed_value) {
+	WriteOperand(DestinationOperand(inst),
+	             PackU16Lanes(Saturate16(ReadU32(inst.src0), signed_value),
+	                          Saturate16(ReadU32(inst.src1), signed_value)));
+}
+
 } // namespace Libs::Graphics::ShaderRecompiler::Frontend
