@@ -131,7 +131,7 @@ const InputBinding* InputBindingForParameter(const EmitterState& state, uint32_t
 	return nullptr;
 }
 
-uint32_t EmitInputComponentU32(EmitterState& state, IR::StageInputKind kind, uint32_t component) {
+uint32_t EmitInputComponentU32Raw(EmitterState& state, IR::StageInputKind kind, uint32_t component) {
 	const auto variable = InputVariableForKind(state, kind);
 	if (variable == 0) {
 		return ConstantU32(state, 0);
@@ -143,6 +143,34 @@ uint32_t EmitInputComponentU32(EmitterState& state, IR::StageInputKind kind, uin
 	                          variable, ConstantU32(state, component));
 	state.builder.AddFunction(spv::OpLoad, TypeU32(state), value, pointer);
 	return value;
+}
+
+uint32_t EmitInputComponentU32(EmitterState& state, IR::StageInputKind kind, uint32_t component) {
+	const auto value = EmitInputComponentU32Raw(state, kind, component);
+	if (state.program.bindings.group_base_dword == IR::PushData::NoStart || component >= 3u ||
+	    InputVariableForKind(state, kind) == 0) {
+		return value;
+	}
+	// Split dispatches (RecordGuestDispatch): ids are relative to the piece's first group.
+	if (kind == IR::StageInputKind::WorkgroupId) {
+		return EmitAddU32(state, value, EmitGroupBaseU32(state, component));
+	}
+	if (kind == IR::StageInputKind::GlobalInvocationId) {
+		const auto* cs   = ShaderWorkgroupInput(state.program.stage, state.input_info);
+		const auto  size = cs != nullptr ? std::max(cs->threads_num[component], 1u) : 1u;
+		return EmitAddU32(state, value,
+		                  EmitBinaryU32(state, spv::OpIMul, EmitGroupBaseU32(state, component),
+		                                ConstantU32(state, size)));
+	}
+	return value;
+}
+
+uint32_t EmitGroupBaseU32(EmitterState& state, uint32_t component) {
+	const auto start = state.program.bindings.group_base_dword;
+	if (start == IR::PushData::NoStart) {
+		return ConstantU32(state, 0);
+	}
+	return EmitShaderDataDwordLoad(state, start + component);
 }
 
 uint32_t EmitLocalInvocationIndex(EmitterState& state) {

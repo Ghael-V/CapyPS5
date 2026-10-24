@@ -859,9 +859,10 @@ void EmitProgram(EmitterState& state) {
 		state.builder.AddFunction(spv::OpStore, state.loop_budget_variable, EmitInitialLoopBudget(state));
 	}
 	if (state.lds_storage_class == spv::StorageClassStorageBuffer && state.lds_variable != 0) {
-		const auto group_x = EmitInputComponentU32(state, IR::StageInputKind::WorkgroupId, 0);
-		const auto group_y = EmitInputComponentU32(state, IR::StageInputKind::WorkgroupId, 1);
-		const auto group_z = EmitInputComponentU32(state, IR::StageInputKind::WorkgroupId, 2);
+		// The slot indexes the piece's own groups (gl_NumWorkGroups is the piece's count).
+		const auto group_x = EmitInputComponentU32Raw(state, IR::StageInputKind::WorkgroupId, 0);
+		const auto group_y = EmitInputComponentU32Raw(state, IR::StageInputKind::WorkgroupId, 1);
+		const auto group_z = EmitInputComponentU32Raw(state, IR::StageInputKind::WorkgroupId, 2);
 		const auto count_x = EmitInputComponentU32(state, IR::StageInputKind::NumWorkgroups, 0);
 		const auto count_y = EmitInputComponentU32(state, IR::StageInputKind::NumWorkgroups, 1);
 		const auto row = EmitAddU32(state, group_y, EmitBinaryU32(state, spv::OpIMul, group_z, count_y));

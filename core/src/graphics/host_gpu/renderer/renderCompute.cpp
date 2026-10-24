@@ -16,6 +16,7 @@
 #include "graphics/guest_gpu/hardwareContext.h"
 #include "graphics/guest_gpu/pm4.h"
 #include "graphics/host_gpu/graphicContext.h"
+#include "graphics/host_gpu/renderer/dispatchSplit.h"
 #include "graphics/host_gpu/renderer/gpuProfiler.h"
 #include "graphics/host_gpu/renderer/image/imageInfo.h"
 #include "graphics/host_gpu/renderer/pipeline/descriptors.h"
@@ -34,6 +35,7 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <cinttypes>
 #include <cmath>
 #include <cstring>
 #include <limits>
@@ -334,6 +336,64 @@ static void BindSharedMemory(RenderContext& context, ShaderComputeInputInfo& inp
 	bindings.shared_memory = {storage.Handle(), 0, size};
 }
 
+// Records one guest dispatch. Past maxComputeWorkGroupCount it is recorded as pieces within the
+// limits, each with its first group in the program's group-base shader data
+// (Bindings::group_base_dword), which the translated shader adds to gl_WorkGroupID and
+// gl_GlobalInvocationID. The LDS-in-storage slot indexes the piece's own groups, so those pieces
+// are serialized. Idea from tarek369/KytyPS5-Android 0835ee42.
+static void RecordGuestDispatch(vk::CommandBuffer command, const GraphicContext& graphics,
+                                const DispatchGroups& groups,
+                                const ShaderRecompiler::IR::CompiledShaderInfo& program,
+                                const PipelineCache::Pipeline& pipeline) {
+	const auto&          max = graphics.GetPhysicalDeviceProperties().limits.maxComputeWorkGroupCount;
+	const DispatchGroups limits {max[0], max[1], max[2]};
+	if (DispatchFits(groups, limits)) {
+		command.dispatch(groups[0], groups[1], groups[2]);
+		return;
+	}
+	using ShaderRecompiler::IR::PushData;
+	const auto& bindings       = program.bindings;
+	const bool  reads_ids      = bindings.group_base_dword != PushData::NoStart;
+	const bool  lds_in_storage = bindings.descriptor_counts[static_cast<size_t>(
+	                                 ShaderRecompiler::IR::DescriptorBindingKind::SharedMemory)] != 0;
+	if (reads_ids && !bindings.UsesPushData()) {
+		// Shader data in a uniform buffer: no per-piece base. Recorded unsplit, as before.
+		Common::DebugFlags::NoteOnce("CapyPS5-Dispatch", program.shader_hash,
+		                             "dispatch %ux%ux%u over the limits, shader data not in push data: unsplit",
+		                             groups[0], groups[1], groups[2]);
+		command.dispatch(groups[0], groups[1], groups[2]);
+		return;
+	}
+	const uint32_t base_offset = reads_ids ? (bindings.push_data_start_dword + bindings.group_base_dword) * 4u : 0u;
+	uint32_t       recorded    = 0;
+	const auto     pieces      = ForEachDispatchPiece(groups, limits, [&](const DispatchPiece& piece) {
+		if (lds_in_storage && recorded != 0) {
+			vk::MemoryBarrier barrier {};
+			barrier.srcAccessMask = vk::AccessFlagBits::eShaderWrite;
+			barrier.dstAccessMask = vk::AccessFlagBits::eShaderRead | vk::AccessFlagBits::eShaderWrite;
+			command.pipelineBarrier(vk::PipelineStageFlagBits::eComputeShader,
+			                        vk::PipelineStageFlagBits::eComputeShader, {}, 1, &barrier, 0, nullptr, 0, nullptr);
+		}
+		if (reads_ids) {
+			command.pushConstants(pipeline.pipeline_layout, vk::ShaderStageFlagBits::eCompute, base_offset,
+			                      sizeof(piece.base), piece.base.data());
+		}
+		command.dispatch(piece.count[0], piece.count[1], piece.count[2]);
+		recorded++;
+	});
+	if (reads_ids) {
+		// Later dispatches of this pipeline without a re-commit see base 0 again.
+		const DispatchGroups zero {};
+		command.pushConstants(pipeline.pipeline_layout, vk::ShaderStageFlagBits::eCompute, base_offset, sizeof(zero),
+		                      zero.data());
+	}
+	Common::DebugFlags::NoteOnce("CapyPS5-Dispatch", program.shader_hash ^ 1u,
+	                             "dispatch %ux%ux%u over the limits %ux%ux%u: %u pieces%s%s", groups[0], groups[1],
+	                             groups[2], limits[0], limits[1], limits[2], pieces,
+	                             reads_ids ? " (group base in push data)" : " (ids unused)",
+	                             lds_in_storage ? " (serialized: LDS in storage buffer)" : "");
+}
+
 
 void RenderExecutor::DispatchDirect(uint64_t submit_id, CommandBuffer& buffer,
                                     uint32_t thread_group_x, uint32_t thread_group_y,
@@ -566,7 +626,8 @@ void RenderExecutor::DispatchDirect(uint64_t submit_id, CommandBuffer& buffer,
 	static Common::DebugFlags::CachedValue skip_cs("debug.capy.skip_cs", 0);
 	if (skip_cs.Get() == 0 ||
 	    static_cast<uint64_t>(skip_cs.Get()) != sh_ctx.GetCs().cs_regs.data_addr) {
-		vk_buffer.dispatch(thread_group_x, thread_group_y, thread_group_z);
+		RecordGuestDispatch(vk_buffer, m_context.GetGraphics(), {thread_group_x, thread_group_y, thread_group_z},
+		                    program, pipeline);
 	}
 	if (profile) {
 		GpuProfiler::EndScope(vk_buffer);

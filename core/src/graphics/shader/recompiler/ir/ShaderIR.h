@@ -477,6 +477,9 @@ struct Bindings {
 	uint64_t descriptor_mask = 0;
 	uint32_t push_data_start_dword = PushData::NoStart;
 	uint32_t dispatch_thread_dword = PushData::NoStart;
+	// Compute shaders reading workgroup ids: three shader-data dwords added to gl_WorkGroupID
+	// (0 unless the renderer splits a dispatch past maxComputeWorkGroupCount into pieces).
+	uint32_t group_base_dword = PushData::NoStart;
 	uint32_t memory_offset_dword = 0;
 
 	[[nodiscard]] uint32_t ShaderDataDwords() const {
