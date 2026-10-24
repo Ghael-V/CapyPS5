@@ -737,6 +737,37 @@ public:
 
 } // anonymous namespace
 
+static std::unordered_map<uint64_t, GuestNativeFactory>& GuestNatives() {
+	static std::unordered_map<uint64_t, GuestNativeFactory> natives;
+	return natives;
+}
+
+void RegisterGuestNative(uint64_t host_func_ptr, GuestNativeFactory factory) {
+	std::lock_guard<std::mutex> lock(s_trampoline_mutex);
+	GuestNatives()[host_func_ptr] = factory;
+}
+
+// Caller holds s_trampoline_mutex.
+static uint64_t AllocateGuestCodeLocked(const std::vector<uint8_t>& code) {
+	EnsureTrampolinePool();
+	const size_t size = (code.size() + 15u) & ~size_t {15};
+	if (code.empty() || s_trampoline_pool_used + size > TRAMPOLINE_POOL_SIZE) {
+		ALOGE("CpuBackend: Trampoline pool exhausted!");
+		std::abort();
+	}
+	uint8_t* dst = s_trampoline_pool + s_trampoline_pool_used;
+	s_trampoline_pool_used += size;
+	std::memcpy(dst, code.data(), code.size());
+	std::memset(dst + code.size(), 0xCC, size - code.size());
+	Common::VirtualMemory::FlushInstructionCache(reinterpret_cast<uint64_t>(dst), size);
+	return reinterpret_cast<uint64_t>(dst);
+}
+
+uint64_t AllocateGuestCode(const std::vector<uint8_t>& code) {
+	std::lock_guard<std::mutex> lock(s_trampoline_mutex);
+	return AllocateGuestCodeLocked(code);
+}
+
 uint64_t GetOrCreateHleTrampoline(uint64_t host_func_ptr, const char* name) {
 	if (host_func_ptr == 0) {
 		return 0;
@@ -751,6 +782,15 @@ uint64_t GetOrCreateHleTrampoline(uint64_t host_func_ptr, const char* name) {
 	auto it = s_trampoline_cache.find(host_func_ptr);
 	if (it != s_trampoline_cache.end()) {
 		return it->second;
+	}
+
+	// `setprop debug.capy.guest_native 0` (before launching): keep every HLE function a trap.
+	static Common::DebugFlags::CachedValue guest_native("debug.capy.guest_native", 1);
+	if (const auto native = GuestNatives().find(host_func_ptr);
+	    native != GuestNatives().end() && guest_native.Get() != 0) {
+		const auto code_addr = AllocateGuestCodeLocked(native->second());
+		s_trampoline_cache[host_func_ptr] = code_addr;
+		return code_addr;
 	}
 
 	if (s_trampoline_pool_used + 16 > TRAMPOLINE_POOL_SIZE) {
@@ -993,6 +1033,8 @@ private:
 		uint64_t sentinel_addr = reinterpret_cast<uint64_t>(s_trampoline_pool);
 
 		ALOGI("ExecuteGuestCode: 2. stack_top check (in=%016llx)", static_cast<unsigned long long>(stack_top));
+		uint64_t caller_rbp = 0;
+		bool     nested     = false;
 #if defined(__aarch64__)
 		// Nested run (an HLE call made by guest code, e.g. sceKernelLoadStartModule running
 		// module_start): continue below the caller's live stack. Starting from the top of the
@@ -1001,7 +1043,9 @@ private:
 			const auto caller_rsp =
 			    s_current_fex_thread->CurrentFrame->State.gregs[FEXCore::X86State::REG_RSP];
 			if (caller_rsp != 0) {
-				stack_top = (caller_rsp - 0x400) & ~0xFull;
+				nested     = true;
+				caller_rbp = s_current_fex_thread->CurrentFrame->State.gregs[FEXCore::X86State::REG_RBP];
+				stack_top  = (caller_rsp - 0x400) & ~0xFull;
 				ALOGI("ExecuteGuestCode: nested run below caller rsp=%016llx",
 				      static_cast<unsigned long long>(caller_rsp));
 			}
@@ -1020,6 +1064,19 @@ private:
 
 		// Ensure 16-byte stack alignment
 		uint64_t rsp = (stack_top - 0x80) & ~0x0Full;
+
+		// Frame-pointer chain: an outermost run starts on a zeroed root record {saved rbp = 0,
+		// return address = 0}, where guest walkers stop (Unity's backtrace reads [rbp + 8] until it
+		// is 0). RBP used to point at the sentinel slot, so a walk took the host trampoline address
+		// as a saved RBP. A nested run continues the caller's chain. Idea from
+		// tarek369/KytyPS5-Android ffe7cb80 (ported by hand).
+		uint64_t root_rbp = caller_rbp;
+		if (!nested) {
+			rsp -= 16;
+			reinterpret_cast<uint64_t*>(rsp)[0] = 0;
+			reinterpret_cast<uint64_t*>(rsp)[1] = 0;
+			root_rbp                            = rsp;
+		}
 
 		// Push HLT sentinel return address so ret terminates execution back to host
 		rsp -= 8;
@@ -1064,7 +1121,7 @@ private:
 		initial_state.callret_sp = callret_sp;
 		initial_state.rip = entry_addr;
 		initial_state.gregs[FEXCore::X86State::REG_RSP] = rsp;
-		initial_state.gregs[FEXCore::X86State::REG_RBP] = rsp;
+		initial_state.gregs[FEXCore::X86State::REG_RBP] = root_rbp;
 		initial_state.gregs[FEXCore::X86State::REG_RDI] = arg0;
 		initial_state.gregs[FEXCore::X86State::REG_RSI] = arg1;
 		initial_state.gregs[FEXCore::X86State::REG_RDX] = arg2;
