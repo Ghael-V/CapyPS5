@@ -491,6 +491,14 @@ struct HleSavedRegisters {
 };
 thread_local HleSavedRegisters* t_hle_saved = nullptr;
 
+// A context switch requested by the running HLE call (Cpu::ResumeGuestAt).
+struct PendingGuestResume {
+	bool                    active = false;
+	Cpu::GuestResumeContext context {};
+	uint64_t                rax = 0, rdi = 0, rsi = 0;
+};
+thread_local PendingGuestResume t_pending_resume;
+
 void CaptureHleCallerState() {
 	auto* saved = t_hle_saved;
 	if (saved == nullptr || saved->filled || saved->frame == nullptr) {
@@ -688,6 +696,24 @@ public:
 #endif
 
 			Frame->State.gregs[FEXCore::X86State::REG_RAX] = ret;
+			if (t_pending_resume.active) {
+				// The trampoline's RET pops the resume address from the new stack.
+				t_pending_resume.active = false;
+				const auto& to    = t_pending_resume.context;
+				auto&       gregs = Frame->State.gregs;
+				const auto  rsp   = to.rsp - 8;
+				*reinterpret_cast<uint64_t*>(rsp) = to.rip;
+				gregs[FEXCore::X86State::REG_RBX] = to.rbx;
+				gregs[FEXCore::X86State::REG_RBP] = to.rbp;
+				gregs[FEXCore::X86State::REG_R12] = to.r12;
+				gregs[FEXCore::X86State::REG_R13] = to.r13;
+				gregs[FEXCore::X86State::REG_R14] = to.r14;
+				gregs[FEXCore::X86State::REG_R15] = to.r15;
+				gregs[FEXCore::X86State::REG_RSP] = rsp;
+				gregs[FEXCore::X86State::REG_RDI] = t_pending_resume.rdi;
+				gregs[FEXCore::X86State::REG_RSI] = t_pending_resume.rsi;
+				gregs[FEXCore::X86State::REG_RAX] = t_pending_resume.rax;
+			}
 			// Deliver guest signals (sceKernelRaiseException) queued for this thread while it
 			// runs JIT code; blocking HLE waits poll on their own.
 			if (Libs::LibKernel::KernelHasPendingSignals()) {
@@ -1304,6 +1330,28 @@ uint64_t GuestReturnAddress() {
 	}
 #endif
 	return 0;
+}
+
+bool CaptureGuestReturnContext(GuestResumeContext* context) {
+	if (context == nullptr || t_hle_saved == nullptr || t_hle_saved->frame == nullptr) {
+		return false;
+	}
+	const auto& gregs = t_hle_saved->frame->State.gregs;
+	const auto  rsp   = gregs[FEXCore::X86State::REG_RSP];
+	// The HLE trampoline was called: the return address is at [rsp].
+	context->rip = *reinterpret_cast<const uint64_t*>(rsp);
+	context->rsp = rsp + 8;
+	context->rbx = gregs[FEXCore::X86State::REG_RBX];
+	context->rbp = gregs[FEXCore::X86State::REG_RBP];
+	context->r12 = gregs[FEXCore::X86State::REG_R12];
+	context->r13 = gregs[FEXCore::X86State::REG_R13];
+	context->r14 = gregs[FEXCore::X86State::REG_R14];
+	context->r15 = gregs[FEXCore::X86State::REG_R15];
+	return true;
+}
+
+void ResumeGuestAt(const GuestResumeContext& context, uint64_t rax, uint64_t rdi, uint64_t rsi) {
+	t_pending_resume = {.active = true, .context = context, .rax = rax, .rdi = rdi, .rsi = rsi};
 }
 
 uint64_t GuestRipFromHostPc(uint64_t host_pc) {

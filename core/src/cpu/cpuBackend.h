@@ -112,6 +112,19 @@ void RegisterGuestNative(uint64_t host_func_ptr, GuestNativeFactory factory);
 // Copies x86 code to executable guest memory and returns its address (never freed).
 uint64_t AllocateGuestCode(const std::vector<uint8_t>& code);
 
+// Where guest code continues: callee-saved registers, the stack pointer and the instruction.
+struct GuestResumeContext {
+	uint64_t rbx, rbp, r12, r13, r14, r15;
+	uint64_t rsp; // stack pointer once execution continues at rip
+	uint64_t rip;
+};
+// Inside an HLE call: the guest caller's context, as if the call had returned (rip is the return
+// address, rsp points past it). False outside an HLE call.
+bool CaptureGuestReturnContext(GuestResumeContext* context);
+// Inside an HLE call: when it returns, the guest continues at `context` with RAX = rax (and RDI,
+// RSI as given) instead of returning to its caller. Guest-side context switches (sceFiber) use it.
+void ResumeGuestAt(const GuestResumeContext& context, uint64_t rax, uint64_t rdi = 0, uint64_t rsi = 0);
+
 // x86 registers of the guest thread running on this host thread, as of its current HLE call.
 struct GuestRegisters {
 	uint64_t rax, rbx, rcx, rdx, rsi, rdi, rbp, rsp;
