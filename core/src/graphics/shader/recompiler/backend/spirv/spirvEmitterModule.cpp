@@ -11,6 +11,21 @@
 
 namespace Libs::Graphics::ShaderRecompiler::Spirv::Emitter {
 
+// Compute programs whose guest workgroup ids come from gl_WorkGroupID or gl_GlobalInvocationID
+// (directly, or through the LDS-in-storage slot).
+static bool ReadsWorkgroupIds(const EmitterState& state) {
+	if (state.program.stage != ShaderType::Compute) {
+		return false;
+	}
+	if (state.program.info.uses_lds && state.lds_storage_class == spv::StorageClassStorageBuffer) {
+		return true;
+	}
+	return std::ranges::any_of(state.program.info.inputs, [](const IR::StageInput& input) {
+		return input.kind == IR::StageInputKind::WorkgroupId ||
+		       input.kind == IR::StageInputKind::GlobalInvocationId;
+	});
+}
+
 uint32_t TypeVoid(EmitterState& state) {
 	if (state.void_type == 0) {
 		state.void_type = state.builder.Type(spv::OpTypeVoid);
@@ -244,6 +259,10 @@ void DefineDescriptors(EmitterState& state) {
 	bindings.memory_offset_dword = static_cast<uint32_t>(info.user_data_registers.size());
 	if (info.uses_dispatch_threads) {
 		bindings.dispatch_thread_dword = bindings.memory_offset_dword;
+		bindings.memory_offset_dword += 3u;
+	}
+	if (ReadsWorkgroupIds(state)) {
+		bindings.group_base_dword = bindings.memory_offset_dword;
 		bindings.memory_offset_dword += 3u;
 	}
 	bindings.push_data_start_dword =

@@ -187,11 +187,16 @@ void ValidateNativeProgram(const IR::Program& program, bool lds_storage) {
 	const auto shader_data_dwords = program.bindings.ShaderDataDwords();
 	const auto& registers = program.info.user_data_registers;
 	const bool has_dispatch_threads = program.bindings.dispatch_thread_dword != IR::PushData::NoStart;
+	const bool has_group_base = program.bindings.group_base_dword != IR::PushData::NoStart;
+	const auto fixed_dwords = static_cast<uint32_t>(registers.size()) +
+	                          (has_dispatch_threads ? 3u : 0u) + (has_group_base ? 3u : 0u);
 	if ((program.bindings.UsesPushData() &&
 	     !IR::PushData::CanFit(program.bindings.push_data_start_dword, shader_data_dwords)) ||
 	    (has_dispatch_threads && (program.stage != ShaderType::Compute ||
 	                              program.bindings.dispatch_thread_dword != registers.size())) ||
-	    program.bindings.memory_offset_dword != registers.size() + (has_dispatch_threads ? 3u : 0u) ||
+	    (has_group_base && (program.stage != ShaderType::Compute ||
+	                        program.bindings.group_base_dword + 3u != fixed_dwords)) ||
+	    program.bindings.memory_offset_dword != fixed_dwords ||
 	    !std::is_sorted(registers.begin(), registers.end()) ||
 	    std::adjacent_find(registers.begin(), registers.end()) != registers.end()) {
 		Fail(program, "native shader-data layout is inconsistent");

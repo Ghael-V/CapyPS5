@@ -395,7 +395,11 @@ const InputBinding* InputBindingForParameter(const EmitterState& state, uint32_t
 uint32_t EmitVertexParameterComponentU32(EmitterState& state, const InputBinding& input,
                                          uint32_t component);
 
+// Workgroup and global invocation ids include the split-dispatch piece base; Raw does not.
 uint32_t EmitInputComponentU32(EmitterState& state, IR::StageInputKind kind, uint32_t component);
+uint32_t EmitInputComponentU32Raw(EmitterState& state, IR::StageInputKind kind, uint32_t component);
+// The split-dispatch piece base along an axis (Bindings::group_base_dword), 0 without one.
+uint32_t EmitGroupBaseU32(EmitterState& state, uint32_t component);
 // Loop iteration budgets (spirvEmitterProgram.cpp): the most one invocation may spend, and the
 // total a compute dispatch may spend, divided among its invocations (0 = fixed budget only).
 uint32_t LoopCap();
