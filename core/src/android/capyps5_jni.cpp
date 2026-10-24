@@ -295,7 +295,7 @@ JNIEXPORT void JNICALL Java_org_capyps5_emulator_NativeBridge_nativeClearSkipped
 
 JNIEXPORT jstring JNICALL Java_org_capyps5_emulator_NativeBridge_nativeGetVersion(
     JNIEnv* env, jclass /*clazz*/) {
-	const std::string version = "CapyPS5 v0.0.2-alpha (ARM64 Android)";
+	const std::string version = "CapyPS5 v0.0.3-alpha (ARM64 Android)";
 	return env->NewStringUTF(version.c_str());
 }
 
