@@ -174,12 +174,12 @@
     <string name="trophies_card_next">Por conseguir</string>
     <string name="whats_new_title">Lo nuevo en la v%1$s</string>
     <string-array name="whats_new_items">
-        <item>Trofeos: la lista de cada juego y una tarjeta para compartir tu progreso.</item>
-        <item>Mando virtual: ya se pueden pulsar varios botones a la vez.</item>
-        <item>Mandos físicos: el stick izquierdo ya no activa la cruceta.</item>
-        <item>Audio: Dead Cells recupera su música y sus efectos, y hay mejoras de NGS2 y ATRAC9.</item>
-        <item>Las GPU Adreno 6xx con Turnip (como la Adreno 660) ya arrancan.</item>
-        <item>Más de 35 mejoras de KytyPS5: shaders, teselación, planos de recorte y menos cierres.</item>
-        <item>Lista de compatibilidad actualizada con 60 juegos en capyps5.org.</item>
+        <item>Juegos de Unreal Engine: las lecturas frecuentes de TLS y del reloj se hacen dentro del juego en vez de llamar al emulador cada vez.</item>
+        <item>El reloj del juego (RDTSC) ya coincide con la frecuencia que se les comunica, y los shaders pueden leer el reloj real de la GPU.</item>
+        <item>Primer soporte de fibers (sceFiber) en ARM: los juegos que los usan cerraban el emulador al arrancar.</item>
+        <item>Final Fantasy VII Rebirth y Mewgenics: ya están las funciones que necesitan.</item>
+        <item>Los dispatches de compute muy grandes se dividen para caber en los límites de Adreno (Astro Bot).</item>
+        <item>Nuevas librerías de decodificación y codificación JPEG, y más correcciones de KytyPS5.</item>
+        <item>Primeros pasos para juegos de PS4: aparecen con la etiqueta PS4, pero aún no se pueden jugar.</item>
     </string-array>
 </resources>

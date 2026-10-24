@@ -179,12 +179,12 @@
     <string name="trophies_card_next">Still to earn</string>
     <string name="whats_new_title">What\'s new in v%1$s</string>
     <string-array name="whats_new_items">
-        <item>Trophies: each game\'s trophy list, and a card to share your progress.</item>
-        <item>Virtual controller: several buttons can be held at once.</item>
-        <item>Physical controllers: the left stick no longer presses the d-pad.</item>
-        <item>Audio: Dead Cells has its music and effects back, plus NGS2 and ATRAC9 improvements.</item>
-        <item>Adreno 6xx GPUs with Turnip (such as Adreno 660) now boot.</item>
-        <item>Over 35 improvements from KytyPS5: shaders, tessellation, user clip planes and fewer crashes.</item>
-        <item>Updated compatibility list with 60 games at capyps5.org.</item>
+        <item>Unreal Engine games: hot TLS and clock reads run inside the game code instead of calling the emulator each time.</item>
+        <item>The game clock (RDTSC) now matches the frequency games are told, and shaders can read the real GPU clock.</item>
+        <item>First fiber (sceFiber) support on ARM: games that use them used to close the emulator at startup.</item>
+        <item>Final Fantasy VII Rebirth and Mewgenics: functions they need are now available.</item>
+        <item>Very large GPU compute dispatches are split to fit Adreno limits (Astro Bot).</item>
+        <item>New JPEG decoder and encoder libraries, and more fixes from KytyPS5.</item>
+        <item>Early groundwork for PS4 games: they appear tagged as PS4 but cannot be played yet.</item>
     </string-array>
 </resources>
