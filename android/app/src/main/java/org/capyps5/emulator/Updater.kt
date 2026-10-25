@@ -137,7 +137,11 @@ object Updater {
                 } finally {
                     connection.disconnect()
                 }
-            }.onFailure { Log.w(TAG, "download failed: $it") }.getOrNull()
+            }.onFailure {
+                Log.w(TAG, "download failed: $it")
+                // A failed half-download must not linger in cache/updates forever.
+                File(target.path + ".part").delete()
+            }.getOrNull()
         }
 
     /** False when Android still has to let this app install packages (see [requestInstallPermission]). */
