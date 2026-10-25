@@ -1008,8 +1008,12 @@ int GetActiveControllerId() {
 }
 
 static bool PadOpenArgsAreValid(int user_id, int type, int index) {
-	// The host keyboard and gamepad feed one standard port for the configured user.
-	return user_id == Config::GetUserId() && type == 0 && index == 0;
+	// The host keyboard and gamepad feed one standard port. Titles open it with various local
+	// user ids (real hardware reports 0x1c000000 for the initial user) and pad types; a refused
+	// open left them polling handle 0 without input (Final Fantasy VII Rebirth, Castlevania
+	// Dominus Collection).
+	(void)type;
+	return user_id >= 0 && index == 0;
 }
 
 int GameController::InitPort() {
