@@ -587,9 +587,22 @@ void Image::Resolve(Image& source, const ImageSubresourceRange& source_range,
 	const auto destination_height =
 	    std::max(backing.extent.height >> destination_range.base_level, 1u);
 	const bool copy = source.backing.samples == 1;
-	EXIT_IF(source.scale != scale);
-	const auto host_extent = ScaledExtent(info.extent, scale);
-	EXIT_IF(layers == 0 || host_extent.width > source_width || host_extent.height > source_height ||
+	// A downscaled render target resolved into a native-scale surface (video playback, UI
+	// overlays on Unreal titles) used to close the emulator. Single-sample sources take the
+	// resampling blit (the CopyImage fallback); multisample ones resolve the shared region.
+	const bool scale_mismatch = source.scale != scale;
+	if (scale_mismatch && copy) {
+		BlitImage(source);
+		return;
+	}
+	auto host_extent = ScaledExtent(info.extent, scale);
+	if (scale_mismatch) {
+		// Keep the resolve within both images: clamp to the region they share.
+		host_extent.width  = std::min({host_extent.width, source_width, destination_width});
+		host_extent.height = std::min({host_extent.height, source_height, destination_height});
+	}
+	EXIT_IF(layers == 0 || host_extent.width == 0 || host_extent.height == 0 ||
+	        host_extent.width > source_width || host_extent.height > source_height ||
 	        host_extent.width > destination_width || host_extent.height > destination_height ||
 	        (copy ? !ImageViewOps::FormatsCompatible(source.backing.format, backing.format)
 	              : source.backing.format != backing.format));
