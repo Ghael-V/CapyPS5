@@ -5,6 +5,7 @@
 #include "graphics/shader/recompiler/ir/passes/ResourceTracking.h"
 
 #include "common/assert.h"
+#include "common/debugFlags.h"
 #include "graphics/shader/recompiler/ir/ShaderIR.h"
 #include "graphics/shader/recompiler/ir/passes/DeadCodeElimination.h"
 #include "graphics/shader/recompiler/ir/passes/SrtWalker.h"
@@ -2352,15 +2353,42 @@ private:
 				source = indirect->source;
 			} else if (!GetHandle(inst.Arg(0), ValueOpcode::GetBufferResource, 4, flags.pc,
 			               memory.resource * 4u, handle, source)) {
-				if (memory.kind != (op == ValueOpcode::ReadConstBuffer ? ResourceKind::ScalarBuffer
-				                                                        : ResourceKind::Buffer) ||
-				    !memory.SupportsIndirectBufferLoad(op)) {
-					Fail(flags.pc,
-					     "buffer descriptor is not a valid runtime value; GPU-selected access "
-					     "requires a scalar, raw DWORD x1/x2/x3/x4, or formatted X load");
+				if (memory.kind == (op == ValueOpcode::ReadConstBuffer ? ResourceKind::ScalarBuffer
+				                                                        : ResourceKind::Buffer) &&
+				    memory.SupportsIndirectBufferLoad(op)) {
+					m_program.memory_info[flags.index].kind = ResourceKind::IndirectBuffer;
+					m_info.uses_dma                         = true;
+					return;
 				}
-				m_program.memory_info[flags.index].kind = ResourceKind::IndirectBuffer;
-				m_info.uses_dma                         = true;
+				// GPU-selected descriptor that the indirect path cannot serve. Bind an
+				// all-zero descriptor instead of exiting: the renderer maps zero-address /
+				// zero-size descriptors onto a null buffer and every emitted access is
+				// bounds-checked, so the access degrades to a zero read / dropped write
+				// for this one instruction instead of terminating the session.
+				DescriptorSource null_descriptor {};
+				null_descriptor.dword_count = 4;
+				null_descriptor.dwords      = {Value(0u), Value(0u), Value(0u), Value(0u)};
+				auto null_resource          = AddBuffer(InternSource(null_descriptor), memory, op, flags.pc);
+				if (null_resource == UINT32_MAX) {
+					null_resource = 0;
+				}
+				// Keep the memory kind a valid static buffer kind (program validation only
+				// accepts Buffer/ScalarBuffer for buffer ops). A sibling instruction that
+				// already marked this slot IndirectBuffer degrades to the same static
+				// binding rather than failing compilation.
+				if (m_program.memory_info[flags.index].kind != ResourceKind::Buffer &&
+				    m_program.memory_info[flags.index].kind != ResourceKind::ScalarBuffer) {
+					m_program.memory_info[flags.index].kind =
+					    op == ValueOpcode::ReadConstBuffer ? ResourceKind::ScalarBuffer
+					                                         : ResourceKind::Buffer;
+				}
+				if (handle == nullptr) {
+					Fail(flags.pc, "buffer descriptor is not a valid runtime value and has no handle");
+				}
+				Common::DebugFlags::NoteOnce("CapyPS5-Shader", 0x4e554c4cull ^ flags.pc,
+				                             "GPU-selected buffer descriptor at pc 0x%x bound as null", flags.pc);
+				handle->SetFlags<uint32_t>(null_resource);
+				m_program.memory_info[flags.index].resource = null_resource;
 				return;
 			}
 			resource = AddBuffer(source, memory, op, flags.pc);
