@@ -1822,6 +1822,28 @@ LIB_DEFINE(InitNet_1_NpEntitlementAccess) {
 
 } // namespace LibNpEntitlementAccess
 
+namespace LibNpEntitlementAccessPft {
+
+LIB_VERSION("NpEntitlementAccessPft", 1, "NpEntitlementAccess", 1, 1);
+
+// Unknown function; FC27 reads a state from it and continues with 2.
+static int KYTY_SYSV_ABI NpEntitlementAccessPftUnknowneDXKe9FndlE(uint32_t* state) {
+	PRINT_NAME();
+
+	if (state == nullptr) {
+		return LibNpEntitlementAccess::NP_ENTITLEMENT_ACCESS_ERROR_PARAMETER;
+	}
+
+	*state = 2;
+	return 0;
+}
+
+LIB_DEFINE(InitNet_1_NpEntitlementAccessPft) {
+	LIB_FUNC("eDXKe9FndlE", NpEntitlementAccessPftUnknowneDXKe9FndlE);
+}
+
+} // namespace LibNpEntitlementAccessPft
+
 namespace LibNpAuth {
 
 LIB_VERSION("NpAuth", 1, "NpAuth", 1, 1);
@@ -3052,6 +3074,7 @@ LIB_DEFINE(InitNet_1) {
 	LibNpManager::InitNet_1_NpManager(s);
 	LibNpSessionSignaling::InitNet_1_NpSessionSignaling(s);
 	LibNpEntitlementAccess::InitNet_1_NpEntitlementAccess(s);
+	LibNpEntitlementAccessPft::InitNet_1_NpEntitlementAccessPft(s);
 	LibNpAuth::InitNet_1_NpAuth(s);
 	LibNpUtility::InitNet_1_NpUtility(s);
 	LibNpTrophy2::InitNet_1_NpTrophy2(s);
