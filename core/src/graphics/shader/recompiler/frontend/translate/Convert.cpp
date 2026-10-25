@@ -177,6 +177,10 @@ void Translator::V_PACK_B32_F16(const Decoder::Instruction& inst) {
 
 IR::U32 Translator::PackU16Lanes(IR::U32 low, IR::U32 high) {
 	const auto mask = IR::U32(IR::Value(0xffffu));
+	// A zero high lane zero-extends; descriptor tracking bounds a mask, not a shift-or.
+	if (high == IR::Value(0u)) {
+		return ir.BitwiseAnd(low, mask);
+	}
 	return ir.BitwiseOr(ir.BitwiseAnd(low, mask),
 	                    ir.ShiftLeftLogical(ir.BitwiseAnd(high, mask), IR::U32(IR::Value(16u))));
 }
