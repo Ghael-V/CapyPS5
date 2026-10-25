@@ -74,7 +74,10 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import org.capyps5.emulator.CoreOption
 import org.capyps5.emulator.R
 import org.capyps5.emulator.Settings
@@ -123,15 +126,20 @@ fun HomeScreen(
     }
     val context = androidx.compose.ui.platform.LocalContext.current
     var driverMessage by remember { mutableStateOf<String?>(null) }
+    val driverScope = androidx.compose.runtime.rememberCoroutineScope()
     val driverPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri: Uri? ->
         uri?.let {
-            driverMessage = org.capyps5.emulator.GpuDrivers.import(context, it).fold(
-                onSuccess = { driver ->
-                    settings.updateGpuDriver(driver.id)
-                    context.getString(R.string.gpu_driver_installed, driver.label)
-                },
-                onFailure = { error -> context.getString(R.string.gpu_driver_import_failed, error.message.orEmpty()) },
-            )
+            val picked = it
+            driverScope.launch {
+                // Unzipping a driver package is pure IO; keep it off the main thread.
+                withContext(Dispatchers.IO) { org.capyps5.emulator.GpuDrivers.import(context, picked) }.fold(
+                    onSuccess = { driver ->
+                        settings.updateGpuDriver(driver.id)
+                        context.getString(R.string.gpu_driver_installed, driver.label)
+                    },
+                    onFailure = { error -> context.getString(R.string.gpu_driver_import_failed, error.message.orEmpty()) },
+                )
+            }
         }
     }
     val folderPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri: Uri? ->
