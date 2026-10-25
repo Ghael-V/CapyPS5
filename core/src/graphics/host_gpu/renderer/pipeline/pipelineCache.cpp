@@ -837,8 +837,13 @@ PipelineCache::GraphicsPrograms PipelineCache::GetGraphicsPrograms(
 		if (host_threads > limits.maxComputeWorkGroupInvocations ||
 		    host_threads > limits.maxComputeWorkGroupSize[0] ||
 		    mesh.lds_size_dwords * sizeof(uint32_t) > limits.maxComputeSharedMemorySize) {
-			EXIT("emulated mesh shader exceeds compute limits: threads=%u LDS=%u\n", host_threads,
-			     mesh.lds_size_dwords);
+			Common::DebugFlags::NoteOnce(
+			    "CapyPS5-Mesh", vertex_params[0].hash ^ 1u,
+			    "dropping emulated mesh draws beyond compute limits: shader 0x%016llx threads=%u "
+			    "LDS=%u",
+			    static_cast<unsigned long long>(vertex_params[0].hash), host_threads,
+			    mesh.lds_size_dwords);
+			return {};
 		}
 	} else if (mesh_active) {
 		EXIT_NOT_IMPLEMENTED(!m_graphics.mesh_shader_enabled);
@@ -854,8 +859,14 @@ PipelineCache::GraphicsPrograms PipelineCache::GetGraphicsPrograms(
 		    mesh.max_vertices > limits.maxMeshOutputVertices ||
 		    mesh.max_primitives > limits.maxMeshOutputPrimitives ||
 		    mesh.lds_size_dwords * sizeof(uint32_t) > limits.maxMeshSharedMemorySize) {
-			EXIT("mesh shader exceeds host limits: threads=%u vertices=%u primitives=%u LDS=%u\n",
-			     host_threads, mesh.max_vertices, mesh.max_primitives, mesh.lds_size_dwords);
+			// Draws the host cannot run are dropped instead of closing the emulator.
+			Common::DebugFlags::NoteOnce(
+			    "CapyPS5-Mesh", vertex_params[0].hash,
+			    "dropping mesh draws beyond host limits: shader 0x%016llx threads=%u vertices=%u "
+			    "primitives=%u LDS=%u",
+			    static_cast<unsigned long long>(vertex_params[0].hash), host_threads,
+			    mesh.max_vertices, mesh.max_primitives, mesh.lds_size_dwords);
+			return {};
 		}
 	}
 	ShaderParams pixel_params;
