@@ -50,6 +50,8 @@ ResourcePlan ExtractResourcePlan(const Program& program);
 // Refreshes cached resources and specialization in place. A failed refresh must not be used.
 bool MaterializeResources(const ResourcePlan& program, const SrtRuntime& runtime,
                           ResourceSnapshot& snapshot, ResourceSpecialization& specialization);
+// Why the last MaterializeResources call on this thread returned false.
+const char* LastMaterializeFailure();
 
 // Applies an already-derived specialization to native IR before layout and emission.
 void ApplyResourceSpecialization(Program& program, const ResourceSpecialization& specialization);

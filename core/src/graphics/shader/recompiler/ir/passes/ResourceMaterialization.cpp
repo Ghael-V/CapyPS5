@@ -1072,12 +1072,24 @@ ResourcePlan ExtractResourcePlan(const Program& program) {
 	return plan;
 }
 
+// Why the last MaterializeResources call on this thread failed (diagnostics).
+static thread_local const char* t_materialize_failure = "";
+
+static bool MaterializeFail(const char* reason) {
+	t_materialize_failure = reason;
+	return false;
+}
+
+const char* LastMaterializeFailure() {
+	return t_materialize_failure;
+}
+
 bool MaterializeResources(const ResourcePlan& program, const SrtRuntime& runtime,
                           ResourceSnapshot& snapshot, ResourceSpecialization& specialization) {
 	if (!program.resource_tracking_complete ||
 	    ((program.requires_specialization_memory || !program.source_reads.empty()) &&
 	     runtime.read_specialization_memory == nullptr)) {
-		return false;
+		return MaterializeFail("resource tracking incomplete or no specialization-memory reader");
 	}
 	const bool capture_reads = program.capture_specialization_reads || !program.source_reads.empty();
 	auto& reads = snapshot.specialization_reads;
@@ -1088,7 +1100,7 @@ bool MaterializeResources(const ResourcePlan& program, const SrtRuntime& runtime
 	SrtWalker walker(program, observed,
 	                 capture_reads || program.requires_specialization_memory ? &clean : nullptr);
 	if (!walker.RefreshFlatBuffer(snapshot.flattened_srt)) {
-		return false;
+		return MaterializeFail("SRT walk could not refresh the flattened table");
 	}
 	const auto active = std::span<const uint8_t>(program.active_sources);
 	snapshot.uniform_fill = {};
@@ -1119,11 +1131,11 @@ bool MaterializeResources(const ResourcePlan& program, const SrtRuntime& runtime
 	for (uint32_t i = 0; i < snapshot.buffers.size(); ++i) {
 		const auto base_index =
 		    i < program.info.buffers.size() ? i : specialization.buffers[i].indirect_root;
-		if (base_index >= program.info.buffers.size()) return false;
+		if (base_index >= program.info.buffers.size()) return MaterializeFail("buffer index past the plan");
 		const auto& base = program.info.buffers[base_index];
 		if (i < program.info.buffers.size()) {
 			const auto* source = Source(program, base.source);
-			if (source == nullptr) return false;
+			if (source == nullptr) return MaterializeFail("buffer descriptor source missing");
 			if (source->indirect_descriptor.has_value()) {
 				snapshot.buffers[i] = {.dword_count = 4u};
 				if (active.empty() || active[base.source]) {
@@ -1131,10 +1143,10 @@ bool MaterializeResources(const ResourcePlan& program, const SrtRuntime& runtime
 					        program, *source->indirect_descriptor, i, 4u, observed, clean, snapshot,
 					        snapshot.buffers, specialization.buffers, ShaderInfo::MaxBuffers,
 					        NormalizeIndirectStoreBuffer))
-						return false;
+						return MaterializeFail("indirect buffer descriptor could not be materialized");
 				}
 			} else if (!evaluate(base.source, snapshot.buffers[i], base.written)) {
-				return false;
+				return MaterializeFail("buffer descriptor could not be evaluated");
 			}
 		}
 		auto&                descriptor_value = snapshot.buffers[i];
@@ -1178,7 +1190,7 @@ bool MaterializeResources(const ResourcePlan& program, const SrtRuntime& runtime
 		};
 		const auto* source = Source(program, image.source);
 		if (source == nullptr) {
-			return false;
+			return MaterializeFail("image descriptor source missing");
 		}
 		if (source->indirect_descriptor.has_value()) {
 			snapshot.images[i] = {.dword_count = 8u};
@@ -1196,11 +1208,11 @@ bool MaterializeResources(const ResourcePlan& program, const SrtRuntime& runtime
 					        value.dwords.fill(0u);
 				        return true;
 			        })) {
-				return false;
+				return MaterializeFail("indirect image descriptor could not be materialized");
 			}
 		} else {
 			if (!evaluate(image.source, snapshot.images[i], image.written)) {
-				return false;
+				return MaterializeFail("image descriptor could not be evaluated");
 			}
 			if (!ValidImageDescriptor(snapshot.images[i], image.r128)) {
 				snapshot.images[i].dwords.fill(0);
@@ -1210,14 +1222,14 @@ bool MaterializeResources(const ResourcePlan& program, const SrtRuntime& runtime
 	snapshot.samplers.resize(program.info.samplers.size());
 	for (uint32_t i = 0; i < program.info.samplers.size(); ++i) {
 		auto source = program.info.samplers[i].source;
-		if (source >= program.descriptor_sources.size()) return false;
+		if (source >= program.descriptor_sources.size()) return MaterializeFail("sampler source past the plan");
 		const auto& descriptor = program.descriptor_sources[source];
 		if (descriptor.indirect_descriptor) {
-			if (descriptor.indirect_descriptor->sources.empty()) return false;
+			if (descriptor.indirect_descriptor->sources.empty()) return MaterializeFail("indirect sampler without sources");
 			source = descriptor.indirect_descriptor->sources[0];
 		}
 		if (!evaluate(source, snapshot.samplers[i])) {
-			return false;
+			return MaterializeFail("sampler descriptor could not be evaluated");
 		}
 		if (program.info.samplers[i].gather_lod) {
 			const auto control = snapshot.samplers[i].dwords[2];
