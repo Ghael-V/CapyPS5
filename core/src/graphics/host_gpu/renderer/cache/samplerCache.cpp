@@ -143,6 +143,11 @@ vk::Sampler SamplerCache::GetSampler(const ShaderSamplerResource& r, bool intege
     );
 	sampler_info.anisotropyEnable        = (aniso ? VK_TRUE : VK_FALSE);
 	sampler_info.maxAnisotropy           = aniso_ratio;
+	if (!m_graphics.sampler_anisotropy_enabled) {
+		// Drivers without samplerAnisotropy (PanVK) reject samplers that enable it.
+		sampler_info.anisotropyEnable = VK_FALSE;
+		sampler_info.maxAnisotropy    = 1.0f;
+	}
 	sampler_info.compareEnable           = (r.DepthCompareFunc() != 0 ? VK_TRUE : VK_FALSE);
 	sampler_info.compareOp               = static_cast<vk::CompareOp>(r.DepthCompareFunc());
 	sampler_info.minLod                  = min_lod;
