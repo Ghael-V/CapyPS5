@@ -1087,7 +1087,9 @@ private:
 				    (!shared_image_heap && (a.table_offset != b.table_offset ||
 				                           a.table_immediate != b.table_immediate ||
 				                           a.table_stride != b.table_stride)) || a.indexed != b.indexed ||
-				    a.workgroup_axis != b.workgroup_axis || a.sources != b.sources ||
+				    a.workgroup_axis != b.workgroup_axis ||
+				    a.workgroup_multiplier != b.workgroup_multiplier ||
+				    a.workgroup_shift != b.workgroup_shift || a.sources != b.sources ||
 				    a.signed_count != b.signed_count ||
 				    !EquivalentValue(m_program, a.key_count, b.key_count) ||
 				    a.selector_first.IsEmpty() != b.selector_first.IsEmpty() ||
@@ -1332,14 +1334,47 @@ private:
 		return guarded && witnessed;
 	}
 
-	uint32_t WorkgroupAxis(Value key) const {
+	// The workgroup ID axis of key; with first, also of a runtime first + workgroup ID sum.
+	uint32_t WorkgroupAxis(Value key, Value* first = nullptr) const {
 		const auto* builtin = key.Resolve().TryInstruction();
 		uint32_t axis = UINT32_MAX;
+		if (first != nullptr && builtin != nullptr && builtin->GetOpcode() == ValueOpcode::IAdd32) {
+			for (uint32_t arm = 0; arm < 2u; ++arm) {
+				axis = WorkgroupAxis(builtin->Arg(arm));
+				const auto base = builtin->Arg(arm ^ 1u);
+				if (axis == UINT32_MAX ||
+				    !ValidateRuntimeValue(m_program, base, RuntimeValueType::Integer)) continue;
+				*first = base;
+				return axis;
+			}
+			return UINT32_MAX;
+		}
 		if (m_program.stage != ShaderType::Compute || builtin == nullptr ||
 		    builtin->GetOpcode() != ValueOpcode::GetBuiltin || builtin->NumArgs() != 2u ||
 		    builtin->Arg(0) != Value(static_cast<uint32_t>(StageInputKind::WorkgroupId)) ||
 		    !ImmediateU32(builtin->Arg(1), axis) || axis >= 3u) return UINT32_MAX;
 		return axis;
+	}
+
+	// Matches key = (first + workgroup ID) * multiplier >> shift with shift >= 32; first and the
+	// division are optional.
+	bool MatchWorkgroupKey(Value key, DescriptorSource::IndirectDescriptor& indirect) const {
+		uint32_t bits = 0, multiplier = 0;
+		const auto* shift = key.Resolve().TryInstruction();
+		if (shift != nullptr && shift->GetOpcode() == ValueOpcode::ShiftRightLogical32) {
+			const auto* high = shift->Arg(0).Resolve().TryInstruction();
+			if (high != nullptr && high->GetOpcode() == ValueOpcode::UMulHi &&
+			    ImmediateU32(shift->Arg(1), bits) && bits < 32u &&
+			    ImmediateU32(high->Arg(1), multiplier)) {
+				key = high->Arg(0);
+				bits += 32u;
+			}
+		}
+		indirect.workgroup_axis = WorkgroupAxis(key, &indirect.selector_first);
+		if (indirect.workgroup_axis == UINT32_MAX) return false;
+		indirect.workgroup_multiplier = multiplier;
+		indirect.workgroup_shift = bits;
+		return true;
 	}
 
 	bool MatchTableOffset(Value value, Value& key, uint32_t& offset, uint32_t& stride) const {
@@ -2478,21 +2513,7 @@ private:
 		    ((offset | stride | memory->offset) & 3u) == 0u &&
 		    uint64_t {offset} + memory->offset <= UINT32_MAX;
 		if (affine) {
-			workgroup_axis = WorkgroupAxis(index);
-			if (workgroup_axis == UINT32_MAX) {
-				const auto* sum = index.Resolve().TryInstruction();
-				if (sum != nullptr && sum->GetOpcode() == ValueOpcode::IAdd32) {
-					for (uint32_t arm = 0; arm < 2u; ++arm) {
-						const auto axis = WorkgroupAxis(sum->Arg(arm));
-						const auto base = sum->Arg(arm ^ 1u);
-						if (axis == UINT32_MAX ||
-						    !ValidateRuntimeValue(m_program, base, RuntimeValueType::Integer)) continue;
-						workgroup_axis = axis;
-						first = base;
-						break;
-					}
-				}
-			}
+			workgroup_axis = WorkgroupAxis(index, &first);
 			const auto* bound = BoundedLoop(index, read->Parent());
 			if (bound != nullptr && bound->GetOpcode() == ValueOpcode::ULessThan32) {
 				count = bound->Arg(1);
@@ -3261,7 +3282,7 @@ private:
 			if (indirect.key_count.IsEmpty() &&
 			    !MatchUniformizedMaterialKey(key, handle, indirect, material_source, false) &&
 			    !MatchUniformizedMaterialKey(key, handle, indirect, material_source, true) &&
-			    !MatchReversedImageRange(key, indirect)) {
+			    !MatchReversedImageRange(key, indirect) && !MatchWorkgroupKey(key, indirect)) {
 				// A FindILsb key guarded against its sentinel (mask != 0, or key != -1 as a PS4
 				// light loop tests it) is below 32 whatever the shader writes: its image stores
 				// do not change the descriptor records read through the scalar table.

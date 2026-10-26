@@ -642,8 +642,12 @@ struct DescriptorSource {
 		bool     indexed = false;
 		bool     signed_count = false;
 		uint32_t workgroup_axis  = UINT32_MAX;
+		// Nonzero shift: workgroup keys are (selector_first + ID) * multiplier >> shift.
+		uint32_t workgroup_multiplier = 0;
+		uint32_t workgroup_shift      = 0;
 		Value    key_count;
-		// First selector index, or first descriptor key for a direct or bitmap range.
+		// First selector index, workgroup key base, or first descriptor key for a direct or bitmap
+		// range.
 		Value                 selector_first;
 		Value    selector_mask;
 		std::vector<uint32_t> sources;

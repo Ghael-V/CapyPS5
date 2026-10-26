@@ -785,6 +785,12 @@ bool MaterializeIndirectDescriptor(const ResourcePlan&                         p
 			std::iota(keys.begin(), keys.end(), first_key);
 			if (!keys.empty() && keys.back() < keys.front())
 				std::rotate(keys.begin(), keys.begin() + (UINT32_MAX - first_key + 1ull), keys.end());
+			if (indirect.workgroup_shift != 0u) {
+				for (auto& key: keys)
+					key = static_cast<uint32_t>(uint64_t {key} * indirect.workgroup_multiplier >>
+					                            indirect.workgroup_shift);
+				keys.erase(std::unique(keys.begin(), keys.end()), keys.end());
+			}
 		} else {
 			if (!indirect.selector_mask.IsEmpty() && table_value.dword_count != 2u) return false;
 			if (!selector_keys->resolved) {
