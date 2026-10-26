@@ -2212,6 +2212,10 @@ private:
 		    EquivalentValue(m_program, test->Arg(0), value)) return test->Arg(1);
 		if ((positive ? op == ValueOpcode::UGreaterThan32 : op == ValueOpcode::ULessThanEqual32) &&
 		    EquivalentValue(m_program, test->Arg(1), value)) return test->Arg(0);
+		uint32_t limit = 0;
+		if ((positive ? op == ValueOpcode::ULessThanEqual32 : op == ValueOpcode::UGreaterThan32) &&
+		    ImmediateU32(test->Arg(1), limit) && limit != UINT32_MAX &&
+		    EquivalentValue(m_program, test->Arg(0), value)) return Value(limit + 1u);
 		const auto* scan = value.Resolve().TryInstruction();
 		if (finite_bitscan && scan != nullptr && scan->GetOpcode() == ValueOpcode::FindILsb32 &&
 		    (positive ? op == ValueOpcode::INotEqual32 : op == ValueOpcode::IEqual32)) {
