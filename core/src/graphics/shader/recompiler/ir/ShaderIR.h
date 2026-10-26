@@ -527,6 +527,7 @@ struct ShaderInfo {
 	bool                            subgroup_barrier              = false;
 	bool                            subgroup_shuffle              = false;
 	bool                            subgroup_local_invocation_id  = false;
+	bool                            helper_invocation             = false;
 	bool                            compute_derivatives           = false;
 	bool                            image_gather_extended         = false;
 	bool                            function_lds                  = false;

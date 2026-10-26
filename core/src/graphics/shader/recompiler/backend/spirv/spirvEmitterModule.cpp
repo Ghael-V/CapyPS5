@@ -616,6 +616,13 @@ void DefineInputs(EmitterState& state) {
 			state.builder.AddAnnotation(spv::OpDecorate, variable, spv::DecorationFlat);
 		}
 	}
+	if (state.program.info.helper_invocation) {
+		const auto variable = DefineInterfaceVariable(state, TypeBool(state), spv::StorageClassInput,
+		                                              "gl_HelperInvocation");
+		state.helper_invocation_variable = variable;
+		state.builder.AddAnnotation(spv::OpDecorate, variable, spv::DecorationBuiltIn,
+		                            spv::BuiltInHelperInvocation);
+	}
 }
 
 void DefineOutputs(EmitterState& state) {
