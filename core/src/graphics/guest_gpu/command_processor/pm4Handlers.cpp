@@ -1730,9 +1730,11 @@ KYTY_CP_OP_PARSER(CpOpDumpConstRam) {
 	auto  dw_num = buffer[1];
 	auto* dst = reinterpret_cast<uint32_t*>(buffer[2] | (static_cast<uint64_t>(buffer[3]) << 32u));
 
-	EXIT_NOT_IMPLEMENTED(dw_num >= 0x3000);
-	EXIT_NOT_IMPLEMENTED(offset > 0xbffc);
-	EXIT_NOT_IMPLEMENTED((offset & 0x3u) != 0);
+	if ((offset & 0x3u) != 0 || dw_num > 0x3000u || offset / 4 > 0x3000u - dw_num) {
+		Common::DebugFlags::NoteOnce("CapyPS5-PM4", (static_cast<uint64_t>(offset) << 32u) | dw_num,
+		                            "rejected IT_DUMP_CONST_RAM: offset=%u dw_num=%u", offset, dw_num);
+		return 4;
+	}
 
 	cp.DumpConstRam(dst, offset, dw_num);
 
@@ -2607,9 +2609,11 @@ KYTY_CP_OP_PARSER(CpOpWriteConstRam) {
 	auto dw_num = (cmd_id >> 16u) & 0x3fffu;
 	auto offset = buffer[0];
 
-	EXIT_NOT_IMPLEMENTED(dw_num >= 0x3000);
-	EXIT_NOT_IMPLEMENTED(offset > 0xbffc);
-	EXIT_NOT_IMPLEMENTED((offset & 0x3u) != 0);
+	if ((offset & 0x3u) != 0 || dw_num > 0x3000u || offset / 4 > 0x3000u - dw_num) {
+		Common::DebugFlags::NoteOnce("CapyPS5-PM4", (static_cast<uint64_t>(offset) << 32u) | dw_num,
+		                            "rejected IT_WRITE_CONST_RAM: offset=%u dw_num=%u", offset, dw_num);
+		return 1 + dw_num;
+	}
 
 	cp.WriteConstRam(offset, buffer + 1, dw_num);
 
