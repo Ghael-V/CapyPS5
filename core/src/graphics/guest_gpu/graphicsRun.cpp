@@ -560,6 +560,16 @@ template void CommandProcessor::WaitRegMem<uint32_t>(uint32_t, const uint32_t*, 
 template void CommandProcessor::WaitRegMem<uint64_t>(uint32_t, const uint64_t*, uint64_t, uint64_t,
                                                      uint32_t, uint32_t);
 
+void CommandProcessor::MemSemaphore(uint64_t* counter, bool signal, bool write) {
+	if (signal) {
+		*counter = write ? 1u : *counter + 1u;
+	} else if (*counter == 0) {
+		SuspendPm4();
+	} else {
+		(*counter)--;
+	}
+}
+
 void CommandProcessor::PrepareGuestWrite(const void* dst, uint64_t size) {
 	const auto address = reinterpret_cast<uint64_t>(dst);
 	if (address == 0 || size == 0) {
