@@ -302,6 +302,7 @@ uint32_t VertexParameterScalarType(EmitterState& state, VertexInputScalarKind ki
 
 
 uint32_t OutputVariableForExport(const EmitterState& state, const IR::ExportInfo& exp);
+uint32_t MrtOutputType(EmitterState& state, uint32_t index);
 
 uint32_t ConstantU32(EmitterState& state, uint32_t value);
 

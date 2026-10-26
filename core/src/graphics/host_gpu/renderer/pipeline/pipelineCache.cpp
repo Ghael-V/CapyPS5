@@ -875,6 +875,18 @@ PipelineCache::GraphicsPrograms PipelineCache::GetGraphicsPrograms(
 	ShaderParams pixel_params;
 	if (pixel_active) {
 		pixel_params      = PrepareProgram(pixel_regs, sh, target_export_mapping, pixel_info);
+		// UINT and SINT targets take integer outputs of the same signedness.
+		for (uint32_t i = 0; i < 8u; i++) {
+			const auto slot = ShaderPixelExportTarget(pixel_info.target_shader_mask, i);
+			if (pixel_info.target_output_mode[i] == 0 || slot >= 8u) continue;
+			const auto& rt = context.GetRenderTarget(slot);
+			if (rt.base.addr == 0) continue;
+			if (rt.info.channel_type == Prospero::ChannelType::kUInt) {
+				pixel_info.target_uint_mask |= 1u << i;
+			} else if (rt.info.channel_type == Prospero::ChannelType::kSInt) {
+				pixel_info.target_sint_mask |= 1u << i;
+			}
+		}
 		if (!mesh_active && !tess_active && Prospero::IsRectList(user_config.GetPrimType())) {
 			pixel_info.parameter_mode = ShaderPixelParameterMode::Rectangle;
 		} else if (context.GetModeControl().provoking_vtx_last) {
@@ -890,9 +902,11 @@ PipelineCache::GraphicsPrograms PipelineCache::GetGraphicsPrograms(
 		     (blend.separate_alpha_blend && (BlendFactorIsDualSource(blend.alpha_srcblend) ||
 		                                     BlendFactorIsDualSource(blend.alpha_destblend))));
 		if (pixel_info.dual_source_blending) {
-			// MRT1 supplies the second blend source for target 0.
+			// MRT1 supplies the second blend source for target 0; blended targets are not integer.
 			pixel_info.target_output_mode[1]    = pixel_info.target_output_mode[0];
 			pixel_info.target_export_mapping[1] = pixel_info.target_export_mapping[0];
+			pixel_info.target_uint_mask &= ~2u;
+			pixel_info.target_sint_mask &= ~2u;
 		} else if (blend.enable && !context.GetRenderTarget(0).info.blend_bypass &&
 		           pixel_info.target_output_mode[0] != 0 && pixel_info.target_output_mode[0] != 7 &&
 		           std::all_of(std::begin(pixel_info.target_output_mode) + 1,
