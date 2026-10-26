@@ -3909,7 +3909,12 @@ int KYTY_SYSV_ABI KernelReserveVirtualRange(void** addr, size_t len, int flags, 
 		for (;;) {
 			const bool overlap = (folded || (flags & GUEST_MAP_NO_OVERWRITE) != 0) &&
 			                     g_virtual_ranges->HasOverlap(base, len);
-			if (!overlap && folded && !g_guest_address_space->Owns(base, len) &&
+			// Adopt above HOST_USER_MAX too: fixed targets between
+			// the guest window and the fold mask (e.g. 0x63ffffc000) were refused
+			// with ENOMEM and clipped uselessly, since clipping never brings an
+			// unreserved address into a reserved region.
+			if (!overlap && (folded || base > HOST_USER_MAX) &&
+			    !g_guest_address_space->Owns(base, len) &&
 			    g_guest_address_space->AdoptHostRange(base, len)) {
 				Common::DebugFlags::NoteOnce("CapyPS5-Mem", base ^ 0x41444f50ull,
 				                             "adopted host window 0x%llx size 0x%llx for guest 0x%llx",
