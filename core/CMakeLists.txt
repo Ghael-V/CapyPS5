@@ -59,6 +59,9 @@ if(ANDROID)
 	# Android 16 denies execstack; nothing runs from the stack (the JIT writes anonymous code
 	# pages), so every library linked from this tree gets a non-executable PT_GNU_STACK.
 	add_link_options(-Wl,-z,noexecstack)
+	# 16 KB-page devices refuse libraries with 4 KB-aligned LOAD segments. NDK r28 links 16 KB
+	# aligned by default; made explicit so a toolchain change cannot regress it.
+	add_link_options(-Wl,-z,max-page-size=16384)
 endif()
 
 set(CMAKE_CXX_STANDARD 20)
