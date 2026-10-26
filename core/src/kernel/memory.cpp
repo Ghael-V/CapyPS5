@@ -3281,6 +3281,7 @@ static int MapDirectMemoryUnfolded(void** addr, size_t len, int prot, int flags,
 	uint64_t out_addr        = 0;
 	bool     shared_backing  = false;
 	bool     reserved_target = false;
+	bool     adopted_target  = false;
 	auto     shared_failure  = GuestBackingStore::FailureReason::None;
 	// Direct mappings must remain views of the single backing object. Anonymous fallbacks break
 	// aliasing and lose direct-memory contents when a range is unmapped and mapped again.
@@ -3371,6 +3372,26 @@ static int MapDirectMemoryUnfolded(void** addr, size_t len, int prot, int flags,
 				UnmapGpuRange(in_addr, len, true);
 				reserved_target = true;
 			}
+			if (!reserved_target && in_addr > HOST_USER_MAX && in_addr + len <= (1ull << 48u) &&
+			    !g_virtual_ranges->HasOverlap(in_addr, len) &&
+			    g_guest_address_space->AdoptHostRange(in_addr, len)) {
+				// A PS5-style fixed target such as
+				// 0xe3ffffc000 folds to an address above HOST_USER_MAX (here 0x63ffffc000),
+				// a band no startup reservation covers. Games treat MAP_FIXED as guaranteed
+				// and write through the pointer whatever mmap returns, which terminated My
+				// First Gran Turismo with status 321. Adopt exactly the window the folded
+				// address names: the JIT folds guest data accesses the same way, so the
+				// backing view placed here is what the game touches.
+				UnmapGpuRange(in_addr, len, true);
+				reserved_target = true;
+				adopted_target  = true;
+#if defined(__ANDROID__)
+				__android_log_print(ANDROID_LOG_INFO, "CapyPS5-Mem",
+				                    "adopted host window 0x%llx size 0x%llx for fixed direct mapping",
+				                    static_cast<unsigned long long>(in_addr),
+				                    static_cast<unsigned long long>(len));
+#endif
+			}
 			if (!reserved_target) {
 #if defined(__ANDROID__)
 				{
@@ -3458,7 +3479,8 @@ static int MapDirectMemoryUnfolded(void** addr, size_t len, int prot, int flags,
 		return KERNEL_ERROR_EBUSY;
 	}
 
-	const bool published = !replaced_mappings.empty() || reserved_target
+	// An adopted window has no virtual range to replace: publish it with Add (see above).
+	const bool published = !replaced_mappings.empty() || (reserved_target && !adopted_target)
 	                           ? g_virtual_ranges->ReplaceSpan(
 	                                 out_addr, len, replaced_mappings.empty()
 	                                                    ? VirtualRangeType::Reserved
