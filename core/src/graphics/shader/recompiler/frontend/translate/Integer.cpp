@@ -327,7 +327,7 @@ void Translator::V_MAD_U64_U32(const Decoder::Instruction& inst) {
 	    inst.dst2.kind != Decoder::OperandKind::Unknown) {
 		// The 32x32 product fits in 64 bits, so only the addition can carry.
 		const auto carry = IR::U1(ir.Emit(IR::ValueOpcode::ULessThan64, {result, product}));
-		WriteMask(inst.dst2, carry, VectorMask(carry));
+		WriteVectorMask(inst.dst2, carry);
 	}
 }
 
