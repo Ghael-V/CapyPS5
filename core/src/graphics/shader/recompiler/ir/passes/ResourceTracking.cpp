@@ -3271,6 +3271,35 @@ private:
 		return true;
 	}
 
+	// A key no bound covers takes its maximum from a signed clamp to a constant, on the key or on
+	// the key plus a constant in an earlier-tracked sibling read of the same table. Negative keys
+	// and keys past that maximum read the first row.
+	uint32_t ClampedTableMaximum(Value key, const DescriptorSource& table,
+	                             const DescriptorSource::IndirectDescriptor& indirect) const {
+		uint32_t row = 0, offset = 0;
+		const auto clamped = [&](Value value) {
+			const auto* min = value.Resolve().TryInstruction();
+			if (min != nullptr && min->GetOpcode() == ValueOpcode::SMin32)
+				for (uint32_t arg = 0; arg < 2u; ++arg)
+					if (ImmediateU32(min->Arg(arg), row)) return min->Arg(arg ^ 1u);
+			return Value {};
+		};
+		if (!clamped(key).IsEmpty()) return row;
+		for (const auto& sibling: m_indirect_descriptors) {
+			const auto& read = *m_sources[sibling.source].indirect_descriptor;
+			const auto* add = clamped(sibling.key).Resolve().TryInstruction();
+			if (add == nullptr || add->GetOpcode() != ValueOpcode::IAdd32 ||
+			    m_sources[read.table_source] != table ||
+			    read.table_offset != indirect.table_offset ||
+			    read.table_stride != indirect.table_stride ||
+			    read.table_immediate != indirect.table_immediate) continue;
+			for (uint32_t arg = 0; arg < 2u; ++arg)
+				if (ImmediateU32(add->Arg(arg), offset) &&
+				    EquivalentValue(m_program, add->Arg(arg ^ 1u), key)) return row;
+		}
+		return UINT32_MAX;
+	}
+
 	bool TryMakeTableDescriptor(Inst& handle, const DescriptorSource& descriptor,
 	                            IndirectDescriptorPlan& plan) {
 		const bool sampler = handle.GetOpcode() == ValueOpcode::GetSamplerResource;
@@ -3376,6 +3405,8 @@ private:
 						maximum = std::max(maximum, SelectorMaximum(key, {}, 0, active));
 					}
 				}
+				if (maximum >= MaxIndirectDescriptorProbes)
+					maximum = ClampedTableMaximum(key, table_source, indirect);
 				if (maximum < MaxIndirectDescriptorProbes) {
 					indirect.key_count = Value(maximum + 1u);
 				} else if (!CapyTableKeyFallback(key, handle, selector, indirect, material_source, plan,
