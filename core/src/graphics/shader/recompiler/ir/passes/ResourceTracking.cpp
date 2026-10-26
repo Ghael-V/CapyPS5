@@ -12,6 +12,7 @@
 
 #include <algorithm>
 #include <bit>
+#include <cmath>
 #include <fmt/format.h>
 #include <map>
 #include <numeric>
@@ -3191,6 +3192,85 @@ private:
 		return true;
 	}
 
+	// The EXEC predicate of the image access through use; empty for any other use.
+	Value AccessPredicate(const Use& use, bool sampler) const {
+		const auto& access = *use.user;
+		if (use.operand != (sampler ? 1u : 0u) ||
+		    ImageOpcodeInfoOf(access.GetOpcode()).access == ImageAccess::None) return {};
+		if (sampler && (access.GetOpcode() != ValueOpcode::ImageSampleRaw ||
+		    (m_program.memory_info[access.Flags<MemoryFlags>().index].image_sample_flags &
+		     Decoder::ImageSampleFlagAdjust) != 0u)) return {};
+		const auto mask = access.Arg(access.NumArgs() - 1u);
+		return mask.GetType() == Type::U1 ? mask : Value {};
+	}
+
+	// CapyPS5: bounds for a table key the selector maximum cannot prove (guarded FindILsb keys,
+	// counted loops in writing shaders, and PS4 light lists). Logs the key's guards on failure.
+	bool CapyTableKeyFallback(Value key, Inst& handle, const Inst* selector,
+	                          DescriptorSource::IndirectDescriptor& indirect,
+	                          DescriptorSource& material_source, IndirectDescriptorPlan& plan,
+	                          bool& bitscan) {
+		// A FindILsb key guarded against its sentinel (mask != 0, or key != -1 as a PS4
+		// light loop tests it) is below 32 whatever the shader writes: its image stores
+		// do not change the descriptor records read through the scalar table.
+		bitscan = selector != nullptr && selector->GetOpcode() == ValueOpcode::FindILsb32 &&
+		          selector->NumArgs() == 1u &&
+		          (NonzeroOnEntry(selector->Arg(0), handle.Parent(), 0u, true) ||
+		           NonzeroOnEntry(key, handle.Parent(), UINT32_MAX, true));
+		material_source = {};
+		if (bitscan) {
+			indirect.key_count = Value(32u);
+		} else if (const auto* bound = m_shader_writes != ShaderWrites::None ? BoundedLoop(key, handle.Parent()) : nullptr) {
+			// Likewise a counted loop over the records (`for i < count`).
+			indirect.key_count = bound->Arg(1);
+		} else if (const auto range = KeyUpperBound(key);
+		           Decoder::GetGuestIsa() == Decoder::GuestIsa::Gfx7 && range != 0 && range <= 4096u) {
+			// Keys computed from bit scans of 64-bit masks or bitfields of a light list.
+			indirect.key_count = Value(static_cast<uint32_t>(range));
+		} else if (Decoder::GetGuestIsa() == Decoder::GuestIsa::Gfx7 && !plan.table_indexed &&
+		           MatchScalarMaterialKey(key, indirect, material_source, false)) {
+			// Keys read from a list in a guarded scalar loop: the host enumerates the list.
+			plan.retain_reads = true;
+		} else {
+			Common::DebugFlags::NoteOnce(
+			    "CapyPS5-Indirect", m_program.shader_hash ^ 0x4249u ^ reinterpret_cast<uintptr_t>(&handle),
+			    "shader 0x%016llx: table key not bounded (selector %s, mask guard %d, key guard %d, writes %d)",
+			    static_cast<unsigned long long>(m_program.shader_hash),
+			    selector != nullptr ? std::string(ValueOpcodeName(selector->GetOpcode())).c_str() : "none",
+			    selector != nullptr && selector->NumArgs() == 1u &&
+			        NonzeroOnEntry(selector->Arg(0), handle.Parent(), 0u, true),
+			    NonzeroOnEntry(key, handle.Parent(), UINT32_MAX, true), m_shader_writes != ShaderWrites::None);
+			{
+				// Diagnostics: the edge conditions on the way up to the selector.
+				const auto describe = [&](const auto& self, Value value, uint32_t depth) -> std::string {
+					value = value.Resolve();
+					if (value.IsImmediate()) return value.GetType() == Type::U1 ? (value.U1() ? "#1" : "#0") : value.GetType() == Type::U32 ? fmt::format("#{:x}", value.U32()) : std::string("#imm");
+					const auto* inst = value.TryInstruction();
+					if (inst == nullptr) return "?";
+					if (inst == selector) return "KEY";
+					if (depth > 4u) return std::string(ValueOpcodeName(inst->GetOpcode()));
+					std::string text = std::string(ValueOpcodeName(inst->GetOpcode())) + "(";
+					for (uint32_t arg = 0; arg < inst->NumArgs(); ++arg)
+						text += (arg != 0u ? "," : "") + self(self, inst->Arg(arg), depth + 1u);
+					return text + ")";
+				};
+				const Block* block = handle.Parent();
+				for (uint32_t step = 0; step < 16u && block != nullptr && !block->ImmPredecessors().empty(); ++step) {
+					const auto* previous = block->ImmPredecessors()[0];
+					if (const auto edge = ConditionalEdge(previous, block)) {
+						Common::DebugFlags::NoteOnce("CapyPS5-Indirect", (m_program.shader_hash ^ 0x4250u) + step + (reinterpret_cast<uintptr_t>(&handle) << 8u),
+						    "  edge %u preds=%zu positive=%d lanes=%d cond=%s", step, block->ImmPredecessors().size(),
+						    edge->positive ? 1 : 0, static_cast<int>(edge->lanes),
+						    describe(describe, edge->condition, 0u).c_str());
+					}
+					block = previous;
+				}
+			}
+			return false;
+		}
+		return true;
+	}
+
 	bool TryMakeTableDescriptor(Inst& handle, const DescriptorSource& descriptor,
 	                            IndirectDescriptorPlan& plan) {
 		const bool sampler = handle.GetOpcode() == ValueOpcode::GetSamplerResource;
@@ -3283,64 +3363,23 @@ private:
 			    !MatchUniformizedMaterialKey(key, handle, indirect, material_source, false) &&
 			    !MatchUniformizedMaterialKey(key, handle, indirect, material_source, true) &&
 			    !MatchReversedImageRange(key, indirect) && !MatchWorkgroupKey(key, indirect)) {
-				// A FindILsb key guarded against its sentinel (mask != 0, or key != -1 as a PS4
-				// light loop tests it) is below 32 whatever the shader writes: its image stores
-				// do not change the descriptor records read through the scalar table.
-				bitscan = selector != nullptr && selector->GetOpcode() == ValueOpcode::FindILsb32 &&
-				          selector->NumArgs() == 1u &&
-				          (NonzeroOnEntry(selector->Arg(0), handle.Parent(), 0u, true) ||
-				           NonzeroOnEntry(key, handle.Parent(), UINT32_MAX, true));
-				material_source = {};
-				if (const auto maximum = SelectorMaximum(key); maximum < MaxIndirectDescriptorProbes) {
-					indirect.key_count = Value(maximum + 1u);
-				} else if (bitscan) {
-					indirect.key_count = Value(32u);
-				} else if (const auto* bound = m_shader_writes != ShaderWrites::None ? BoundedLoop(key, handle.Parent()) : nullptr) {
-					// Likewise a counted loop over the records (`for i < count`).
-					indirect.key_count = bound->Arg(1);
-				} else if (const auto range = KeyUpperBound(key);
-				           Decoder::GetGuestIsa() == Decoder::GuestIsa::Gfx7 && range != 0 && range <= 4096u) {
-					// Keys computed from bit scans of 64-bit masks or bitfields of a light list.
-					indirect.key_count = Value(static_cast<uint32_t>(range));
-				} else if (Decoder::GetGuestIsa() == Decoder::GuestIsa::Gfx7 && !plan.table_indexed &&
-				           MatchScalarMaterialKey(key, indirect, material_source)) {
-					// Keys read from a list in a guarded scalar loop: the host enumerates the list.
-					plan.retain_reads = true;
-				} else {
-					Common::DebugFlags::NoteOnce(
-					    "CapyPS5-Indirect", m_program.shader_hash ^ 0x4249u ^ reinterpret_cast<uintptr_t>(&handle),
-					    "shader 0x%016llx: table key not bounded (selector %s, mask guard %d, key guard %d, writes %d)",
-					    static_cast<unsigned long long>(m_program.shader_hash),
-					    selector != nullptr ? std::string(ValueOpcodeName(selector->GetOpcode())).c_str() : "none",
-					    selector != nullptr && selector->NumArgs() == 1u &&
-					        NonzeroOnEntry(selector->Arg(0), handle.Parent(), 0u, true),
-					    NonzeroOnEntry(key, handle.Parent(), UINT32_MAX, true), m_shader_writes != ShaderWrites::None);
-					{
-						// Diagnostics: the edge conditions on the way up to the selector.
-						const auto describe = [&](const auto& self, Value value, uint32_t depth) -> std::string {
-							value = value.Resolve();
-							if (value.IsImmediate()) return value.GetType() == Type::U1 ? (value.U1() ? "#1" : "#0") : value.GetType() == Type::U32 ? fmt::format("#{:x}", value.U32()) : std::string("#imm");
-							const auto* inst = value.TryInstruction();
-							if (inst == nullptr) return "?";
-							if (inst == selector) return "KEY";
-							if (depth > 4u) return std::string(ValueOpcodeName(inst->GetOpcode()));
-							std::string text = std::string(ValueOpcodeName(inst->GetOpcode())) + "(";
-							for (uint32_t arg = 0; arg < inst->NumArgs(); ++arg)
-								text += (arg != 0u ? "," : "") + self(self, inst->Arg(arg), depth + 1u);
-							return text + ")";
-						};
-						const Block* block = handle.Parent();
-						for (uint32_t step = 0; step < 16u && block != nullptr && !block->ImmPredecessors().empty(); ++step) {
-							const auto* previous = block->ImmPredecessors()[0];
-							if (const auto edge = ConditionalEdge(previous, block)) {
-								Common::DebugFlags::NoteOnce("CapyPS5-Indirect", (m_program.shader_hash ^ 0x4250u) + step + (reinterpret_cast<uintptr_t>(&handle) << 8u),
-								    "  edge %u preds=%zu positive=%d lanes=%d cond=%s", step, block->ImmPredecessors().size(),
-								    edge->positive ? 1 : 0, static_cast<int>(edge->lanes),
-								    describe(describe, edge->condition, 0u).c_str());
-							}
-							block = previous;
+				auto maximum = SelectorMaximum(key);
+				if (maximum >= MaxIndirectDescriptorProbes) {
+					// Each image access bounds the key on the lanes it executes.
+					maximum = 0u;
+					for (const auto& use: handle.Uses()) {
+						const auto active = AccessPredicate(use, false);
+						if (active.IsEmpty()) {
+							maximum = UINT32_MAX;
+							break;
 						}
+						maximum = std::max(maximum, SelectorMaximum(key, {}, 0, active));
 					}
+				}
+				if (maximum < MaxIndirectDescriptorProbes) {
+					indirect.key_count = Value(maximum + 1u);
+				} else if (!CapyTableKeyFallback(key, handle, selector, indirect, material_source, plan,
+				                                 bitscan)) {
 					return RejectIndirect(__LINE__);
 				}
 			}
@@ -3350,26 +3389,16 @@ private:
 			// Keep the GPU selector and descriptor reads, and preserve the proven scalar
 			// offset domain within the bounded image table.
 			if (sampler || plan.split_offsets) return RejectIndirect(__LINE__);
-			const auto active = [&](const Use& use, bool sampler) -> Value {
-				const auto& access = *use.user;
-				if (use.operand != (sampler ? 1u : 0u) ||
-				    ImageOpcodeInfoOf(access.GetOpcode()).access == ImageAccess::None) return {};
-				if (sampler && (access.GetOpcode() != ValueOpcode::ImageSampleRaw ||
-				    (m_program.memory_info[access.Flags<MemoryFlags>().index].image_sample_flags &
-				     Decoder::ImageSampleFlagAdjust) != 0u)) return {};
-				const auto mask = access.Arg(access.NumArgs() - 1u);
-				return mask.GetType() == Type::U1 ? mask : Value {};
-			};
 			bool shared_selector = false;
 			if (!plan.table_indexed) {
 				for (const auto& owner: m_indirect_descriptors) {
 					const auto& selected = *m_sources[owner.source].indirect_descriptor;
 					if (!selected.selector || !EquivalentValue(m_program, key, owner.key) ||
 					    !std::ranges::all_of(handle.Uses(), [&](const Use& target) {
-						    const auto target_active = active(target, false);
+						    const auto target_active = AccessPredicate(target, false);
 						    return !target_active.IsEmpty() &&
 						        std::ranges::any_of(owner.handle->Uses(), [&](const Use& witness) {
-							        const auto owner_active = active(witness,
+							        const auto owner_active = AccessPredicate(witness,
 							            owner.handle->GetOpcode() == ValueOpcode::GetSamplerResource);
 							        return !owner_active.IsEmpty() && AvailableBefore(*witness.user, *target.user) &&
 							            Implies(target_active, owner_active);
@@ -3692,6 +3721,42 @@ private:
 		return result;
 	}
 
+	// Bounds of an F32 value on the lanes where guard holds; NaN when unknown.
+	std::pair<float, float> FloatRange(Value value, Value guard, uint32_t depth = 0) const {
+		constexpr std::pair unknown {NAN, NAN};
+		value = ActiveValue(value, guard);
+		if (value.IsImmediate() && value.GetType() == Type::F32)
+			return {value.F32Value(), value.F32Value()};
+		const auto* inst = value.TryInstruction();
+		// Each multiply-add evaluates three operands; keep the search shallow.
+		if (depth > 12u || inst == nullptr) return unknown;
+		const auto range = [&](uint32_t arg) {
+			return FloatRange(inst->Arg(arg), guard, depth + 1u);
+		};
+		switch (inst->GetOpcode()) {
+			case ValueOpcode::BitCastF32U32:
+			case ValueOpcode::BitCastU32F32: return range(0);
+			// Clamping maps NaN to zero.
+			case ValueOpcode::FPSaturate32: return {0.0f, 1.0f};
+			case ValueOpcode::FPFloor32: {
+				const auto [low, high] = range(0);
+				return {std::floor(low), std::floor(high)};
+			}
+			case ValueOpcode::FPMad32: {
+				// The rounded multiply and add are monotonic, so the bounds lie at the corners.
+				const auto a = range(0), b = range(1), c = range(2);
+				if (!std::isfinite(a.first) || !std::isfinite(a.second) ||
+				    !std::isfinite(b.first) || !std::isfinite(b.second)) return unknown;
+				const auto [low, high] = std::minmax({a.first * b.first, a.first * b.second,
+				                                      a.second * b.first, a.second * b.second});
+				const std::pair bounds {low + c.first, high + c.second};
+				if (!std::isfinite(bounds.first) || !std::isfinite(bounds.second)) return unknown;
+				return bounds;
+			}
+			default: return unknown;
+		}
+	}
+
 	uint32_t SelectorMaximum(Value value, SelectorBounds bounds = {}, uint32_t depth = 0,
 	                         Value guard = {}) const {
 		if (depth > 32u) return UINT32_MAX;
@@ -3707,9 +3772,13 @@ private:
 		switch (inst->GetOpcode()) {
 			case ValueOpcode::ReadFirstLane:
 				return SelectedSelectorDomain(*inst, guard).maximum;
-			case ValueOpcode::ReadLane:
-				// ReadLane ignores EXEC; only context-free bounds on every source lane apply.
-				return PossibleU32Bits(inst->Arg(0));
+			case ValueOpcode::ReadLane: {
+				// ReadLane ignores EXEC; only context-free bounds on every source lane apply,
+				// unless guard proves a waterfall key equal to the executing lanes' local value.
+				const auto local = EqualLocalKey(guard, value);
+				return local.IsEmpty() ? PossibleU32Bits(inst->Arg(0))
+				                       : SelectorMaximum(local, bounds, depth + 1u, guard);
+			}
 			case ValueOpcode::Phi: {
 				const auto initial = InitialCandidateMask(value);
 				if (!initial.IsEmpty()) return SelectorMaximum(initial, bounds, depth + 1u, guard);
@@ -3736,6 +3805,18 @@ private:
 				               NonzeroOnEntry(inst->Arg(0), inst->Parent()) ? 31u : UINT32_MAX;
 			case ValueOpcode::UMin32:
 			case ValueOpcode::BitwiseAnd32: return std::min(maximum(0), maximum(1));
+			case ValueOpcode::SMin32: {
+				// Signed and unsigned minimums agree on nonnegative operands.
+				const auto left = maximum(0), right = maximum(1);
+				if (std::max(left, right) <= INT32_MAX) return std::min(left, right);
+				break;
+			}
+			case ValueOpcode::ConvertS32F32: {
+				// The conversion truncates toward zero.
+				const auto [low, high] = FloatRange(inst->Arg(0), guard);
+				if (low >= 0.0f && high < 0x1p31f) return static_cast<uint32_t>(high);
+				break;
+			}
 			case ValueOpcode::SelectU32:
 				if (!guard.IsEmpty() && Implies(guard, inst->Arg(0))) return maximum(1);
 				return SelectorPredicateFalse(inst->Arg(0), bounds, depth + 1u, guard)
