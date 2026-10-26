@@ -1262,9 +1262,9 @@ IR::Program TranslateProgram(const Decoder::Program& decoded, const CFG::Graph& 
 			if (mesh.fast_launch) {
 				// Fast launch broadcasts the subgroup's base vertex and instance to every lane.
 				entry_ir.SetVectorReg(static_cast<IR::VectorReg>(5), entry_ir.IAdd(draw(1), group));
-				entry_ir.SetVectorReg(
-				    static_cast<IR::VectorReg>(6),
-				    entry_ir.IAdd(draw(2), builtin(IR::StageInputKind::WorkgroupId, 1)));
+				// Instance IDs exclude the start instance, which shaders add from user data.
+				entry_ir.SetVectorReg(static_cast<IR::VectorReg>(6),
+				                      builtin(IR::StageInputKind::WorkgroupId, 1));
 			} else {
 				// GS adjacency addresses local ES records in LDS. Fans retain the draw's
 				// center in every subgroup; strip winding follows the global primitive.
@@ -1313,9 +1313,9 @@ IR::Program TranslateProgram(const Decoder::Program& decoded, const CFG::Graph& 
 				     entry_ir.IMul(index_bytes, u32(8))}));
 				entry_ir.SetVectorReg(static_cast<IR::VectorReg>(5),
 				                      entry_ir.IAdd(draw(1), entry_ir.Select(indexed, index, input_vertex)));
-				entry_ir.SetVectorReg(
-				    static_cast<IR::VectorReg>(8),
-				    entry_ir.IAdd(draw(2), builtin(IR::StageInputKind::WorkgroupId, 1)));
+				// Instance IDs exclude the start instance, which shaders add from user data.
+				entry_ir.SetVectorReg(static_cast<IR::VectorReg>(8),
+				                      builtin(IR::StageInputKind::WorkgroupId, 1));
 			}
 		} else if (options.stage == ShaderType::Local) {
 			entry_ir.SetScalarReg(static_cast<IR::ScalarReg>(3), IR::U32(IR::Value(64u)));
