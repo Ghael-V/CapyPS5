@@ -56,6 +56,9 @@ endif()
 if(ANDROID)
 	# Enable C++20 jthread and stop_token in LLVM libc++
 	add_compile_definitions(_LIBCPP_ENABLE_EXPERIMENTAL)
+	# Android 16 denies execstack; nothing runs from the stack (the JIT writes anonymous code
+	# pages), so every library linked from this tree gets a non-executable PT_GNU_STACK.
+	add_link_options(-Wl,-z,noexecstack)
 endif()
 
 set(CMAKE_CXX_STANDARD 20)
