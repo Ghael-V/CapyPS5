@@ -1032,7 +1032,7 @@ uint32_t ResolveHostSampleCount(GraphicContext& graphics, const ImageInfo& info)
 		return info.samples;
 	}
 	const auto usage = ImageUsageFlags(graphics, info);
-	const auto flags = ImageCreateFlags(graphics, info);
+	const auto flags = ImageCreateFlags(graphics, info, usage);
 	vk::ImageFormatProperties properties {};
 	if (graphics.GetImageFormatProperties(info.pixel_format, HostImageType(info.type),
 	                                      vk::ImageTiling::eOptimal, usage, flags,
