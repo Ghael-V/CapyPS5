@@ -2059,6 +2059,10 @@ private:
 	}
 
 	bool Dominates(const Block* initial, const Block* use, Value witness = {}) const {
+		// The proven local-zero invocation fails every all-lane bypass condition that excludes it,
+		// such as an all-inactive or an all-nonzero bypass.
+		const auto* negated = SimplifyGuard(witness).TryInstruction();
+		const bool nonzero = negated != nullptr && negated->GetOpcode() == ValueOpcode::LogicalNot;
 		std::vector<const Block*> pending {use};
 		for (size_t index = 0; index < pending.size(); ++index) {
 			const auto* current = pending[index];
@@ -2067,9 +2071,9 @@ private:
 			for (const auto* previous: current->ImmPredecessors()) {
 				if (!witness.IsEmpty()) {
 					const auto edge = ConditionalEdge(previous, current);
-					// The proven local-zero invocation makes an all-inactive bypass impossible.
-					if (edge && edge->lanes == LaneQuantifier::All && !edge->positive &&
-					    Implies(witness, edge->condition)) continue;
+					if (edge && edge->lanes == LaneQuantifier::All &&
+					    (edge->positive ? nonzero && Implies(edge->condition, negated->Arg(0))
+					                    : Implies(witness, edge->condition))) continue;
 				}
 				if (std::ranges::find(pending, previous) == pending.end()) pending.push_back(previous);
 			}
@@ -2178,7 +2182,10 @@ private:
 
 	bool LocalZeroWitness(Value guard) const {
 		const auto* equal = SimplifyGuard(guard).TryInstruction();
-		if (equal == nullptr || equal->GetOpcode() != ValueOpcode::IEqual32) return false;
+		const bool negated = equal != nullptr && equal->GetOpcode() == ValueOpcode::LogicalNot;
+		if (negated) equal = SimplifyGuard(equal->Arg(0)).TryInstruction();
+		const auto expected = negated ? ValueOpcode::INotEqual32 : ValueOpcode::IEqual32;
+		if (equal == nullptr || equal->GetOpcode() != expected) return false;
 		for (uint32_t arg = 0; arg < 2u; ++arg) {
 			if (equal->Arg(arg).Resolve() != Value(0u)) continue;
 			Value induction;
@@ -2290,7 +2297,7 @@ private:
 		const auto* read = ActiveValue(value, active).TryInstruction();
 		if (read == nullptr || read->GetOpcode() != ValueOpcode::LoadSharedU32 ||
 		    m_workgroup == nullptr || m_program.stage != ShaderType::Compute ||
-		    read->Arg(1).Resolve() != Value(true)) return {};
+		    !Implies(active, read->Arg(1))) return {};
 		uint64_t group_size = 1u;
 		for (const auto dimension: m_workgroup->threads_num) {
 			if (dimension == 0u || dimension > m_workgroup->wave_size) return {};
@@ -2321,10 +2328,16 @@ private:
 		const auto* limit = BoundedLoop(read_offset.index, read->Parent(),
 		    [](const Inst& compare, uint32_t) { return compare.GetOpcode() == ValueOpcode::ULessThan32; });
 		if (limit == nullptr) return {};
+		auto counter_active = active;
 		const auto* counter_read = ActiveValue(limit->Arg(1), active).TryInstruction();
+		// Every lane reads the same counter word, so a selected lane carries it.
+		if (counter_read != nullptr && counter_read->GetOpcode() == ValueOpcode::ReadFirstLane) {
+			counter_active = counter_read->Arg(1);
+			counter_read = ActiveValue(counter_read->Arg(0), counter_active).TryInstruction();
+		}
 		uint32_t consumed_counter = 0;
 		if (counter_read == nullptr || counter_read->GetOpcode() != ValueOpcode::LoadSharedU32 ||
-		    counter_read->Arg(1).Resolve() != Value(true) ||
+		    !Implies(counter_active, counter_read->Arg(1)) ||
 		    !constant_address(*counter_read, consumed_counter)) return {};
 
 		struct Initializer { const Inst* inst; uint32_t address; uint32_t words; };
@@ -2547,6 +2560,12 @@ private:
 				const auto maximum = SelectorMaximum(index);
 				if (maximum < MaxIndirectDescriptorProbes) count = Value(maximum + 1u);
 			}
+			// A record selected from a shared append list is below the list's bound.
+			const auto* lane = index.Resolve().TryInstruction();
+			if (count.IsEmpty() && lane != nullptr &&
+			    lane->GetOpcode() == ValueOpcode::ReadFirstLane &&
+			    HasActiveLane(lane->Arg(1), lane->Parent()))
+				count = SharedLoadBound(lane->Arg(0), lane->Arg(1));
 		}
 		// Raw pointers have no V# bounds for enumerating an unbounded selector domain.
 		if (memory->kind == ResourceKind::ScalarAddress && count.IsEmpty() &&
