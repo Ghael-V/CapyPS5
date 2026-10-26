@@ -418,19 +418,21 @@ bool ResolveSelectorKeys(const DescriptorSource::IndirectDescriptor& indirect,
 		}
 	} else if (selector->bitset) {
 		ShaderBufferResource material;
-		std::array<uint32_t, 4> masks {};
+		std::array<uint32_t, 8> storage {};
+		const auto record_words = std::min<size_t>(selector->stride / 4u, storage.size());
+		const auto masks = std::span(storage).first(record_words);
 		uint32_t first = 0, count = 0;
 		if (!DecodeBufferDescriptor(material_value, material) ||
 		    !clean.Evaluate(indirect.selector_first, first) ||
 		    !EvaluateIndirectCount(indirect, runtime, clean, count) || count != masks.size() * 32u ||
-		    selector->stride != sizeof(masks) || selector->offset != 0u ||
-		    material.Type() != 0u || material.Stride() != sizeof(masks) ||
+		    selector->stride != masks.size_bytes() || selector->offset != 0u ||
+		    material.Type() != 0u || material.Stride() != selector->stride ||
 		    material.SwizzleEnabled() || material.AddTid() || material.OutOfBounds() != 0u ||
 		    (material.Base48() & 3u) != 0u) return false;
 		if (material.Format() != Prospero::BufferFormat::kInvalid) {
 			const auto words = material.GetSize() / sizeof(uint32_t);
-			// Bitmap storage can grow with resolution while its candidate domain stays
-			// at 128 keys. Bound scratch memory, preserving each coherent read's capture.
+			// Bitmap storage can grow with resolution while its candidate domain stays at 32 keys
+			// per record word. Bound scratch memory, preserving each coherent read's capture.
 			for (uint64_t first_word = 0; first_word < words; first_word += keys.size()) {
 				keys.resize(std::min<uint64_t>(words - first_word, MaxIndirectDescriptorProbes));
 				if (!ReadScalarTable(material.Base48(), material.GetSize(), first_word * 4u,
