@@ -697,6 +697,8 @@ static vk::Device VulkanCreateDevice(GraphicContext& graphics,
 #endif
 	device_features.shaderStorageImageWriteWithoutFormat = VK_TRUE;
 	device_features.shaderImageGatherExtended            = VK_TRUE;
+	device_features.shaderResourceMinLod                 = supported_features2.features.shaderResourceMinLod;
+	ShaderRecompiler::g_host_features.min_lod = supported_features2.features.shaderResourceMinLod == VK_TRUE;
 	device_features.independentBlend                     = VK_TRUE;
 	device_features.dualSrcBlend                         = VK_TRUE;
 	device_features.tessellationShader                   = VK_TRUE;

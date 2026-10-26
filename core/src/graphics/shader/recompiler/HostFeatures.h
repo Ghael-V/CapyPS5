@@ -28,6 +28,8 @@ struct HostFeatures {
 	// OpReadClockKHR Device tick in picoseconds (VK_KHR_shader_clock shaderDeviceClock); 0 without
 	// it, and S_MEMREALTIME then keeps a constant.
 	uint32_t device_clock_period_ps = 0;
+	// shaderResourceMinLod: image_sample _cl variants clamp their LOD with MinLod.
+	bool min_lod = false;
 };
 
 inline HostFeatures g_host_features;

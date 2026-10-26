@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: GPL-2.0-only
 
 #include "graphics/guest_gpu/gpu_format.h"
+#include "graphics/shader/recompiler/HostFeatures.h"
 #include "graphics/shader/recompiler/backend/spirv/spirvEmitterInstructions.h"
 #include "graphics/shader/recompiler/frontend/decode/ImageOps.h"
 
@@ -81,6 +82,7 @@ ImageSampleLayout Layout(const IR::MemoryInfo& mem) {
 	layout.coord = cursor;
 	cursor += info.coordinate_components;
 	if (HasFlag(mem, Decoder::ImageSampleFlagLod)) layout.lod = cursor++;
+	if (HasFlag(mem, Decoder::ImageSampleFlagLodClamp)) layout.clamp = cursor++;
 	return layout;
 }
 
@@ -922,7 +924,13 @@ void EmitImage(ValueEmitContext& ctx, const IR::Inst& inst) {
 				dref_value = AddressF32(ctx, mem, *address, layout.dref);
 			}
 		}
-		std::array<uint32_t, 3> operands {};
+		// _cl clamps the computed LOD from below (MinLod needs shaderResourceMinLod; without it the
+		// clamp is dropped as before).
+		uint32_t min_lod = 0;
+		if (layout.clamp != NoImageComponent && g_host_features.min_lod) {
+			min_lod = AddressF32(ctx, mem, *address, layout.clamp);
+		}
+		std::array<uint32_t, 4> operands {};
 		size_t operand_count = 0;
 		if (HasFlag(mem, Decoder::ImageSampleFlagDerivative)) {
 			operands[0] = spv::ImageOperandsGradMask;
@@ -934,6 +942,11 @@ void EmitImage(ValueEmitContext& ctx, const IR::Inst& inst) {
 			if (HasFlag(mem, Decoder::ImageSampleFlagLod) && layout.lod != NoImageComponent) {
 				lod = AddressF32(ctx, mem, *address, layout.lod);
 			}
+			// SPIR-V takes MinLod only with implicit LOD or Grad.
+			if (min_lod != 0) {
+				lod     = EmitGlsl<GLSLstd450FMax, IR::Type::F32>(state, lod, min_lod);
+				min_lod = 0;
+			}
 			operands[0] = spv::ImageOperandsLodMask;
 			operands[1] = lod;
 			operand_count = 2;
@@ -941,6 +954,13 @@ void EmitImage(ValueEmitContext& ctx, const IR::Inst& inst) {
 			operands[0] = spv::ImageOperandsBiasMask;
 			operands[1] = AddressF32(ctx, mem, *address, layout.bias);
 			operand_count = 2;
+		}
+		// MinLod is the last operand in mask order.
+		if (min_lod != 0) {
+			state.builder.RequireCapability(spv::CapabilityMinLod);
+			operand_count = std::max(size_t {1}, operand_count);
+			operands[0] |= spv::ImageOperandsMinLodMask;
+			operands[operand_count++] = min_lod;
 		}
 		const auto& samplers = state.program.info.samplers.at(mem.sampler).indirect_resources;
 		uint32_t sampler_index = 0;
