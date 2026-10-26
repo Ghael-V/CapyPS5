@@ -2382,6 +2382,21 @@ KYTY_CP_OP_PARSER(CpOpReleaseMem) {
 	return payload_len;
 }
 
+KYTY_CP_OP_PARSER(CpOpMemSemaphore) {
+	KYTY_PROFILER_FUNCTION();
+
+	const auto control = buffer[2];
+	EXIT_NOT_IMPLEMENTED(cmd_id != 0xc0023900 || (control & ~0xe0110000u) != 0 ||
+	                     (control >> 29u) < 6u);
+
+	auto* counter = reinterpret_cast<uint64_t*>(
+	    (buffer[0] & ~0x7u) | (static_cast<uint64_t>(buffer[1] & 0x3ffffu) << 32u));
+	// A signal updates the counter before the next packet, so its mailbox stall never waits.
+	cp.MemSemaphore(counter, (control >> 29u) == 6u, ((control >> 20u) & 0x1u) != 0);
+
+	return 3;
+}
+
 KYTY_CP_OP_PARSER(CpOpSetContextReg) {
 	KYTY_PROFILER_FUNCTION();
 
