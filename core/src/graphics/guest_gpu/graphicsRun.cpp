@@ -399,10 +399,24 @@ void CommandProcessor::IncrementCe() {
 }
 
 void CommandProcessor::WriteConstRam(uint32_t offset, const uint32_t* src, uint32_t dw_num) {
+	constexpr uint32_t kDwords = sizeof(m_const_ram) / sizeof(m_const_ram[0]);
+	if (dw_num > kDwords || offset / 4 > kDwords - dw_num) {
+		Common::DebugFlags::NoteOnce("CapyPS5-PM4", (static_cast<uint64_t>(offset) << 32u) | dw_num,
+		                            "WriteConstRam out of range: offset=%u dw_num=%u (const ram holds %u dwords)",
+		                            offset, dw_num, kDwords);
+		return;
+	}
 	memcpy(m_const_ram + offset / 4, src, static_cast<size_t>(dw_num) * 4);
 }
 
 void CommandProcessor::DumpConstRam(uint32_t* dst, uint32_t offset, uint32_t dw_num) {
+	constexpr uint32_t kDwords = sizeof(m_const_ram) / sizeof(m_const_ram[0]);
+	if (dw_num > kDwords || offset / 4 > kDwords - dw_num) {
+		Common::DebugFlags::NoteOnce("CapyPS5-PM4", (static_cast<uint64_t>(offset) << 32u) | dw_num,
+		                            "DumpConstRam out of range: offset=%u dw_num=%u (const ram holds %u dwords)",
+		                            offset, dw_num, kDwords);
+		return;
+	}
 	memcpy(dst, m_const_ram + offset / 4, static_cast<size_t>(dw_num) * 4);
 }
 
