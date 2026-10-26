@@ -329,7 +329,7 @@ static void VulkanFindPhysicalDevice(vk::Instance instance, vk::SurfaceKHR surfa
 		check_feature(device_features2.features.fragmentStoresAndAtomics,
 		              "fragmentStoresAndAtomics");
 
-		check_feature(device_features2.features.samplerAnisotropy, "samplerAnisotropy");
+		optional_feature(device_features2.features.samplerAnisotropy, "samplerAnisotropy");
 		check_feature(device_features2.features.robustBufferAccess, "robustBufferAccess");
 		optional_feature(device_features2.features.depthBounds, "depthBounds");
 		check_feature(device_features2.features.shaderStorageImageWriteWithoutFormat,
@@ -688,7 +688,8 @@ static vk::Device VulkanCreateDevice(GraphicContext& graphics,
 	EXIT_NOT_IMPLEMENTED(supported_features2.features.dualSrcBlend != VK_TRUE);
 	vk::PhysicalDeviceFeatures device_features {};
 	device_features.fragmentStoresAndAtomics = VK_TRUE;
-	device_features.samplerAnisotropy        = VK_TRUE;
+	device_features.samplerAnisotropy        = supported_features2.features.samplerAnisotropy;
+	graphics.sampler_anisotropy_enabled      = device_features.samplerAnisotropy == VK_TRUE;
 	device_features.robustBufferAccess       = VK_TRUE;
 	// Unsupported by MoltenVK and Mali.
 	device_features.depthBounds = supported_features2.features.depthBounds;
