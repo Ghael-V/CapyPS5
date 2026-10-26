@@ -144,6 +144,8 @@ IR::U32 Translator::ReadRawU32(const Decoder::Operand& operand) {
 		case Decoder::OperandKind::SharedBase:
 		case Decoder::OperandKind::PrivateBase:
 		case Decoder::OperandKind::PopsExitingWaveId: return IR::U32(IR::Value(0u));
+		case Decoder::OperandKind::SharedLimit:
+		case Decoder::OperandKind::PrivateLimit: return IR::U32(IR::Value(0xffffffffu));
 		case Decoder::OperandKind::Sgpr:
 			return ir.GetScalarReg(static_cast<IR::ScalarReg>(operand.reg));
 		case Decoder::OperandKind::Vgpr:
@@ -485,17 +487,17 @@ IR::U32 Translator::ReadU32(const Decoder::Operand& operand) {
 }
 
 std::array<IR::U32, 2> Translator::ReadU32Pair(const Decoder::Operand& operand) {
-	if (operand.kind == Decoder::OperandKind::PrivateBase ||
-	    operand.kind == Decoder::OperandKind::SharedBase) {
-		return {IR::U32(IR::Value(0u)), IR::U32(IR::Value(
-		    operand.kind == Decoder::OperandKind::PrivateBase ? Decoder::PrivateApertureHigh
-		                                                      : Decoder::SharedApertureHigh))};
-	}
-	if (operand.kind == Decoder::OperandKind::ExecLo) {
-		return {ir.GetExecLo(), ir.GetExecHi()};
-	}
-	if (operand.kind == Decoder::OperandKind::VccLo) {
-		return {ir.GetVccLo(), ir.GetVccHi()};
+	// Each aperture limit is its base plus 0xffffffff.
+	switch (operand.kind) {
+		case Decoder::OperandKind::SharedBase:
+		case Decoder::OperandKind::SharedLimit:
+			return {ReadRawU32(operand), IR::U32(IR::Value(Decoder::SharedApertureHigh))};
+		case Decoder::OperandKind::PrivateBase:
+		case Decoder::OperandKind::PrivateLimit:
+			return {ReadRawU32(operand), IR::U32(IR::Value(Decoder::PrivateApertureHigh))};
+		case Decoder::OperandKind::ExecLo: return {ir.GetExecLo(), ir.GetExecHi()};
+		case Decoder::OperandKind::VccLo: return {ir.GetVccLo(), ir.GetVccHi()};
+		default: break;
 	}
 	const auto low = ApplyBitSourceModifiers(operand, ReadRawU32(operand));
 	IR::U32    high(IR::Value(0u));
