@@ -813,7 +813,7 @@ public:
 	bool CanMapDirect(uint64_t phys_addr, size_t len);
 	bool ReleasePoolExpansion(uint64_t phys_addr, size_t len);
 	bool GetAllocatedSpan(uint64_t phys_addr, size_t len, bool skip_gaps,
-	                      std::vector<AllocatedBlock>* blocks);
+	                      std::vector<AllocatedBlock>* blocks, bool allow_pooled = false);
 	std::vector<AllocatedBlock> FindMappings(uint64_t phys_addr, size_t len);
 	void ProtectMapping(uint64_t vaddr, uint64_t size, int prot, VirtualMemory::Mode mode,
 	                    GpuAccessMode gpu_mode);
@@ -904,6 +904,9 @@ public:
 	                                std::vector<Mapping>* mappings);
 	bool                   Query(uint64_t vaddr, uint64_t size, std::vector<Mapping>* mappings);
 	bool                   Release(uint64_t vaddr, uint64_t size, GpuAccessMode* gpu_mode);
+	bool                   CanConsumeDirect(uint64_t phys_addr, uint64_t size);
+	bool                   ConsumeDirect(uint64_t phys_addr, uint64_t size);
+	void                   ReleaseDirect(uint64_t phys_addr, uint64_t size);
 	[[nodiscard]] uint64_t Available();
 	[[nodiscard]] std::vector<Mapping> GetMappings();
 
@@ -914,6 +917,8 @@ private:
 	};
 
 	void AddFreeUnlocked(uint64_t start, uint64_t size);
+	void RemoveFreeUnlocked(uint64_t start, uint64_t size);
+	bool IsPhysicallyCommittedUnlocked(uint64_t phys_addr, uint64_t size) const;
 	bool QueryUnlocked(uint64_t vaddr, uint64_t size, std::vector<Mapping>* mappings) const;
 
 	std::vector<PhysicalRange> m_free;
@@ -1647,7 +1652,11 @@ bool PhysicalMemory::Map(uint64_t vaddr, uint64_t phys_addr, size_t len, int pro
 
 bool PhysicalMemory::CanMapDirect(uint64_t phys_addr, size_t len) {
 	std::vector<AllocatedBlock> blocks;
-	return GetAllocatedSpan(phys_addr, len, false, &blocks);
+	// Memory-pool pages (sceKernelMemoryPoolExpand) are a legal direct-memory source:
+	// Unreal reserves its arenas from the pool and then maps them with
+	// sceKernelMapDirectMemory / sceKernelBatchMap. Committed pool pages are still
+	// refused by the caller through PooledMemory::CanConsumeDirect.
+	return GetAllocatedSpan(phys_addr, len, false, &blocks, true);
 }
 
 bool PhysicalMemory::ReleasePoolExpansion(uint64_t phys_addr, size_t len) {
@@ -1663,7 +1672,8 @@ bool PhysicalMemory::ReleasePoolExpansion(uint64_t phys_addr, size_t len) {
 }
 
 bool PhysicalMemory::GetAllocatedSpan(uint64_t phys_addr, size_t len, bool skip_gaps,
-                                      std::vector<AllocatedBlock>* blocks) {
+                                      std::vector<AllocatedBlock>* blocks,
+                                      bool allow_pooled) {
 	EXIT_IF(blocks == nullptr);
 	blocks->clear();
 	if (len == 0 || UINT64_MAX - phys_addr < len) {
@@ -1682,7 +1692,7 @@ bool PhysicalMemory::GetAllocatedSpan(uint64_t phys_addr, size_t len, bool skip_
 		if (block_end <= current) {
 			continue;
 		}
-		if (block->second.kind == AllocationKind::Pooled ||
+		if ((block->second.kind == AllocationKind::Pooled && !allow_pooled) ||
 		    (!skip_gaps && current < block->second.start_addr)) {
 			return false;
 		}
@@ -2413,6 +2423,151 @@ bool PooledMemory::Release(uint64_t vaddr, uint64_t size, GpuAccessMode* gpu_mod
 	return true;
 }
 
+// Direct mappings may target pages that sceKernelMemoryPoolExpand reserved: Unreal's PS5
+// allocator expands the pool once and then maps its arena pages with sceKernelBatchMap, so
+// pool physical memory is a legal direct-memory source. Borrowed pages leave the pool's free
+// list so a later pool commit cannot hand the same physical page to a second owner, and they
+// are returned once the direct mapping goes away. The expansion itself is untouched: it is
+// still released only as a whole, and only once every page is free again.
+bool PooledMemory::CanConsumeDirect(uint64_t phys_addr, uint64_t size) {
+	if (size == 0 || UINT64_MAX - phys_addr < size) {
+		return false;
+	}
+
+	Common::LockGuard lock(m_mutex);
+	return !IsPhysicallyCommittedUnlocked(phys_addr, size);
+}
+
+bool PooledMemory::ConsumeDirect(uint64_t phys_addr, uint64_t size) {
+	if (size == 0 || UINT64_MAX - phys_addr < size) {
+		return false;
+	}
+
+	Common::LockGuard lock(m_mutex);
+	const auto       end = phys_addr + size;
+	for (const auto& expansion: m_expansions) {
+		const auto overlap_start = std::max<uint64_t>(phys_addr, expansion.start);
+		const auto overlap_end   = std::min<uint64_t>(end, expansion.start + expansion.size);
+		if (overlap_start >= overlap_end) {
+			continue;
+		}
+		auto current = overlap_start;
+		while (current < overlap_end) {
+			const auto free_range = std::find_if(m_free.begin(), m_free.end(),
+			                                     [current](const auto& range) {
+			                                     	return current >= range.start &&
+			                                     	       current < range.start + range.size;
+			                                     });
+			if (free_range != m_free.end()) {
+				const auto covered =
+				    std::min<uint64_t>(overlap_end, free_range->start + free_range->size);
+				RemoveFreeUnlocked(current, covered - current);
+				current = covered;
+				continue;
+			}
+			// Not free: committed to a pool reservation (rejected up front by
+			// CanConsumeDirect, so unreachable here) or already borrowed by another direct
+			// mapping, which is the guest's own alias. Skip to the next boundary either way.
+			uint64_t next = overlap_end;
+			for (const auto& range: m_free) {
+				if (range.start > current && range.start < next) {
+					next = range.start;
+				}
+			}
+			for (const auto& mapping: m_mappings) {
+				if (mapping.phys_addr > current && mapping.phys_addr < next) {
+					next = mapping.phys_addr;
+				}
+			}
+			current = next;
+		}
+	}
+	return true;
+}
+
+void PooledMemory::ReleaseDirect(uint64_t phys_addr, uint64_t size) {
+	if (size == 0 || UINT64_MAX - phys_addr < size) {
+		return;
+	}
+
+	Common::LockGuard lock(m_mutex);
+	const auto       end = phys_addr + size;
+	for (const auto& expansion: m_expansions) {
+		const auto overlap_start = std::max<uint64_t>(phys_addr, expansion.start);
+		const auto overlap_end   = std::min<uint64_t>(end, expansion.start + expansion.size);
+		if (overlap_start >= overlap_end) {
+			continue;
+		}
+		auto current = overlap_start;
+		while (current < overlap_end) {
+			const auto free_range = std::find_if(m_free.begin(), m_free.end(),
+			                                     [current](const auto& range) {
+			                                     	return current >= range.start &&
+			                                     	       current < range.start + range.size;
+			                                     });
+			if (free_range != m_free.end()) {
+				current = std::min<uint64_t>(overlap_end, free_range->start + free_range->size);
+				continue;
+			}
+			const auto committed = std::find_if(
+			    m_mappings.begin(), m_mappings.end(), [current](const auto& mapping) {
+				    return current >= mapping.phys_addr &&
+				           current < mapping.phys_addr + mapping.size;
+			    });
+			if (committed != m_mappings.end()) {
+				// Pages backing a pool reservation keep their owner.
+				current = std::min<uint64_t>(overlap_end,
+				                           committed->phys_addr + committed->size);
+				continue;
+			}
+			// Borrowed by the direct mapping that is going away: return the whole segment,
+			// up to the next free or committed boundary.
+			uint64_t next = overlap_end;
+			for (const auto& range: m_free) {
+				if (range.start > current && range.start < next) {
+					next = range.start;
+				}
+			}
+			for (const auto& mapping: m_mappings) {
+				if (mapping.phys_addr > current && mapping.phys_addr < next) {
+					next = mapping.phys_addr;
+				}
+			}
+			AddFreeUnlocked(current, next - current);
+			current = next;
+		}
+	}
+}
+
+void PooledMemory::RemoveFreeUnlocked(uint64_t start, uint64_t size) {
+	const auto end = start + size;
+	std::vector<PhysicalRange> kept;
+	kept.reserve(m_free.size() + 1);
+	for (const auto& range: m_free) {
+		const auto range_end = range.start + range.size;
+		if (range_end <= start || end <= range.start) {
+			kept.push_back(range);
+			continue;
+		}
+		if (range.start < start) {
+			kept.push_back({range.start, start - range.start});
+		}
+		if (end < range_end) {
+			kept.push_back({end, range_end - end});
+		}
+	}
+	m_free = std::move(kept);
+}
+
+bool PooledMemory::IsPhysicallyCommittedUnlocked(uint64_t phys_addr, uint64_t size) const {
+	const auto end = phys_addr + size;
+	return std::any_of(m_mappings.begin(), m_mappings.end(),
+	                   [phys_addr, end](const auto& mapping) {
+		                   return phys_addr < mapping.phys_addr + mapping.size &&
+		                          mapping.phys_addr < end;
+	                   });
+}
+
 uint64_t PooledMemory::Available() {
 	Common::LockGuard lock(m_mutex);
 	uint64_t          available = 0;
@@ -2797,6 +2952,11 @@ static int UnmapMemoryRange(uint64_t vaddr, size_t len) {
 			uint64_t ignored_host = 0;
 			if (g_physical_memory->Unmap(vaddr, len, &gpu_mode, &ignored_host)) {
 				owner_unmapped = true;
+				// A pool page may be direct-mapped at several VAs; the borrow returns to
+				// the pool only when the last view of it goes away.
+				if (g_physical_memory->FindMappings(direct_offset, len).empty()) {
+					g_pooled_memory->ReleaseDirect(direct_offset, len);
+				}
 			} else {
 				EXIT_IF(!g_guest_address_space->MapBacking(vaddr, len, direct_offset, direct_mode));
 			}
@@ -3285,6 +3445,9 @@ static int MapDirectMemoryUnfolded(void** addr, size_t len, int prot, int flags,
 	if (!g_physical_memory->CanMapDirect(static_cast<uint64_t>(direct_memory_start), len)) {
 		return MapDirectNoMemory(__LINE__);
 	}
+	if (!g_pooled_memory->CanConsumeDirect(static_cast<uint64_t>(direct_memory_start), len)) {
+		return MapDirectNoMemory(__LINE__);
+	}
 
 	auto     in_addr         = reinterpret_cast<uint64_t>(*addr);
 	uint64_t out_addr        = 0;
@@ -3309,6 +3472,7 @@ static int MapDirectMemoryUnfolded(void** addr, size_t len, int prot, int flags,
 			EXIT_IF(!g_physical_memory->Map(old.map_vaddr, old.start_addr, old.map_size,
 			                               old.prot, old.mode, old.gpu_mode, old.name,
 			                               old.memory_type));
+			(void)g_pooled_memory->ConsumeDirect(old.start_addr, old.map_size);
 		}
 		MapGpuRange(in_addr, len);
 	};
@@ -3354,6 +3518,9 @@ static int MapDirectMemoryUnfolded(void** addr, size_t len, int prot, int flags,
 				if (!g_physical_memory->Unmap(old.map_vaddr, old.map_size, &old_gpu_mode)) {
 					restore_mappings(index, false);
 					return KERNEL_ERROR_EBUSY;
+				}
+				if (g_physical_memory->FindMappings(old.start_addr, old.map_size).empty()) {
+					g_pooled_memory->ReleaseDirect(old.start_addr, old.map_size);
 				}
 			}
 			// Keep the old view accessible until mmap atomically replaces it. In particular,
@@ -3511,6 +3678,11 @@ static int MapDirectMemoryUnfolded(void** addr, size_t len, int prot, int flags,
 	}
 
 	MapGpuRange(out_addr, len);
+
+	// The pool free list must not hand these pages to a later sceKernelMemoryPoolCommit.
+	// CanConsumeDirect already accepted them and the memory operation mutex rules out an
+	// intervening commit, so this borrow cannot encounter committed pages.
+	(void)g_pooled_memory->ConsumeDirect(static_cast<uint64_t>(direct_memory_start), len);
 
 	if (g_alloc_callback != nullptr) {
 		g_alloc_callback(out_addr, len);
