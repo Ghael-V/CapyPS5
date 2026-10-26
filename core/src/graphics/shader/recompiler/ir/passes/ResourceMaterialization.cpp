@@ -486,10 +486,9 @@ bool ResolveSelectorKeys(const DescriptorSource::IndirectDescriptor& indirect,
 		     uint64_t {first} + count > material.NumRecords())) return false;
 		const auto last = count != 0u ? uint64_t {first} + count - 1u : 0u;
 		if (last > UINT32_MAX) return false;
+		// Out-of-bounds scalar reads return zero.
 		const auto end = count != 0u ? last * step + selector->offset + 4u : 0u;
-		if (end > uint64_t {UINT32_MAX} + 1u ||
-		    (indirect.workgroup_axis == UINT32_MAX && end > size))
-			return false;
+		if (end > uint64_t {UINT32_MAX} + 1u) return false;
 		if (!read_keys(base, size, uint64_t {first} * step + selector->offset, step, count))
 			return false;
 	} else if (!indirect.selector_mask.IsEmpty()) {
@@ -544,6 +543,7 @@ bool ResolveSelectorKeys(const DescriptorSource::IndirectDescriptor& indirect,
 		if (selector->bit_offset != 0u || selector->bit_mask != UINT32_MAX || selector->maximum != UINT32_MAX)
 			for (auto& key: keys)
 				key = std::min((key >> selector->bit_offset) & selector->bit_mask, selector->maximum);
+		if (selector->excluded) std::erase(keys, *selector->excluded);
 		std::ranges::sort(keys);
 		keys.erase(std::unique(keys.begin(), keys.end()), keys.end());
 	}

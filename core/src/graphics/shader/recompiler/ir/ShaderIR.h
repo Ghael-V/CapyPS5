@@ -619,6 +619,7 @@ struct DescriptorSource {
 			bool bitset = false;
 			std::optional<CountedRows> rows;
 			std::vector<std::pair<uint32_t, uint32_t>> byte_ranges;
+			std::optional<uint32_t> excluded; // A guard keeps this key from the read.
 
 			bool operator==(const SelectorRead& other) const = default;
 		};

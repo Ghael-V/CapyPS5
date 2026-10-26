@@ -1313,26 +1313,46 @@ private:
 		return visit(visit, block, 0u);
 	}
 
+	// The immediate that edge proves value differs from on every lane, if any.
+	std::optional<uint32_t> ExcludedBy(const EdgePredicate& edge, Value value) const {
+		if (edge.lanes != LaneQuantifier::All) return {};
+		const auto* test = edge.condition.TryInstruction();
+		if (test != nullptr && test->NumArgs() == 2u &&
+		    ((test->GetOpcode() == ValueOpcode::INotEqual32 && edge.positive) ||
+		     (test->GetOpcode() == ValueOpcode::IEqual32 && !edge.positive))) {
+			for (uint32_t arg = 0; arg < 2u; ++arg) {
+				uint32_t immediate;
+				if (ImmediateU32(test->Arg(arg), immediate) &&
+				    EquivalentValue(m_program, test->Arg(arg ^ 1u), value)) return immediate;
+			}
+		}
+		return {};
+	}
+
 	bool NonzeroOnEntry(Value value, const Block* block) const {
 		if (block == nullptr) return false;
 		bool witnessed = false;
 		const bool guarded = GuardedOnEntry(block, [](const Block* current) {
 			return current->ImmPredecessors().size() != 1u;
 		}, [&](const EdgePredicate& edge) {
-			if (edge.lanes != LaneQuantifier::All) return false;
-			const auto* test = edge.condition.TryInstruction();
-			if (test != nullptr && test->NumArgs() == 2u &&
-			    ((test->GetOpcode() == ValueOpcode::INotEqual32 && edge.positive) ||
-			     (test->GetOpcode() == ValueOpcode::IEqual32 && !edge.positive))) {
-				for (uint32_t arg = 0; arg < 2u; ++arg) {
-					uint32_t immediate;
-					if (ImmediateU32(test->Arg(arg), immediate) && immediate == 0u &&
-					    EquivalentValue(m_program, test->Arg(arg ^ 1u), value)) return witnessed = true;
-				}
-			}
-			return false;
+			return ExcludedBy(edge, value) == 0u && (witnessed = true);
 		});
 		return guarded && witnessed;
+	}
+
+	// The key that every path from its definition to block rules out, if any.
+	std::optional<uint32_t> ExcludedKeyOnEntry(Value key, const Block* block) const {
+		const auto* definition = key.Resolve().TryInstruction();
+		if (definition == nullptr) return {};
+		std::optional<uint32_t> excluded;
+		const auto defined = [&](const Block* current) { return current == definition->Parent(); };
+		const bool guarded = GuardedOnEntry(block, defined, [&](const EdgePredicate& edge) {
+			const auto immediate = ExcludedBy(edge, key);
+			if (!immediate || (excluded && excluded != immediate)) return false;
+			excluded = immediate;
+			return true;
+		});
+		return guarded ? excluded : std::nullopt;
 	}
 
 	// The workgroup ID axis of key; with first, also of a runtime first + workgroup ID sum.
@@ -2518,6 +2538,10 @@ private:
 			const auto* bound = BoundedLoop(index, read->Parent());
 			if (bound != nullptr && bound->GetOpcode() == ValueOpcode::ULessThan32) {
 				count = bound->Arg(1);
+			} else if (workgroup_axis == UINT32_MAX && !require_bound) {
+				// Other bounded indices, such as bit scans, read the records up to their maximum.
+				const auto maximum = SelectorMaximum(index);
+				if (maximum < MaxIndirectDescriptorProbes) count = Value(maximum + 1u);
 			}
 		}
 		// Raw pointers have no V# bounds for enumerating an unbounded selector domain.
@@ -3326,6 +3350,7 @@ private:
 		} else if (!plan.table_indexed &&
 		           MatchScalarMaterialKey(key, indirect, material_source,
 		                                  !sampler && table_source.dword_count == 4u, sampler)) {
+			indirect.selector->excluded = ExcludedKeyOnEntry(key, handle.Parent());
 			// Keep live descriptor payloads, but project descriptor-only SMEM onto
 			// the GPU key using the same plan as other indirect image reads.
 			plan.retain_reads |= table_source.dword_count == 4u;
