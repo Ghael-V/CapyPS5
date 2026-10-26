@@ -595,15 +595,11 @@ void Image::Resolve(Image& source, const ImageSubresourceRange& source_range,
 		BlitImage(source);
 		return;
 	}
-	auto host_extent = ScaledExtent(info.extent, scale);
-	if (scale_mismatch) {
-		// Keep the resolve within both images: clamp to the region they share.
-		host_extent.width  = std::min({host_extent.width, source_width, destination_width});
-		host_extent.height = std::min({host_extent.height, source_height, destination_height});
-	}
+	// Resolve the region both levels share: targets the texture cache placed at a level or layer
+	// of a larger image are smaller than its level-0 extent.
+	const vk::Extent2D host_extent {std::min(source_width, destination_width),
+	                                std::min(source_height, destination_height)};
 	EXIT_IF(layers == 0 || host_extent.width == 0 || host_extent.height == 0 ||
-	        host_extent.width > source_width || host_extent.height > source_height ||
-	        host_extent.width > destination_width || host_extent.height > destination_height ||
 	        (copy ? !ImageViewOps::FormatsCompatible(source.backing.format, backing.format)
 	              : source.backing.format != backing.format));
 	auto resolved_source_range             = source_range;
