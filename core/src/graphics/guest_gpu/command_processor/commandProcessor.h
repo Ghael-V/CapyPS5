@@ -35,6 +35,7 @@ struct IndirectDrawRegisters {
 	uint32_t vertex_offset;
 	uint32_t instance_offset;
 	uint32_t index_offset;
+	uint32_t draw_index;
 };
 
 class Pm4Execution {

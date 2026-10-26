@@ -1341,7 +1341,7 @@ void CommandProcessor::DrawIndexOffset(uint32_t index_offset, uint32_t index_cou
 
 static void PatchIndirectDrawOffsets(CommandProcessor& cp, IndirectDrawRegisters registers,
                                      uint32_t vertex_offset, uint32_t instance_offset,
-                                     uint32_t first_index) {
+                                     uint32_t first_index, uint32_t draw_index) {
 	const auto write = [&](uint32_t location, uint32_t value) {
 		if (location == Pm4::SH_NOP) {
 			return;
@@ -1353,6 +1353,7 @@ static void PatchIndirectDrawOffsets(CommandProcessor& cp, IndirectDrawRegisters
 	write(registers.vertex_offset, vertex_offset);
 	write(registers.instance_offset, instance_offset);
 	write(registers.index_offset, first_index);
+	write(registers.draw_index, draw_index);
 }
 
 // UE renders GPU-driven: compute shaders write the indexed draw arguments. Reading them on the
@@ -1501,7 +1502,9 @@ void CommandProcessor::DrawIndirectMulti(uint32_t data_offset, uint32_t max_coun
 		}
 	}
 
-	if (TryGpuIndirectDraw(m_draw_indirect_args_base_addr + data_offset, draw_count,
+	// The GPU path issues the records as one draw: it cannot patch a per-record draw index.
+	if (registers.draw_index == Pm4::SH_NOP &&
+	    TryGpuIndirectDraw(m_draw_indirect_args_base_addr + data_offset, draw_count,
 	                       stride_in_bytes, registers, indexed, index_size)) {
 		return;
 	}
@@ -1515,7 +1518,7 @@ void CommandProcessor::DrawIndirectMulti(uint32_t data_offset, uint32_t max_coun
 				continue;
 			}
 			PatchIndirectDrawOffsets(*this, registers, args.start_vertex_location,
-			                         args.start_instance_location, 0);
+			                         args.start_instance_location, 0, i);
 			m_num_instances = args.instance_count;
 			DrawIndexAuto({.vertex_count   = args.vertex_count_per_instance,
 			               .instance_count = args.instance_count,
@@ -1530,7 +1533,7 @@ void CommandProcessor::DrawIndirectMulti(uint32_t data_offset, uint32_t max_coun
 			continue;
 		}
 		PatchIndirectDrawOffsets(*this, registers, args.base_vertex_location,
-		                         args.start_instance_location, args.start_index_location);
+		                         args.start_instance_location, args.start_index_location, i);
 
 		auto* index_addr = reinterpret_cast<const void*>(
 		    m_index_base_addr + static_cast<uint64_t>(args.start_index_location) * index_size);
