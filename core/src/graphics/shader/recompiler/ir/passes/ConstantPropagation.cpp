@@ -787,8 +787,10 @@ private:
 		if (inst.GetOpcode() != ValueOpcode::CompositeExtractU32x4 ||
 		    !Immediate(Arg(inst, 1), 0u)) return {};
 		const auto* source = Arg(inst, 0).TryInstruction();
-		return source != nullptr && source->GetOpcode() == ValueOpcode::Ballot
-		           ? Arg(*source, 0) : Value {};
+		if (source == nullptr) return {};
+		// Helper lanes keep the per-lane EXEC, so the live mask projects to true.
+		if (source->GetOpcode() == ValueOpcode::LiveMask) return Value(true);
+		return source->GetOpcode() == ValueOpcode::Ballot ? Arg(*source, 0) : Value {};
 	}
 
 	bool CanProject(Value value) {

@@ -409,7 +409,6 @@ void Visit(Program& program, ShaderStageInputInfo input_info, InputUsage& inputs
 				}
 			}
 			if (shared_access == SharedAccess::Append || shared_access == SharedAccess::Consume) {
-				info.subgroup_ballot = true;
 				info.subgroup_shuffle = true;
 				info.subgroup_local_invocation_id = true;
 			}
@@ -580,6 +579,7 @@ void Visit(Program& program, ShaderStageInputInfo input_info, InputUsage& inputs
 			    inst.Flags<CFG::BranchCondition>() != CFG::BranchCondition::ScalarInstruction;
 			break;
 		case ValueOpcode::Ballot: info.subgroup_ballot = true; break;
+		case ValueOpcode::LiveMask: info.subgroup_ballot = info.helper_invocation = true; break;
 		case ValueOpcode::DppMoveU32:
 		case ValueOpcode::ReadFirstLane:
 		case ValueOpcode::ReadLane: {
@@ -640,7 +640,7 @@ void CollectShaderInfo(Program& program, ShaderStageInputInfo input_info) {
 	info.live_buffers = 0;
 	info.has_bitwise_xor = info.uses_lds = info.uses_gds = info.uses_flattened_srt =
 	    info.uses_dispatch_threads = info.uses_swizzle = false;
-	info.bvh = info.subgroup_ballot = info.subgroup_barrier = info.subgroup_shuffle =
+	info.bvh = info.subgroup_ballot = info.subgroup_barrier = info.subgroup_shuffle = info.helper_invocation =
 	    info.subgroup_local_invocation_id = info.compute_derivatives = info.image_gather_extended =
 	    info.function_lds = info.function_scratch = info.pixel_valid_mask = info.buffer_int64_atomics =
 	    info.buffer_u8 = info.buffer_u16 = info.shared_int64_atomics = info.coherent_buffers = info.float64 = false;

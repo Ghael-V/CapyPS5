@@ -146,6 +146,7 @@ struct EmitterState {
 	// Loop iterations left to this invocation (debug.capy.loop_cap); 0 when unbounded.
 	uint32_t                   loop_budget_variable                  = 0;
 	uint32_t                   subgroup_local_invocation_id_variable = 0;
+	uint32_t                   helper_invocation_variable            = 0;
 	uint32_t                   per_vertex_variable                   = 0;
 	uint32_t                   point_size_variable                   = 0;
 	uint32_t                   clip_distance_variable                = 0;
