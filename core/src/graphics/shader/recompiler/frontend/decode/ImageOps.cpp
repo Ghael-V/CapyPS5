@@ -77,7 +77,7 @@ constexpr uint32_t ImageSampleAddressComponents(uint32_t flags, ImageDimension d
 	if ((flags & ImageSampleFlagBias) != 0) {
 		components++;
 	}
-	if ((flags & ImageSampleFlagLod) != 0) {
+	if ((flags & (ImageSampleFlagLod | ImageSampleFlagLodClamp)) != 0) {
 		components++;
 	}
 	if ((flags & ImageSampleFlagDerivative) != 0) {
