@@ -271,6 +271,11 @@ static AudioOut2Submission& audioout2_submission(const AudioOut2ContextState& co
 	return g_audioout2_submissions[&context - g_audioout2_contexts.data()];
 }
 
+// Ticks of a sixth of a microsecond: one 48 kHz sample lasts exactly 125 of them.
+static uint64_t audioout2_clock() {
+	return LibKernel::KernelGetProcessTime() * 6;
+}
+
 static uint32_t audioout2_grain_micros(uint32_t grains) {
 	const auto sample_count = (grains == 0 ? 512u : grains);
 	return std::max<uint32_t>((sample_count * 1000000u) / 48000u, 1000u);
@@ -340,25 +345,23 @@ static void audioout2_update_context_locked(AudioOut2ContextState* state) {
 		return;
 	}
 
-	const auto now = LibKernel::KernelGetProcessTime();
+	const auto now = audioout2_clock();
 	if (state->last_update == 0 || state->queued == 0) {
 		state->last_update = now;
 		return;
 	}
-
-	const auto grain_micros = static_cast<uint64_t>(audioout2_grain_micros(state->num_grains));
-	if (now <= state->last_update || grain_micros == 0) {
+	if (now <= state->last_update) {
 		return;
 	}
 
-	const auto elapsed = now - state->last_update;
-	const auto drained = std::min<uint64_t>(state->queued, elapsed / grain_micros);
+	const auto grain   = uint64_t {state->num_grains} * 125;
+	const auto drained = std::min<uint64_t>(state->queued, (now - state->last_update) / grain);
 	if (drained == 0) {
 		return;
 	}
 
 	state->queued -= static_cast<uint32_t>(drained);
-	state->last_update += drained * grain_micros;
+	state->last_update += drained * grain;
 	if (state->queued == 0) {
 		state->last_update = now;
 	}
@@ -536,7 +539,7 @@ int KYTY_SYSV_ABI AudioOut2ContextCreate(const AudioOut2ContextParam* params, vo
 	state->handle              = *ctx;
 	state->queue_depth         = params->queue_depth == 0 ? 4u : params->queue_depth;
 	state->num_grains          = num_grains;
-	state->last_update         = LibKernel::KernelGetProcessTime();
+	state->last_update         = audioout2_clock();
 	state->object_audio_handle = object_audio_handle;
 	g_audioout2_state_mutex.Unlock();
 
@@ -624,7 +627,7 @@ int KYTY_SYSV_ABI AudioOut2ContextPush(AudioOut2ContextHandle ctx, uint32_t bloc
 			sleep_micros = audioout2_grain_micros(state->num_grains);
 			if (state->queued < state->queue_depth || use_device_clock) {
 				if (state->queued == 0) {
-					state->last_update = LibKernel::KernelGetProcessTime();
+					state->last_update = audioout2_clock();
 				}
 				if (state->queued < state->queue_depth) {
 					state->queued++;
