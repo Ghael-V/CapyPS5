@@ -190,12 +190,17 @@ size_t Inst::NumPhiBlocks() const {
 	return num_args == PhiArity ? phi_args.size() : 0;
 }
 
-Value Inst::Arg(size_t index) const {
-	EXIT_IF(index >= NumArgs());
-	if (num_args <= InlineArity) {
-		return fixed_args[index];
+template <typename Self>
+auto& Inst::ArgSlot(Self& self, size_t index) {
+	EXIT_IF(index >= self.NumArgs());
+	if (self.num_args <= InlineArity) {
+		return self.fixed_args[index];
 	}
-	return num_args == PhiArity ? phi_args[index].second : large_args[index];
+	return self.num_args == PhiArity ? self.phi_args[index].second : self.large_args[index];
+}
+
+Value Inst::Arg(size_t index) const {
+	return ArgSlot(*this, index);
 }
 
 Block* Inst::PhiBlock(size_t index) const {
@@ -216,17 +221,11 @@ void Inst::SetParent(Block* block) {
 }
 
 void Inst::SetArg(size_t index, Value value) {
-	const auto old = Arg(index);
-	if (auto* old_inst = old.TryInstruction(); old_inst != nullptr) {
+	auto& arg = ArgSlot(*this, index);
+	if (auto* old_inst = arg.TryInstruction(); old_inst != nullptr) {
 		RemoveUse(old_inst, index);
 	}
-	if (num_args <= InlineArity) {
-		fixed_args[index] = value;
-	} else if (num_args == PhiArity) {
-		phi_args[index].second = value;
-	} else {
-		large_args[index] = value;
-	}
+	arg = value;
 	if (auto* new_inst = value.TryInstruction(); new_inst != nullptr) {
 		AddUse(new_inst, index);
 	}
@@ -242,11 +241,15 @@ void Inst::AddPhiOperand(Block* predecessor, Value value) {
 }
 
 void Inst::ReplaceUsesWith(Value replacement, bool preserve) {
-	const auto old_uses = uses;
-	for (const auto& use: old_uses) {
-		use.user->SetArg(use.operand, replacement);
-	}
+	// Detach the arguments first (a phi can use itself), then move every use over in order.
 	Invalidate();
+	const auto old_uses = std::exchange(uses, {});
+	for (const auto& use: old_uses) {
+		ArgSlot(*use.user, use.operand) = replacement;
+	}
+	if (auto* target = replacement.TryInstruction(); target != nullptr) {
+		target->uses.insert(target->uses.end(), old_uses.begin(), old_uses.end());
+	}
 	if (preserve) {
 		opcode = ValueOpcode::Identity;
 		num_args = 1;
@@ -276,6 +279,10 @@ void Inst::ClearArgs() {
 			RemoveUse(value_inst, index);
 		}
 	}
+	DropArgs();
+}
+
+void Inst::DropArgs() {
 	if (num_args == PhiArity) {
 		std::destroy_at(&phi_args);
 		std::construct_at(&fixed_args);
