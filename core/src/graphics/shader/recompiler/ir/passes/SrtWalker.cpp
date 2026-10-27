@@ -138,6 +138,7 @@ bool IsRuntimeUniformOp(ValueOpcode op) {
 		case ValueOpcode::BitCastU32F32:
 		case ValueOpcode::BitCastF32U32:
 		case ValueOpcode::ConvertU32F32:
+		case ValueOpcode::ConvertS32F32:
 		case ValueOpcode::ConvertF32U32:
 		case ValueOpcode::CompositeConstructU64:
 		case ValueOpcode::CompositeExtractU64:
@@ -978,6 +979,23 @@ bool SrtWalker::EvaluateInst(const Inst& inst, uint64_t& result) {
 				return true;
 			}
 			return false;
+		case ValueOpcode::ConvertS32F32: {
+			// The conversion saturates and maps NaN to zero. cvttss2si's out-of-range result,
+			// INT32_MIN, is already right for negative overflow.
+			Xbyak::Label done;
+			c.movd(c.xmm0, c.eax);
+			c.xor_(c.eax, c.eax);
+			c.ucomiss(c.xmm0, c.xmm0);
+			c.jp(done, Near);
+			c.mov(c.ecx, 0x4f000000u);
+			c.movd(c.xmm1, c.ecx);
+			c.mov(c.eax, INT32_MAX);
+			c.ucomiss(c.xmm0, c.xmm1);
+			c.jae(done, Near);
+			c.cvttss2si(c.eax, c.xmm0);
+			c.L(done);
+			break;
+		}
 		case ValueOpcode::FPMul32:
 			if (binary()) {
 				result = std::bit_cast<uint32_t>(Float32(a) * Float32(b));
