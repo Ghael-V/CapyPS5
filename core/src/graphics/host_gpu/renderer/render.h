@@ -238,8 +238,12 @@ private:
 	                                              CommandBuffer& command, uint32_t group_x,
 	                                              uint32_t group_y, uint32_t group_z, uint32_t mode);
 	[[nodiscard]] Buffer& MeshOutputBuffer(uint64_t size);
-	// IR::ScaledImageMaskSpecId bits for the downscaled images a stage binds.
-	[[nodiscard]] uint32_t ScaledImageMask(const PreparedBindings& bindings);
+	// IR::ScaledImageMaskSpecId bits for the downscaled images a stage binds. A stage has one
+	// scale constant: shadow-scaled images are included (with IR::ShadowScaleBit) only when
+	// `shadow` is true, or when no other scaled image is bound and `shadow` is unset; the others
+	// are then read through normalized coordinates only, which need no scale.
+	[[nodiscard]] uint32_t ScaledImageMask(const PreparedBindings&  bindings,
+	                                       std::optional<bool> shadow = std::nullopt);
 
 	RenderContext&                        m_context;
 	GraphicsBindings                     m_graphics_bindings;

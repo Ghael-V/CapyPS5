@@ -127,6 +127,12 @@ private:
 public:
 	// Scale of every downscaled image (debug.capy.res_scale), 1 when scaling is off.
 	[[nodiscard]] static float ResolutionScale();
+	// Scale of shadow maps (debug.capy.shadow_scale), 1 when they follow ResolutionScale.
+	[[nodiscard]] static float ShadowScale();
+	// Whether an image was downscaled as a shadow map, with a scale other than ResolutionScale.
+	[[nodiscard]] static bool IsShadowScaled(float scale) {
+		return scale != 1.0f && scale == ShadowScale() && scale != ResolutionScale();
+	}
 
 private:
 	[[nodiscard]] ImageId     GetNullImage(const ImageDesc& desc);

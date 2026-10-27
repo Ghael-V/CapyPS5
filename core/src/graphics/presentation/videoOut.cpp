@@ -501,11 +501,24 @@ static int DeleteVideoOutEvent(int handle, EventQueue::KernelEqueue eq, VideoOut
 	return result == LibKernel::KERNEL_ERROR_ENOENT ? OK : result;
 }
 
+// `debug.capy.fps_limit N` (read once): vsync flips are shown at most N times per second, as
+// if the game had asked for a lower flip rate. A game that paces itself on its flips then runs
+// its frames at N per second with correct timing. 0 keeps the game's own rate.
+static int FrameLimitInterval() {
+	static const int interval = [] {
+		Common::DebugFlags::CachedValue limit("debug.capy.fps_limit", 0);
+		const auto fps     = limit.Get();
+		const auto refresh = static_cast<int64_t>(std::max(Config::GetVblankFrequency(), 1u));
+		return fps <= 0 || fps >= refresh ? 1 : static_cast<int>((refresh + fps - 1) / fps);
+	}();
+	return interval;
+}
+
 static bool IsFlipDueLocked(const VideoOutConfig& cfg, uint64_t generation) {
 	if (!cfg.opened || cfg.closing || cfg.generation != generation) {
 		return false;
 	}
-	const int interval = cfg.flip_rate + 1;
+	const int interval = std::max(cfg.flip_rate + 1, FrameLimitInterval());
 
 	return interval <= 1 || (cfg.vblank_status.count % static_cast<uint64_t>(interval)) == 0;
 }

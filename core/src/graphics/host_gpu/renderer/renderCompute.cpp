@@ -185,7 +185,8 @@ static bool DownscaleComputeGrid(const ShaderComputeInputInfo& input, const Prep
 			return false;
 		}
 		const auto& image = cache.GetImage(bindings.images[i].image_id);
-		if (!image.IsScaled() || bindings.images[i].desc.view_info.base_level != 0) {
+		if (!image.IsScaled() || image.scale != scale ||
+		    bindings.images[i].desc.view_info.base_level != 0) {
 			return false;
 		}
 		const auto& extent = image.info.extent;
