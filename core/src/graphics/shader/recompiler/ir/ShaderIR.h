@@ -358,7 +358,10 @@ inline constexpr uint32_t ScaledRenderTargetBit = 1u << 31u;
 // invocation IDs are mapped back to the guest thread of the same image position. Image
 // resources then use the first 30 bits.
 inline constexpr uint32_t ScaledDispatchBit = 1u << 30u;
-inline constexpr uint32_t ScaledImageResources = 30u;
+// Set when the stage's scaled images are shadow maps (debug.capy.shadow_scale): the scale
+// constant is then the shadow scale. Image resources use the first 29 bits.
+inline constexpr uint32_t ShadowScaleBit       = 1u << 29u;
+inline constexpr uint32_t ScaledImageResources = 29u;
 
 // Emulated mesh shaders store every output vertex as a record holding the stage outputs in
 // order: Position and Parameter take 4 dwords, Layer and each clip/cull distance one.

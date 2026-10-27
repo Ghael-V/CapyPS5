@@ -55,6 +55,18 @@
     <string name="ue_value">Unreal (%1$s)</string>
     <string name="option_async_shaders">Compilar shaders en segundo plano</string>
     <string name="option_async_shaders_desc">Evita tirones; un objeto puede tardar un instante en aparecer</string>
+    <string name="option_shadows">Resolución de sombras</string>
+    <string name="option_shadows_desc">Dibuja los mapas de sombras más pequeños, aparte de la resolución interna. Las sombras se ven más suaves o pixeladas; no afecta a los motores que dibujan sombras con compute (Unreal Engine 5)</string>
+    <string name="shadows_full">Completa</string>
+    <string name="shadows_half">50 %</string>
+    <string name="shadows_quarter">25 %</string>
+    <string name="option_early_depth">Test de profundidad temprano</string>
+    <string name="option_early_depth_desc">Deja que la GPU descarte los píxeles ocultos antes de sombrearlos cuando el juego lo permite. Más rápido en escenas con mucha superposición; con algunos drivers Adreno pueden desaparecer objetos en bloques pequeños</string>
+    <string name="option_frame_limit">Límite de FPS</string>
+    <string name="option_frame_limit_desc">Limita las imágenes por segundo que muestra el juego. 30 estables se sienten mejor que unos FPS que saltan entre 25 y 40, y dejan margen a la GPU</string>
+    <string name="frame_limit_off">El del juego</string>
+    <string name="frame_limit_30">30 FPS</string>
+    <string name="frame_limit_20">20 FPS</string>
 
     <!-- Driver de GPU -->
     <string name="gpu_driver">Driver de GPU</string>

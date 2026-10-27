@@ -221,12 +221,31 @@ float TextureCache::ResolutionScale() {
 	return scale;
 }
 
+float TextureCache::ShadowScale() {
+	// `debug.capy.shadow_scale N` (per mille, read once): render shadow maps at N/1000 of their
+	// guest size. 1000 or 0 leaves them to debug.capy.res_scale.
+	static const float scale = [] {
+		Common::DebugFlags::CachedValue value("debug.capy.shadow_scale", 1000);
+		const auto permille = value.Get();
+		return permille <= 0 || permille >= 1000 ? 1.0f : static_cast<float>(permille) / 1000.0f;
+	}();
+	return scale;
+}
+
 float TextureCache::ChooseScale(const ImageDesc& desc) {
+	const auto& info = desc.info;
+	// Shadow maps: square single-sample depth targets of 1024 texels or more. Screen depth
+	// buffers follow the display aspect and are never square.
+	if (ShadowScale() != 1.0f && desc.type == BindingType::DepthTarget &&
+	    info.type == Prospero::ImageType::kColor2D && info.samples == 1 &&
+	    info.resources.levels == 1 && info.extent.width == info.extent.height &&
+	    info.extent.width >= 1024) {
+		return ShadowScale();
+	}
 	const float scale = ResolutionScale();
 	if (scale == 1.0f) {
 		return 1.0f;
 	}
-	const auto& info = desc.info;
 	// Display buffers are scaled too: Greak flips one of its two buffers before drawing into it,
 	// and that buffer, created unscaled, was then drawn with the scaled depth target bound, so
 	// every other frame showed only the top-left quarter of the scene.

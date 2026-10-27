@@ -57,6 +57,18 @@
     <string name="ue_value">Unreal (%1$s)</string>
     <string name="option_async_shaders">Compile shaders in the background</string>
     <string name="option_async_shaders_desc">Avoids stutter; an object may take a moment to appear</string>
+    <string name="option_shadows">Shadow resolution</string>
+    <string name="option_shadows_desc">Renders shadow maps smaller, independently of the internal resolution. Shadows look softer or blockier; engines that draw shadows with compute shaders (Unreal Engine 5) are not affected</string>
+    <string name="shadows_full">Full</string>
+    <string name="shadows_half">50 %</string>
+    <string name="shadows_quarter">25 %</string>
+    <string name="option_early_depth">Early depth test</string>
+    <string name="option_early_depth_desc">Lets the GPU skip hidden pixels before shading them when the game allows it. Faster in scenes with a lot of overdraw; on some Adreno drivers objects may vanish in small blocks</string>
+    <string name="option_frame_limit">Frame rate limit</string>
+    <string name="option_frame_limit_desc">Caps the frames the game shows per second. A steady 30 is smoother than a framerate that jumps between 25 and 40, and leaves the GPU some headroom</string>
+    <string name="frame_limit_off">Game default</string>
+    <string name="frame_limit_30">30 FPS</string>
+    <string name="frame_limit_20">20 FPS</string>
 
     <!-- GPU driver -->
     <string name="gpu_driver">GPU driver</string>

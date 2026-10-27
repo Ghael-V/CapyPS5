@@ -62,6 +62,36 @@ enum class CoreOption(
         listOf(1L to R.string.enabled, 0L to R.string.disabled),
         1L,
     ),
+    ShadowScale(
+        R.string.option_shadows,
+        R.string.option_shadows_desc,
+        "debug.capy.shadow_scale",
+        listOf(
+            1000L to R.string.shadows_full,
+            500L to R.string.shadows_half,
+            250L to R.string.shadows_quarter,
+        ),
+        1000L,
+    ),
+    EarlyDepth(
+        R.string.option_early_depth,
+        R.string.option_early_depth_desc,
+        // The core property disables them, so On is 0.
+        "debug.capy.no_early_z",
+        listOf(1L to R.string.disabled, 0L to R.string.enabled),
+        1L,
+    ),
+    FrameLimit(
+        R.string.option_frame_limit,
+        R.string.option_frame_limit_desc,
+        "debug.capy.fps_limit",
+        listOf(
+            0L to R.string.frame_limit_off,
+            30L to R.string.frame_limit_30,
+            20L to R.string.frame_limit_20,
+        ),
+        0L,
+    ),
     ;
 
     fun title(context: Context) = context.getString(titleRes)

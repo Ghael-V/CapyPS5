@@ -141,6 +141,8 @@ fun SettingsScreen(
                         CoreOption.ResolutionScale.label(context, ueScale),
                         onStep = { settings.updateUeResolution(cycle(scales, ueScale, it)) },
                     ),
+                    coreItem(CoreOption.ShadowScale),
+                    coreItem(CoreOption.EarlyDepth),
                     SettingItem(
                         context.getString(R.string.gpu_driver),
                         context.getString(R.string.gpu_driver_desc),
@@ -173,6 +175,7 @@ fun SettingsScreen(
             SettingsCategory(context.getString(R.string.category_performance), Icons.Outlined.Speed) {
                 listOf(
                     coreItem(CoreOption.AsyncShaders),
+                    coreItem(CoreOption.FrameLimit),
                     SettingItem(
                         context.getString(R.string.perf_overlay), context.getString(R.string.perf_overlay_desc),
                         settings.overlayMode.label(context),
