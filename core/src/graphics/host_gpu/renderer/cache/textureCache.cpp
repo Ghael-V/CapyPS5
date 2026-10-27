@@ -1106,7 +1106,12 @@ void TextureCache::MaterializeColorClear(ImageId id, const ImageDesc& desc,
 		const auto address = range.address + slice_size * (first + slice);
 		uint8_t code = 0;
 		if (!LibKernel::Memory::TryReadBacking(address, &code, sizeof(code))) {
-			EXIT("TextureCache: failed to read color metadata backing\n");
+			// Metadata over pages with no memory (a partially resident resource): no fast clear
+			// can be recorded there, so the image contents stand as they are.
+			Common::DebugFlags::NoteOnce("CapyPS5-Meta", address >> 12u,
+			                             "color metadata 0x%llx is not mapped: no fast clear",
+			                             static_cast<unsigned long long>(address));
+			continue;
 		}
 		vk::ClearValue clear {};
 		if (!DecodeColorClear(desc, code, clear.color)) {

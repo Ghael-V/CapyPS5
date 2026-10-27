@@ -315,6 +315,34 @@ public:
 		return true;
 	}
 
+	// Writes the mapped parts of the range; bytes over holes are dropped, as GPU writes to
+	// non-resident pages of a partially resident resource are.
+	bool TryWriteSparseBacking(uint64_t vaddr, const void* data, uint64_t size) {
+		if (!IsAvailable() || data == nullptr || size == 0 || UINT64_MAX - vaddr < size) {
+			return false;
+		}
+
+		std::lock_guard lock(m_mutex);
+		const auto      end     = vaddr + size;
+		auto            mapping = m_maps.lower_bound(vaddr);
+		if (mapping != m_maps.begin()) {
+			auto previous = std::prev(mapping);
+			if (previous->second.vaddr + previous->second.size > vaddr) {
+				mapping = previous;
+			}
+		}
+
+		const auto* source = static_cast<const uint8_t*>(data);
+		for (; mapping != m_maps.end() && mapping->second.vaddr < end; ++mapping) {
+			const auto& entry  = mapping->second;
+			const auto  start  = std::max(vaddr, entry.vaddr);
+			const auto  bytes  = std::min(end, entry.vaddr + entry.size) - start;
+			const auto  offset = entry.backing_offset + start - entry.vaddr;
+			std::memcpy(m_backing_base + offset, source + (start - vaddr), bytes);
+		}
+		return true;
+	}
+
 	bool MapFixed(uint64_t vaddr, uint64_t size, uint64_t backing_offset,
 	              VirtualMemory::Mode mode, FailureReason* failure_reason = nullptr) {
 		if (!IsAvailable() || !RangeOk(backing_offset, size)) {
@@ -827,6 +855,24 @@ public:
 			}
 		}
 		return m_backing->TryReadSparseBacking(vaddr, data, size);
+	}
+
+	bool TryWriteSparseBacking(uint64_t vaddr, const void* data, uint64_t size) {
+		if (!Owns(vaddr, size)) {
+			return false;
+		}
+		std::shared_lock lock(m_mutex);
+		auto            mapping = m_mapped.upper_bound(vaddr);
+		if (mapping != m_mapped.begin()) {
+			--mapping;
+		}
+		for (; mapping != m_mapped.end() && mapping->second.vaddr < vaddr + size; ++mapping) {
+			const auto& region = mapping->second;
+			if (region.type == MappingType::Private && region.vaddr + region.size > vaddr) {
+				return false;
+			}
+		}
+		return m_backing->TryWriteSparseBacking(vaddr, data, size);
 	}
 
 	bool BackingContains(uint64_t vaddr, uint64_t size) { return m_backing->Contains(vaddr, size); }
