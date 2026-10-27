@@ -984,6 +984,17 @@ Pm4ProcessResult CommandProcessor::Process(Pm4Execution&             execution,
 void CommandProcessor::ProcessIndirectBuffer(std::span<const uint32_t> commands, bool chain) {
 	EXIT_IF(g_current_execution == nullptr);
 	EXIT_IF(!g_current_execution->m_next_buffer.empty());
+	// Guest memory ends below 1 TiB (0xfc00000000). A command buffer beyond it would fault the
+	// real GPU, not the CPU: skip it and dump the packets that led to it.
+	constexpr uint64_t GuestAddressLimit = 1ull << 40u;
+	const auto         address           = reinterpret_cast<uint64_t>(commands.data());
+	if (address >= GuestAddressLimit || commands.size() > (GuestAddressLimit - address) / 4u) {
+		Common::DebugFlags::NoteOnce("CapyPS5-Pm4", address >> 12u,
+		                             "indirect buffer 0x%llx (%zu dwords) is outside guest memory: skipped",
+		                             static_cast<unsigned long long>(address), commands.size());
+		Pm4TraceAnomaly("indirect buffer outside guest memory", commands.data());
+		return;
+	}
 	g_current_execution->m_next_buffer = commands;
 	g_current_execution->m_chain       = chain;
 }

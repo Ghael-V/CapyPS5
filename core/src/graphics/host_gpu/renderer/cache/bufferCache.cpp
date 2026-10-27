@@ -330,11 +330,18 @@ bool BufferCache::FillMemory(uint64_t vaddr, uint64_t size, uint32_t value) {
 		return false;
 	}
 	std::vector<uint32_t> words(size / sizeof(uint32_t), value);
+	// Partially resident (sparse) ranges keep only the bytes over mapped pages. Flexible memory
+	// has no backing alias: the caller then runs the fill on the GPU.
+	if (!LibKernel::Memory::TryWriteBacking(vaddr, words.data(), size) &&
+	    !LibKernel::Memory::TryWriteSparseBacking(vaddr, words.data(), size)) {
+		Common::DebugFlags::NoteOnce("CapyPS5-Fill", vaddr >> 12u,
+		                             "fill of 0x%llx size=%llu has no backing alias: GPU fill",
+		                             static_cast<unsigned long long>(vaddr),
+		                             static_cast<unsigned long long>(size));
+		return false;
+	}
 	// The fill supersedes earlier GPU writes to the range; none may be downloaded over it.
 	DiscardGpuWrites(vaddr, size);
-	if (!LibKernel::Memory::TryWriteBacking(vaddr, words.data(), size)) {
-		EXIT("BufferCache: failed to fill guest memory 0x%016" PRIx64 "\n", vaddr);
-	}
 	// The next GPU use uploads the new contents.
 	m_memory_tracker.MarkRegionAsCpuModified(vaddr, size);
 	return true;

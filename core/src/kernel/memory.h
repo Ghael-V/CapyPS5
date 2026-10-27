@@ -120,6 +120,7 @@ bool                   TryWriteBacking(uint64_t vaddr, const void* data, uint64_
 bool                   TryReadBacking(uint64_t vaddr, void* data, uint64_t size);
 bool                   TryReadBufferBacking(uint64_t vaddr, void* data, uint64_t size);
 bool                   TryReadSparseBacking(uint64_t vaddr, void* data, uint64_t size);
+bool                   TryWriteSparseBacking(uint64_t vaddr, const void* data, uint64_t size);
 // Reads guest memory as the guest sees it, failing (not faulting) on unmapped pages.
 bool                   ReadGuestMemory(uint64_t vaddr, void* data, uint64_t size);
 // True if every page of the range is mapped and readable in this process.

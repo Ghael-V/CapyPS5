@@ -1085,6 +1085,10 @@ bool TryReadSparseBacking(uint64_t vaddr, void* data, uint64_t size) {
 	return g_guest_address_space->TryReadSparseBacking(vaddr, data, size);
 }
 
+bool TryWriteSparseBacking(uint64_t vaddr, const void* data, uint64_t size) {
+	return g_guest_address_space->TryWriteSparseBacking(vaddr, data, size);
+}
+
 bool ReadGuestMemory(uint64_t vaddr, void* data, uint64_t size) {
 	if (data == nullptr || size == 0 || UINT64_MAX - vaddr < size) {
 		return false;
@@ -2625,9 +2629,14 @@ int KYTY_SYSV_ABI KernelSetPrtAperture(int index, void* addr, size_t len) {
 		return KERNEL_ERROR_EINVAL;
 	}
 
-	if (len != 0 && (address == 0 || (address & (PRT_PAGE_SIZE - 1u)) != 0 ||
-	                 (len & (PRT_PAGE_SIZE - 1u)) != 0 || address < PRT_APERTURE_START ||
-	                 len > PRT_APERTURE_END - address)) {
+	const bool valid = len == 0 || (address != 0 && (address & (PRT_PAGE_SIZE - 1u)) == 0 &&
+	                                (len & (PRT_PAGE_SIZE - 1u)) == 0 &&
+	                                address >= PRT_APERTURE_START && len <= PRT_APERTURE_END - address);
+	Common::DebugFlags::NoteOnce("CapyPS5-Prt", (address >> 14u) ^ static_cast<uint64_t>(index),
+	                             "SetPrtAperture index=%d addr=0x%llx len=0x%llx%s", index,
+	                             static_cast<unsigned long long>(address),
+	                             static_cast<unsigned long long>(len), valid ? "" : " rejected");
+	if (!valid) {
 		return KERNEL_ERROR_EINVAL;
 	}
 
