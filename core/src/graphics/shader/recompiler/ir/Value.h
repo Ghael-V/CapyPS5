@@ -145,6 +145,8 @@ public:
 	void AddPhiOperand(Block* predecessor, Value value);
 	void ReplaceUsesWith(Value replacement, bool preserve = true);
 	void Invalidate();
+	// Drops the arguments without updating their use lists, for teardown that destroys both sides.
+	void DropArgs();
 
 	template <typename T>
 	requires(sizeof(T) <= sizeof(uint64_t) && std::is_trivially_copyable_v<T>)
@@ -164,6 +166,8 @@ public:
 private:
 	friend void EliminateDeadCode(const std::vector<Block*>& blocks);
 
+	template <typename Self>
+	static auto& ArgSlot(Self& self, size_t index);
 	void AddUse(Inst* used, size_t operand);
 	void RemoveUse(Inst* used, size_t operand);
 	void ClearArgs();
