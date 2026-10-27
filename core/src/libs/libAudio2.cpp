@@ -18,6 +18,7 @@
 #include <atomic>
 #include <cmath>
 #include <cstring>
+#include <span>
 #include <vector>
 
 #if defined(__ANDROID__)
@@ -177,17 +178,12 @@ struct AudioOut2MasteringStatesV2 {
 
 static std::atomic_uint64_t g_audioout2_next_context {1};
 static std::atomic_uint64_t g_audioout2_next_port {1};
-static AudioOut2UserHandle g_audioout2_next_user = 1;
+static AudioOut2UserHandle  g_audioout2_next_user = 1;
 
-struct AudioOut2ContextState {
-	bool                   used                = false;
-	AudioOut2ContextHandle handle              = 0;
-	uint32_t               queue_depth         = 4;
-	uint32_t               queued              = 0;
-	uint32_t               num_grains          = 512;
-	uint64_t               last_update         = 0;
-	int                    object_audio_handle = 0;
-};
+static constexpr uint32_t AUDIOOUT2_CHANNEL_PORTS_MAX = 32;
+static constexpr uint32_t AUDIOOUT2_OBJECT_PORTS_MAX  = 512;
+static constexpr uint32_t AUDIOOUT2_PORT_SLOT_BITS    = 10;
+static constexpr uint32_t AUDIOOUT2_CONTEXT_SLOT_BITS = 4;
 
 struct AudioOut2PortStateEntry {
 	bool                   used          = false;
@@ -204,6 +200,19 @@ struct AudioOut2PortStateEntry {
 	uint32_t               ambisonics        = UINT32_MAX;
 	bool                   attributes_locked = false;
 	std::vector<uint8_t>   pcm_data;
+};
+
+struct AudioOut2ContextState {
+	bool                   used                = false;
+	AudioOut2ContextHandle handle              = 0;
+	uint32_t               queue_depth         = 4;
+	uint32_t               queued              = 0;
+	uint32_t               num_grains          = 512;
+	uint64_t               last_update         = 0;
+	int                    object_audio_handle = 0;
+	uint32_t               max_ports           = 0;
+	// Channel slots precede object slots; each partition has its own creation limit.
+	std::vector<AudioOut2PortStateEntry> ports;
 };
 struct AudioOut2SpeakerArrayState {
 	bool                        used          = false;
@@ -232,12 +241,15 @@ struct AudioOut2Submission {
 static Common::Mutex                              g_audioout2_state_mutex;
 static std::array<AudioOut2ContextState, 16>      g_audioout2_contexts;
 static std::array<AudioOut2Submission, 16>        g_audioout2_submissions;
-static std::array<AudioOut2PortStateEntry, 256>   g_audioout2_ports;
-static std::vector<AudioOut2UserHandle>          g_audioout2_users;
+static std::vector<AudioOut2UserHandle>           g_audioout2_users;
 static Common::Mutex                              g_audioout2_speaker_array_mutex;
 static std::array<AudioOut2SpeakerArrayState, 32> g_audioout2_speaker_arrays;
 static Common::Mutex                              g_audioout2_latency_mutex;
 static std::array<AudioOut2LatencyState, 16>      g_audioout2_latencies;
+
+static_assert(AUDIOOUT2_CHANNEL_PORTS_MAX + AUDIOOUT2_OBJECT_PORTS_MAX <=
+              (1u << AUDIOOUT2_PORT_SLOT_BITS));
+static_assert(g_audioout2_contexts.size() == (1u << AUDIOOUT2_CONTEXT_SLOT_BITS));
 
 static constexpr int AUDIO_OUT2_ERROR_NOT_READY                   = -2144960504; /* 0x80268008 */
 static constexpr int AUDIO_OUT2_ERROR_PORT_FULL                   = -2144960494; /* 0x80268012 */
@@ -368,24 +380,28 @@ static void audioout2_update_context_locked(AudioOut2ContextState* state) {
 }
 
 static AudioOut2PortStateEntry* audioout2_find_port_locked(AudioOut2PortHandle port) {
-	for (auto& state: g_audioout2_ports) {
-		if (state.used && state.handle == port) {
-			return &state;
-		}
+	const auto context_slot =
+	    (port >> AUDIOOUT2_PORT_SLOT_BITS) & ((1u << AUDIOOUT2_CONTEXT_SLOT_BITS) - 1u);
+	const auto port_slot = port & ((1u << AUDIOOUT2_PORT_SLOT_BITS) - 1u);
+	auto&      context   = g_audioout2_contexts[context_slot];
+	if (context.used && port_slot < context.ports.size()) {
+		auto& state = context.ports[port_slot];
+		if (state.used && state.handle == port) return &state;
 	}
 
 	return nullptr;
 }
 
 static size_t audioout2_pcm_size(const AudioOut2PortStateEntry& state) {
-	const auto bytes_per_sample = (state.data_format & 0x7fu) == 1 ? sizeof(int16_t) : sizeof(float);
+	const auto bytes_per_sample =
+	    (state.data_format & 0x7fu) == 1 ? sizeof(int16_t) : sizeof(float);
 	return static_cast<size_t>(state.samples_num) *
 	       audioout2_data_format_channels(state.data_format) * bytes_per_sample;
 }
 
 static bool audioout2_context_has_queueable_device(const AudioOut2ContextState& context) {
-	for (const auto& state: g_audioout2_ports) {
-		if (state.used && state.context == context.handle && !state.pcm_data.empty()) {
+	for (const auto& state: context.ports) {
+		if (state.used && !state.pcm_data.empty()) {
 			const int handle = audioout2_port_type_is_object(state.port_type)
 			                       ? context.object_audio_handle
 			                       : state.audio_handle;
@@ -441,8 +457,8 @@ static void audioout2_queue_context_audio(AudioOut2ContextHandle ctx, AudioOut2S
 	params.reserve(AudioInternal::OUT_PORTS_MAX);
 	// A port's PCM covers one grain: the push consumes it, so a port the game stops feeding
 	// falls silent.
-	for (auto& state: g_audioout2_ports) {
-		if (!state.used || state.context != ctx || state.pcm_data.empty()) {
+	for (auto& state: context->ports) {
+		if (!state.used || state.pcm_data.empty()) {
 			continue;
 		}
 		if (audioout2_port_type_is_object(state.port_type)) {
@@ -482,14 +498,17 @@ int KYTY_SYSV_ABI AudioOut2ContextResetParam(AudioOut2ContextParam* params) {
 	EXIT_NOT_IMPLEMENTED(params == nullptr);
 
 	std::memset(params, 0, sizeof(AudioOut2ContextParam));
-	params->max_ports              = 256;
-	params->max_object_ports       = 256;
-	params->guarantee_object_ports = 0;
-	params->queue_depth            = 4;
-	params->num_grains             = 512;
-	params->flags                  = 1;
+	params->max_ports   = 8;
+	params->queue_depth = 1;
+	params->num_grains  = 256;
 
 	return OK;
+}
+
+static bool audioout2_valid_context_capacity(const AudioOut2ContextParam& params) {
+	return params.max_ports <= AUDIOOUT2_CHANNEL_PORTS_MAX &&
+	       params.max_object_ports <= AUDIOOUT2_OBJECT_PORTS_MAX &&
+	       params.guarantee_object_ports <= params.max_object_ports;
 }
 
 int KYTY_SYSV_ABI AudioOut2ContextQueryMemory(const AudioOut2ContextParam* params,
@@ -498,6 +517,9 @@ int KYTY_SYSV_ABI AudioOut2ContextQueryMemory(const AudioOut2ContextParam* param
 
 	EXIT_NOT_IMPLEMENTED(params == nullptr);
 	EXIT_NOT_IMPLEMENTED(memory_size == nullptr);
+	if (!audioout2_valid_context_capacity(*params)) {
+		return AUDIO_OUT2_ERROR_INVALID_PARAM;
+	}
 
 	const auto queue_depth = (params->queue_depth == 0 ? 4u : params->queue_depth);
 	*memory_size           = 0x10000u + static_cast<size_t>(queue_depth) * 0x590u;
@@ -513,6 +535,9 @@ int KYTY_SYSV_ABI AudioOut2ContextCreate(const AudioOut2ContextParam* params, vo
 
 	EXIT_NOT_IMPLEMENTED(params == nullptr);
 	EXIT_NOT_IMPLEMENTED(ctx == nullptr);
+	if (!audioout2_valid_context_capacity(*params)) {
+		return AUDIO_OUT2_ERROR_INVALID_PARAM;
+	}
 
 	const auto num_grains = params->num_grains == 0 ? 512u : params->num_grains;
 	const int  object_audio_handle =
@@ -541,6 +566,8 @@ int KYTY_SYSV_ABI AudioOut2ContextCreate(const AudioOut2ContextParam* params, vo
 	state->num_grains          = num_grains;
 	state->last_update         = audioout2_clock();
 	state->object_audio_handle = object_audio_handle;
+	state->max_ports           = params->max_ports;
+	state->ports.resize(params->max_ports + params->max_object_ports);
 	g_audioout2_state_mutex.Unlock();
 
 	LOGF("\t buffer      = 0x%016" PRIx64 "\n"
@@ -556,8 +583,8 @@ int KYTY_SYSV_ABI AudioOut2ContextDestroy(AudioOut2ContextHandle ctx) {
 	PRINT_NAME();
 	LOGF("\t ctx = 0x%016" PRIx64 "\n", ctx);
 
-	std::array<int, 257> audio_handles {};
-	size_t audio_handles_num = 0;
+	std::array<int, AUDIOOUT2_CHANNEL_PORTS_MAX + 1> audio_handles {};
+	size_t                                           audio_handles_num = 0;
 
 	g_audioout2_state_mutex.Lock();
 	auto* state = audioout2_find_context_locked(ctx);
@@ -565,15 +592,12 @@ int KYTY_SYSV_ABI AudioOut2ContextDestroy(AudioOut2ContextHandle ctx) {
 		if (state->object_audio_handle > 0) {
 			audio_handles[audio_handles_num++] = state->object_audio_handle;
 		}
-		*state = AudioOut2ContextState {};
-	}
-	for (auto& port_state: g_audioout2_ports) {
-		if (port_state.used && port_state.context == ctx) {
-			if (port_state.audio_handle > 0 && audio_handles_num < audio_handles.size()) {
+		for (const auto& port_state: state->ports) {
+			if (port_state.used && port_state.audio_handle > 0) {
 				audio_handles[audio_handles_num++] = port_state.audio_handle;
 			}
-			port_state = AudioOut2PortStateEntry {};
 		}
+		*state = AudioOut2ContextState {};
 	}
 	g_audioout2_state_mutex.Unlock();
 
@@ -601,9 +625,7 @@ int KYTY_SYSV_ABI AudioOut2ContextAdvance(AudioOut2ContextHandle ctx) {
 	g_audioout2_state_mutex.Lock();
 	if (auto* state = audioout2_find_context_locked(ctx); state != nullptr) {
 		audioout2_update_context_locked(state);
-	}
-	for (auto& port: g_audioout2_ports) {
-		if (port.used && port.context == ctx) {
+		for (auto& port: state->ports) {
 			port.attributes_locked = false;
 		}
 	}
@@ -702,21 +724,19 @@ static int PortCreateImpl(AudioOut2ContextHandle ctx, const AudioOut2PortParam* 
 	EXIT_NOT_IMPLEMENTED(params == nullptr);
 	EXIT_NOT_IMPLEMENTED(port == nullptr);
 
-	const auto next_port    = g_audioout2_next_port.fetch_add(1, std::memory_order_relaxed);
 	const auto audio_format = audioout2_data_format_to_audio_format(params->data_format);
 	const auto audio_type   = audioout2_port_type_to_audio_out_type(params->port_type);
+	const bool is_object    = audioout2_port_type_is_object(params->port_type);
 
 	g_audioout2_state_mutex.Lock();
-	const auto* context_state = audioout2_find_context_locked(ctx);
+	auto* context_state = audioout2_find_context_locked(ctx);
 	if (context_state == nullptr) {
 		g_audioout2_state_mutex.Unlock();
 		return AUDIO_OUT2_ERROR_INVALID_PARAM;
 	}
-	if (audioout2_port_type_is_object(params->port_type) &&
-	    (params->port_type != 0x100 || context_state->object_audio_handle == 0 ||
-	     params->sampling_freq != 48000 ||
-	     (audio_format != AudioInternal::Format::FloatMono &&
-	      audio_format != AudioInternal::Format::Signed16bitMono))) {
+	if (is_object && (params->port_type != 0x100 || params->sampling_freq != 48000 ||
+	                  (audio_format != AudioInternal::Format::FloatMono &&
+	                   audio_format != AudioInternal::Format::Signed16bitMono))) {
 		g_audioout2_state_mutex.Unlock();
 		return AUDIO_OUT2_ERROR_INVALID_PARAM;
 	}
@@ -727,42 +747,45 @@ static int PortCreateImpl(AudioOut2ContextHandle ctx, const AudioOut2PortParam* 
 		g_audioout2_state_mutex.Unlock();
 		return AUDIO_OUT2_ERROR_INVALID_PARAM;
 	}
-	AudioOut2PortStateEntry* port_state = nullptr;
-	for (auto& candidate: g_audioout2_ports) {
-		if (!candidate.used) {
-			port_state = &candidate;
-			break;
-		}
-	}
-	if (port_state != nullptr) {
-		*port_state               = AudioOut2PortStateEntry {};
-		port_state->used          = true;
-		port_state->handle        = next_port;
-		port_state->context       = ctx;
-		port_state->user          = params->user_handle;
-		port_state->port_type     = params->port_type;
-		port_state->data_format   = params->data_format;
-		port_state->sampling_freq = params->sampling_freq;
-		port_state->samples_num   = samples_num;
-		port_state->audio_format  = audio_format;
-		port_state->gains.fill(1.0f);
-	}
-	g_audioout2_state_mutex.Unlock();
-
-	if (port_state == nullptr) {
+	auto slots = std::span(context_state->ports);
+	slots =
+	    is_object ? slots.subspan(context_state->max_ports) : slots.first(context_state->max_ports);
+	const auto available = std::find_if(slots.begin(), slots.end(),
+	                                    [](const auto& candidate) { return !candidate.used; });
+	if (available == slots.end()) {
+		g_audioout2_state_mutex.Unlock();
 		return AUDIO_OUT2_ERROR_PORT_FULL;
 	}
+	const auto serial       = g_audioout2_next_port.fetch_add(1, std::memory_order_relaxed);
+	const auto context_slot = static_cast<uint64_t>(context_state - g_audioout2_contexts.data());
+	const auto port_slot    = static_cast<uint64_t>(&*available - context_state->ports.data());
+	const auto next_port    = (serial << (AUDIOOUT2_PORT_SLOT_BITS + AUDIOOUT2_CONTEXT_SLOT_BITS)) |
+	                          (context_slot << AUDIOOUT2_PORT_SLOT_BITS) | port_slot;
+	auto*      port_state   = &*available;
+	*port_state             = AudioOut2PortStateEntry {};
+	port_state->used        = true;
+	port_state->handle      = next_port;
+	port_state->context     = ctx;
+	port_state->user        = params->user_handle;
+	port_state->port_type   = params->port_type;
+	port_state->data_format = params->data_format;
+	port_state->sampling_freq = params->sampling_freq;
+	port_state->samples_num   = samples_num;
+	port_state->audio_format  = audio_format;
+	port_state->gains.fill(1.0f);
+	g_audioout2_state_mutex.Unlock();
 
 	int audio_handle = 0;
 
-	if (audio_format != AudioInternal::Format::Unknown &&
-	    !audioout2_port_type_is_object(params->port_type)) {
+	if (audio_format != AudioInternal::Format::Unknown && !is_object) {
 		audio_handle = AudioInternal::AudioOutOpen(audio_type, samples_num, params->sampling_freq,
 		                                           audio_format);
 	}
 
 	g_audioout2_state_mutex.Lock();
-	const bool reserved = port_state->used && port_state->handle == next_port;
+	// Context destruction may have freed or replaced the slots while the backend opened.
+	port_state          = audioout2_find_port_locked(next_port);
+	const bool reserved = port_state != nullptr;
 	if (reserved) {
 		port_state->audio_handle = audio_handle;
 	}
@@ -774,7 +797,7 @@ static int PortCreateImpl(AudioOut2ContextHandle ctx, const AudioOut2PortParam* 
 
 	*port = next_port;
 
-	if (next_port <= 16 || (next_port % 600) == 0) {
+	if (serial <= 16 || (serial % 600) == 0) {
 		PRINT_NAME();
 		LOGF("\t ctx           = 0x%016" PRIx64 "\n"
 		     "\t port          = 0x%016" PRIx64 "\n"
@@ -981,21 +1004,23 @@ int KYTY_SYSV_ABI AudioOut2UserDestroy(AudioOut2UserHandle handle) {
 	PRINT_NAME();
 	LOGF("\t handle = 0x%016" PRIx64 "\n", static_cast<uint64_t>(handle));
 	Common::LockGuard lock(g_audioout2_state_mutex);
-	const auto it = std::find(g_audioout2_users.begin(), g_audioout2_users.end(), handle);
+	const auto        it = std::find(g_audioout2_users.begin(), g_audioout2_users.end(), handle);
 	if (it == g_audioout2_users.end()) {
 		return AUDIO_OUT2_ERROR_INVALID_PARAM;
 	}
-	if (std::any_of(g_audioout2_ports.begin(), g_audioout2_ports.end(),
-	                [handle](const auto& port) { return port.used && port.user == handle; })) {
-		return AUDIO_OUT2_ERROR_BUSY;
+	for (const auto& context: g_audioout2_contexts) {
+		if (std::any_of(context.ports.begin(), context.ports.end(),
+		                [handle](const auto& port) { return port.used && port.user == handle; })) {
+			return AUDIO_OUT2_ERROR_BUSY;
+		}
 	}
 	g_audioout2_users.erase(it);
 	return OK;
 }
 
 int KYTY_SYSV_ABI AudioOut2UserGetSupportedAttributes(AudioOut2UserHandle handle,
-                                                       uint32_t* context_attributes,
-                                                       uint32_t* port_attributes) {
+                                                      uint32_t*           context_attributes,
+                                                      uint32_t*           port_attributes) {
 	if (context_attributes == nullptr || port_attributes == nullptr) {
 		return AUDIO_OUT2_ERROR_INVALID_PARAM;
 	}
