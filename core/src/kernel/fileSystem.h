@@ -78,6 +78,7 @@ int KYTY_SYSV_ABI     KernelFstat(int d, FileStat* sb);
 int KYTY_SYSV_ABI     KernelFtruncate(int d, int64_t length);
 int KYTY_SYSV_ABI     KernelUnlink(const char* path);
 int KYTY_SYSV_ABI     KernelRename(const char* from, const char* to);
+int KYTY_SYSV_ABI     KernelUtimes(const char* path, const void* times);
 int KYTY_SYSV_ABI     KernelGetdirentries(int fd, char* buf, int nbytes, int64_t* basep);
 int KYTY_SYSV_ABI     KernelGetdents(int fd, char* buf, int nbytes);
 int KYTY_SYSV_ABI     KernelMkdir(const char* path, uint16_t mode);

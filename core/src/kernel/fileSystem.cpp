@@ -1332,6 +1332,27 @@ int KYTY_SYSV_ABI KernelRename(const char* from, const char* to) {
 	return OK;
 }
 
+// times points to two guest timevals (access, modification). Host timestamps are not tracked
+// for the guest, so only the existence of the file matters.
+int KYTY_SYSV_ABI KernelUtimes(const char* path, const void* /*times*/) {
+	PRINT_NAME();
+
+	if (path == nullptr) {
+		return KERNEL_ERROR_EFAULT;
+	}
+
+	auto real_path = g_mount_points->ResolvePath(std::string(path));
+	if (real_path.empty() || (!Common::IsArchivePath(real_path) &&
+	                          !Common::File::IsFileExisting(real_path) &&
+	                          !Common::File::IsDirectoryExisting(real_path))) {
+		return KERNEL_ERROR_ENOENT;
+	}
+
+	LOGF("\tKernelUtimes: %s\n", path);
+
+	return OK;
+}
+
 int KYTY_SYSV_ABI KernelGetdirentries(int fd, char* buf, int nbytes, int64_t* basep) {
 	PRINT_NAME();
 
