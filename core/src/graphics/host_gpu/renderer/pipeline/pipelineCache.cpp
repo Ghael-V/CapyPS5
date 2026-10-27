@@ -1150,19 +1150,16 @@ PipelineCache::Pipeline* PipelineCache::GetGraphicsPipeline(
 		EXIT("Pipeline: sample-rate shading is required but unsupported by the host\n");
 	}
 	static_params.alpha_to_coverage_enable = ps_active && ctx.GetShaderRegisters().AlphaToMask();
+	// Cull mode and front face are dynamic state (UpdateGraphicsDynamicState); the polygon mode
+	// still depends on which faces are culled.
 	const bool rect_list = Prospero::IsRectList(command.GetUserConfig().GetPrimType());
-	// Bisection aid: `setprop debug.capy.no_cull 1` disables face culling.
 	static Common::DebugFlags::CachedValue no_cull("debug.capy.no_cull", 0);
-	static_params.cull_back  = !rect_list && mc.cull_back && no_cull.Get() == 0;
-	static_params.cull_front = !rect_list && mc.cull_front && no_cull.Get() == 0;
-	// Diagnostic winding reversal; included in the static key so it can change live.
-	static Common::DebugFlags::CachedValue flip_front("debug.capy.flip_front", 0);
-	static_params.face       = mc.face ^ (flip_front.Get() != 0);
+	const bool cull_back  = !rect_list && mc.cull_back && no_cull.Get() == 0;
+	const bool cull_front = !rect_list && mc.cull_front && no_cull.Get() == 0;
 	static_params.provoking_vtx_last = mc.provoking_vtx_last;
 	std::memcpy(static_params.vs_scaled_images, &vs_scaled_images, sizeof(vs_scaled_images));
 	std::memcpy(static_params.ps_scaled_images, &ps_scaled_images, sizeof(ps_scaled_images));
-	static_params.polygon_mode =
-	    ResolvePolygonMode(mc, static_params.cull_front, static_params.cull_back);
+	static_params.polygon_mode = ResolvePolygonMode(mc, cull_front, cull_back);
 	if (!m_graphics.fill_mode_non_solid_enabled) {
 		// Wireframe and point fill need fillModeNonSolid (missing on Mali); draw solid instead.
 		static_params.polygon_mode = vk::PolygonMode::eFill;

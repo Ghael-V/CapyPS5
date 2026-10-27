@@ -477,6 +477,23 @@ static void UpdateGraphicsDynamicState(const CommandBuffer& buffer, DynamicState
 		    (use_front ? poly_offset.front_scale : poly_offset.back_scale) / 16.0f;
 		dynamic_state.SetDepthBias(constant_factor, poly_offset.clamp, slope_factor);
 	}
+
+	// Rect lists are drawn without culling. Bisection aids: `setprop debug.capy.no_cull 1`
+	// disables face culling, `debug.capy.flip_front 1` reverses the winding.
+	static Common::DebugFlags::CachedValue no_cull("debug.capy.no_cull", 0);
+	static Common::DebugFlags::CachedValue flip_front("debug.capy.flip_front", 0);
+	vk::CullModeFlags cull_mode {};
+	if (!Prospero::IsRectList(buffer.GetUserConfig().GetPrimType()) && no_cull.Get() == 0) {
+		if (mode.cull_front) {
+			cull_mode |= vk::CullModeFlagBits::eFront;
+		}
+		if (mode.cull_back) {
+			cull_mode |= vk::CullModeFlagBits::eBack;
+		}
+	}
+	dynamic_state.SetCullMode(cull_mode);
+	dynamic_state.SetFrontFace((mode.face != (flip_front.Get() != 0)) ? vk::FrontFace::eClockwise
+	                                                                  : vk::FrontFace::eCounterClockwise);
 	if (Common::DebugFlags::FrameTracing()) {
 		Common::DebugFlags::FrameTrace(
 		    "    zstate test=%d write=%d op=%d bounds=%d [%.4f,%.4f] bias=%d front=%d back=%d "
