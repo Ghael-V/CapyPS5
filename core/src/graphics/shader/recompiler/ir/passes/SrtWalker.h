@@ -63,6 +63,8 @@ SrtRuntime CleanRuntime(SrtRuntime runtime);
 [[nodiscard]] std::string_view LastSrtFailedOpcode();
 [[nodiscard]] uint64_t         LastSrtFailedAddress();
 [[nodiscard]] bool             LastSrtFailedSpecialization();
+// Whether an image some reached block lists (or that no block lists) is active in the last walk.
+bool WalkedImageActive(const ResourcePlan& plan, uint32_t image);
 
 // Nonnegative affine coefficients: element zero is constant, remaining elements are
 // caller-selected leaves. Runtime range proofs must additionally exclude U32 wrap.

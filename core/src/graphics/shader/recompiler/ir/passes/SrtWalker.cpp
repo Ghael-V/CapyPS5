@@ -1382,6 +1382,7 @@ bool SrtWalker::RefreshFlatBuffer(std::vector<uint32_t>& flat) {
 		return true;
 	}
 	m_program.Scratch().active_sources.clear();
+	m_program.Scratch().active_images.clear();
 	return RefreshFlatTables(flat) || RefreshFlatBufferInterpreted(flat);
 }
 
@@ -1393,6 +1394,7 @@ bool SrtWalker::RefreshFlatBufferInterpreted(std::vector<uint32_t>& flat) {
 	if (m_program.srt_code && m_runtime.read_memory == nullptr) {
 		flat.resize(m_program.srt_reads.size());
 		m_program.Scratch().active_sources.clear();
+	m_program.Scratch().active_images.clear();
 		m_context.values.resize(m_program.evaluation_value_count);
 		using Walker = bool KYTY_SYSV_ABI (*)(const uint32_t*, uint32_t*,
 		    ResourcePlan::EvaluationContext::Entry*, uint64_t, size_t);
@@ -1411,8 +1413,10 @@ bool SrtWalker::RefreshFlatBufferInterpreted(std::vector<uint32_t>& flat) {
 		return read.flat_offset < flat.size() && evaluator.Evaluate(read.value, flat[read.flat_offset]);
 	};
 	auto& active = m_program.Scratch().active_sources;
+	auto& active_images = m_program.Scratch().active_images;
 	if (m_program.control_flow.empty()) {
 		active.clear();
+		active_images.clear();
 		flat.resize(m_program.srt_reads.size());
 		for (uint32_t slot = 0; slot < m_program.srt_reads.size(); ++slot) {
 			if (!refresh(slot)) return false;
@@ -1461,14 +1465,26 @@ bool SrtWalker::RefreshFlatBufferInterpreted(std::vector<uint32_t>& flat) {
 	active.assign(m_program.descriptor_sources.size(), 1u);
 	for (const auto& block: m_program.control_flow)
 		for (const auto source: block.sources) active.at(source) = 0u;
+	// Likewise images: one that only unreached blocks list reads as null.
+	active_images.assign(m_program.info.images.size(), 1u);
+	for (const auto& block: m_program.control_flow)
+		for (const auto image: block.images) active_images.at(image) = 0u;
 	for (uint32_t index = 0; index < visited.size(); ++index) {
 		if (!visited[index]) continue;
 		const auto& block = m_program.control_flow[index];
 		for (const auto source: block.sources) active[source] = 1u;
+		for (const auto image: block.images) active_images[image] = 1u;
 		for (const auto slot: block.srt_reads)
 			if (!refresh(slot)) return false;
 	}
 	return true;
+}
+
+bool WalkedImageActive(const ResourcePlan& plan, uint32_t image) {
+	// `setprop debug.capy.unreached_image_null 0` keeps such images bound to their source's T#.
+	static Common::DebugFlags::CachedValue enabled("debug.capy.unreached_image_null", 1);
+	const auto& active = plan.Scratch().active_images;
+	return enabled.Get() == 0 || active.empty() || active.at(image) != 0u;
 }
 
 bool ValidateRuntimeValue(const ResourcePlan& program, Value value, RuntimeValueType type) {

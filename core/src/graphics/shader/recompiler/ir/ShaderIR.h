@@ -683,6 +683,7 @@ struct ResourceBlock {
 	Value                 condition;
 	std::vector<uint32_t> successors;
 	std::vector<uint32_t> sources;
+	std::vector<uint32_t> images;
 	std::vector<uint32_t> srt_reads;
 };
 
@@ -784,6 +785,7 @@ struct ResourcePlan {
 	struct EvaluationScratch {
 		std::deque<EvaluationContext> evaluation_contexts;
 		std::vector<uint8_t>          active_sources;
+		std::vector<uint8_t>          active_images;
 		std::vector<uint8_t>          visited_blocks;
 		std::vector<uint8_t>          reachable_blocks;
 		std::vector<uint32_t>         pending_blocks;
