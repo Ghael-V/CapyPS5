@@ -23,6 +23,7 @@
 #include "kernel/memory.h"
 #include "kernel/pthread.h"
 #include "loader/elf.h"
+#include "loader/fexGuestPatches.h"
 #include "loader/gamePatch.h"
 #include "loader/guestInstructionPatcher.h"
 #include "loader/jit.h"
@@ -1922,6 +1923,11 @@ void RuntimeLinker::LoadProgramToMemory(Program* program) {
 	const bool protect_memory_faults = false;
 #endif
 	const bool patch_guest_instructions = protect_memory_faults || emulate_amd;
+#if defined(__x86_64__) || defined(_M_X64)
+	constexpr bool patch_fex_instructions = false;
+#else
+	constexpr bool patch_fex_instructions = true;
+#endif
 
 	constexpr uint64_t INSTRUCTION_TRAMPOLINE_SIZE = 8u * 1024u * 1024u;
 	if (patch_guest_instructions) {
@@ -2043,7 +2049,8 @@ void RuntimeLinker::LoadProgramToMemory(Program* program) {
 			program->proc_param_vaddr = phdr[i].p_vaddr + program->base_vaddr;
 		}
 
-		if (patch_guest_instructions && phdr[i].p_type == PT_GNU_EH_FRAME) {
+		if ((patch_guest_instructions || patch_fex_instructions) &&
+		    phdr[i].p_type == PT_GNU_EH_FRAME) {
 			eh_frame_header_addr = phdr[i].p_vaddr + program->base_vaddr;
 			eh_frame_header_size = phdr[i].p_memsz;
 		}
@@ -2105,6 +2112,27 @@ void RuntimeLinker::LoadProgramToMemory(Program* program) {
 			                                         : "patched";
 			Log::WriteToConsoleAndLog(
 			    fmt::format("AMD CPU compatibility: {} {} ({})\n", module_name, status, details));
+		}
+	}
+
+	if (patch_fex_instructions && eh_frame_header_size != 0) {
+		std::vector<uintptr_t> function_starts;
+		if (DecodeEhFrameFunctionStarts(eh_frame_header_addr, eh_frame_header_size,
+		                                &function_starts)) {
+			uint64_t patched = 0;
+			for (const auto& [segment_addr, segment_size]: executable_segments) {
+				const auto count =
+				    PatchFexUnsupportedInstructions(segment_addr, segment_size, function_starts);
+				if (count != 0) {
+					Common::VirtualMemory::FlushInstructionCache(segment_addr, segment_size);
+				}
+				patched += count;
+			}
+			if (patched != 0) {
+				Log::WriteToConsoleAndLog(
+				    fmt::format("{}: {} MONITORX/MWAITX instructions turned into NOPs\n",
+				                Common::PathToString(program->file_name.filename()), patched));
+			}
 		}
 	}
 

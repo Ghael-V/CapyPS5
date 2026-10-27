@@ -4,6 +4,10 @@
 
 #include "loader/guestInstructionPatcher.h"
 
+#include <cstdint>
+#include <cstring>
+#include <vector>
+
 #if !(defined(__x86_64__) || defined(_M_X64))
 
 namespace Loader {
@@ -22,11 +26,6 @@ GuestInstructionPatchResult PatchGuestInstructions(
     bool /*protect_memory*/, bool /*emulate_amd*/,
     GuestInstructionHostFeatures /*host_features*/) {
 	return {};
-}
-
-bool DecodeEhFrameFunctionStarts(uint64_t /*eh_frame_header_addr*/, uint64_t /*eh_frame_header_size*/,
-                                 std::vector<uintptr_t>* /*function_starts*/) {
-	return true;
 }
 
 } // namespace Loader
@@ -1597,6 +1596,31 @@ GuestInstructionPatchResult PatchGuestInstructions(u64 segment_addr, u64 segment
 	return result;
 }
 
+void RegisterGuestInstructionPatchModule(void* module_ptr, uint64_t module_size,
+                                         void* trampoline_area_ptr, uint64_t trampoline_area_size) {
+	EXIT_IF(module_ptr == nullptr || module_size == 0 || trampoline_area_ptr == nullptr ||
+	        trampoline_area_size == 0);
+	const auto module_addr = reinterpret_cast<u64>(module_ptr);
+	g_patch_modules.erase(module_addr);
+	g_patch_modules.emplace(std::piecewise_construct, std::forward_as_tuple(module_addr),
+	                        std::forward_as_tuple(static_cast<u8*>(module_ptr), module_size,
+	                                              static_cast<u8*>(trampoline_area_ptr),
+	                                              trampoline_area_size));
+}
+
+void UnregisterGuestInstructionPatchModule(void* module_ptr) {
+	g_patch_modules.erase(reinterpret_cast<u64>(module_ptr));
+}
+
+#undef ASSERT
+
+} // namespace Loader
+
+#endif
+
+// The eh_frame function-start reader is shared by every host (FEX patches on ARM64 use it).
+namespace Loader {
+
 namespace {
 
 constexpr uint8_t DW_EH_PE_FORMAT_MASK      = 0x0f;
@@ -1772,24 +1796,4 @@ bool DecodeEhFrameFunctionStarts(uint64_t eh_frame_header_addr, uint64_t eh_fram
 	return true;
 }
 
-void RegisterGuestInstructionPatchModule(void* module_ptr, uint64_t module_size,
-                                         void* trampoline_area_ptr, uint64_t trampoline_area_size) {
-	EXIT_IF(module_ptr == nullptr || module_size == 0 || trampoline_area_ptr == nullptr ||
-	        trampoline_area_size == 0);
-	const auto module_addr = reinterpret_cast<u64>(module_ptr);
-	g_patch_modules.erase(module_addr);
-	g_patch_modules.emplace(std::piecewise_construct, std::forward_as_tuple(module_addr),
-	                        std::forward_as_tuple(static_cast<u8*>(module_ptr), module_size,
-	                                              static_cast<u8*>(trampoline_area_ptr),
-	                                              trampoline_area_size));
-}
-
-void UnregisterGuestInstructionPatchModule(void* module_ptr) {
-	g_patch_modules.erase(reinterpret_cast<u64>(module_ptr));
-}
-
-#undef ASSERT
-
 } // namespace Loader
-
-#endif
