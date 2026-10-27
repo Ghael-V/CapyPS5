@@ -436,7 +436,9 @@ static void audioout2_queue_context_audio(AudioOut2ContextHandle ctx, AudioOut2S
 	out.object_mix.clear();
 	std::vector<AudioInternal::OutputParam> params;
 	params.reserve(AudioInternal::OUT_PORTS_MAX);
-	for (const auto& state: g_audioout2_ports) {
+	// A port's PCM covers one grain: the push consumes it, so a port the game stops feeding
+	// falls silent.
+	for (auto& state: g_audioout2_ports) {
 		if (!state.used || state.context != ctx || state.pcm_data.empty()) {
 			continue;
 		}
@@ -444,10 +446,11 @@ static void audioout2_queue_context_audio(AudioOut2ContextHandle ctx, AudioOut2S
 			audioout2_mix_object(out.object_mix, context->num_grains, state);
 		} else if (state.audio_handle > 0 && params.size() < AudioInternal::OUT_PORTS_MAX) {
 			const auto i = params.size();
-			out.pcm[i]   = state.pcm_data;
+			out.pcm[i].swap(state.pcm_data);
 			out.gains[i] = state.gains;
 			params.push_back({state.audio_handle, out.pcm[i].data(), out.gains[i].data()});
 		}
+		state.pcm_data.clear();
 	}
 	if (!out.object_mix.empty() && params.size() < AudioInternal::OUT_PORTS_MAX) {
 		params.push_back({context->object_audio_handle, out.object_mix.data()});
