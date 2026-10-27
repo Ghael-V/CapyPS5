@@ -372,6 +372,18 @@ bool ResolveSelectorKeys(const DescriptorSource::IndirectDescriptor& indirect,
 		keys.resize(count);
 		return true;
 	};
+	// Reads the key of each record whose rank is set.
+	const auto read_ranks = [&](uint64_t base, uint64_t size, uint64_t first, uint64_t step,
+	                            uint32_t ranks) {
+		keys.reserve(std::popcount(ranks));
+		for (; ranks != 0u; ranks &= ranks - 1u) {
+			const auto offset = first + std::countr_zero(ranks) * step;
+			uint32_t key = 0;
+			if (offset > UINT32_MAX || !read_selector(base, size, offset, {&key, 1})) return false;
+			keys.push_back(key);
+		}
+		return true;
+	};
 	if (selector->rows) {
 		const auto& rows = *selector->rows;
 		DescriptorValue count_value;
@@ -491,8 +503,32 @@ bool ResolveSelectorKeys(const DescriptorSource::IndirectDescriptor& indirect,
 		// Out-of-bounds scalar reads return zero.
 		const auto end = count != 0u ? last * step + selector->offset + 4u : 0u;
 		if (end > uint64_t {UINT32_MAX} + 1u) return false;
-		if (!read_keys(base, size, uint64_t {first} * step + selector->offset, step, count))
+		const auto start = uint64_t {first} * step + selector->offset;
+		if (selector->ranks) {
+			// A scan selects the ranks some word of its mask's address class sets.
+			const auto& mask = *selector->ranks;
+			DescriptorValue mask_value;
+			ShaderBufferResource masks;
+			if (count > 32u || !WalkedDescriptor(program, mask.source, mask_value) ||
+			    !DecodeBufferDescriptor(mask_value, masks)) return false;
+			// Each chunk holds whole strides of the power-of-two class, or one of its words.
+			const auto words = mask.stride / 4u;
+			const auto chunk =
+			    words <= MaxIndirectDescriptorProbes ? MaxIndirectDescriptorProbes : 1u;
+			uint32_t ranks = 0;
+			for (auto at = uint64_t {mask.offset}; at + 4u <= masks.GetSize();
+			     at += uint64_t {std::max(chunk, words)} * 4u) {
+				keys.resize(std::min<uint64_t>((masks.GetSize() - at) / 4u, chunk));
+				if (!ReadScalarTable(masks.Base48(), masks.GetSize(), at, runtime, keys))
+					return false;
+				for (size_t word = 0; word < keys.size(); word += words) ranks |= keys[word];
+			}
+			keys.clear();
+			if (count < 32u) ranks &= (1u << count) - 1u;
+			if (!read_ranks(base, size, start, step, ranks)) return false;
+		} else if (!read_keys(base, size, start, step, count)) {
 			return false;
+		}
 	} else if (!indirect.selector_mask.IsEmpty()) {
 		uint32_t mask = 0;
 		uint32_t count = 0;
@@ -504,18 +540,8 @@ bool ResolveSelectorKeys(const DescriptorSource::IndirectDescriptor& indirect,
 		if (count < 32u) mask &= (1u << count) - 1u;
 		const auto material_base =
 		    (static_cast<uint64_t>(material_value.dwords[1]) << 32u) | material_value.dwords[0];
-		keys.reserve(std::popcount(mask));
-		while (mask != 0u) {
-			const auto index = std::countr_zero(mask);
-			const auto offset = static_cast<uint64_t>(selector->offset) +
-			                    static_cast<uint64_t>(index) * selector->stride;
-			if (offset > UINT32_MAX) return false;
-			uint32_t key = 0;
-			if (!read_selector(material_base, UINT64_MAX, static_cast<uint32_t>(offset),
-			                   {&key, 1})) return false;
-			keys.push_back(key);
-			mask &= mask - 1u;
-		}
+		if (!read_ranks(material_base, UINT64_MAX, selector->offset, selector->stride, mask))
+			return false;
 	} else if (selector->stride == 0u) {
 		ShaderBufferResource material;
 		if (!DecodeBufferDescriptor(material_value, material) ||

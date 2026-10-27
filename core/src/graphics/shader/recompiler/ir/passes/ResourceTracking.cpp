@@ -2556,8 +2556,10 @@ private:
 			if (bound != nullptr && bound->GetOpcode() == ValueOpcode::ULessThan32) {
 				count = bound->Arg(1);
 			} else if (workgroup_axis == UINT32_MAX && !require_bound) {
-				// Other bounded indices, such as bit scans, read the records up to their maximum.
+				// Other bounded indices, such as bit scans, read the records up to their maximum;
+				// a bit scan of a nonzero mask load reads only the ranks its words set.
 				const auto maximum = SelectorMaximum(index);
+				if (maximum == 31u) selector.ranks = BitScanRanks(index);
 				if (maximum < MaxIndirectDescriptorProbes) count = Value(maximum + 1u);
 			}
 			// A record selected from a shared append list is below the list's bound.
@@ -2754,8 +2756,10 @@ private:
 			bool all = true;
 			std::vector<size_t> terms;
 		};
-		const auto load_guard = reads[0]->Arg(4).Resolve();
-		const auto words = static_cast<uint32_t>(reads.size()) * 4u;
+		// A scalar load reads one word without EXEC; four-word loads take their guard.
+		const bool scalar = reads[0]->GetOpcode() == ValueOpcode::ReadConstBuffer;
+		const auto load_guard = scalar ? Value(true) : reads[0]->Arg(4).Resolve();
+		const auto words = static_cast<uint32_t>(reads.size()) * (scalar ? 1u : 4u);
 		std::vector<State> states(2);
 		std::vector<Equation> equations(2);
 		const auto add = [&](State state) {
@@ -2823,6 +2827,9 @@ private:
 							equation.terms = {1u};
 						break;
 					}
+					case ValueOpcode::ReadConstBuffer:
+						if (scalar && inst == reads[state.component]) equation.terms = {1u};
+						break;
 					case ValueOpcode::Phi:
 						// The predecessor may be an earlier outer iteration. Establish
 						// this register's invariant without the current word or EXEC.
@@ -2889,6 +2896,52 @@ private:
 			}
 		} while (changed);
 		return std::ranges::all_of(roots, [&](size_t root) { return valid[root]; });
+	}
+
+	// The mask words whose set bits are every record a bit scan of index selects: the scanned
+	// value keeps only bits of one scalar load, which reads a word its address can reach.
+	std::optional<DescriptorSource::IndirectDescriptor::SelectorRead::MaskRanks>
+	BitScanRanks(Value index) {
+		const auto* scan = index.Resolve().TryInstruction();
+		if (scan == nullptr || scan->GetOpcode() != ValueOpcode::FindILsb32) return {};
+		const auto* masked = scan->Arg(0).Resolve().TryInstruction();
+		if (masked == nullptr) return {};
+		std::vector<const Inst*> values {masked};
+		const Inst* load = nullptr;
+		for (size_t i = 0; i < values.size() && load == nullptr; ++i) {
+			const auto* value = values[i];
+			if (value->GetOpcode() == ValueOpcode::ReadConstBuffer) load = value;
+			if (value->GetOpcode() != ValueOpcode::Phi &&
+			    value->GetOpcode() != ValueOpcode::BitwiseAnd32) continue;
+			for (size_t arg = 0; arg < value->NumArgs(); ++arg) {
+				const auto* next = value->Arg(arg).Resolve().TryInstruction();
+				if (next != nullptr && std::ranges::find(values, next) == values.end())
+					values.push_back(next);
+			}
+		}
+		uint32_t memory_index = 0;
+		const auto* memory = load != nullptr ? ScalarReadMemory(*load, memory_index) : nullptr;
+		if (memory == nullptr || memory->offset > INT32_MAX ||
+		    !MemoryIndexBelongsTo(memory_index, *load) ||
+		    !BitsetMaskSubset(scan->Arg(0), Value(true), Value(0u), std::array {load})) return {};
+		auto address = load->Arg(1);
+		auto active = Value(true);
+		const auto* lane = address.Resolve().TryInstruction();
+		if (lane != nullptr && lane->GetOpcode() == ValueOpcode::ReadFirstLane) {
+			if (!HasActiveLane(lane->Arg(1), lane->Parent())) return {};
+			active = lane->Arg(1);
+			address = lane->Arg(0);
+		}
+		// A left shift keeps the address a multiple of its scale; other addresses read any word.
+		const auto* shift = ActiveValue(address, active).TryInstruction();
+		uint32_t bits = 0;
+		if (shift == nullptr || shift->GetOpcode() != ValueOpcode::ShiftLeftLogical32 ||
+		    !ImmediateU32(shift->Arg(1), bits) || bits >= 32u) bits = 0;
+		DescriptorSource source;
+		if (!MakeRuntimeTableSource(*load, source)) return {};
+		return DescriptorSource::IndirectDescriptor::SelectorRead::MaskRanks {
+		    .source = InternSource(source), .stride = std::max(1u << bits, 4u),
+		    .offset = memory->offset & ~3u};
 	}
 
 	bool MatchBitsetSelector(Value rank, Value active, SelectorBounds bounds, uint32_t words,

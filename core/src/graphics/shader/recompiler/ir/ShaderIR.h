@@ -608,6 +608,13 @@ struct DescriptorSource {
 
 				bool operator==(const CountedRows& other) const = default;
 			};
+			struct MaskRanks {
+				uint32_t source = UINT32_MAX;
+				uint32_t stride = 0; // Byte spacing of the mask words its load can address.
+				uint32_t offset = 0;
+
+				bool operator==(const MaskRanks& other) const = default;
+			};
 			uint32_t source = UINT32_MAX;
 			uint32_t stride = 0;
 			uint32_t offset = 0;
@@ -615,11 +622,12 @@ struct DescriptorSource {
 			uint32_t bit_offset = 0;
 			uint32_t bit_mask = UINT32_MAX;
 			bool global = false;
-			// Four DWORD bitmap words per record; set-bit ranks subtract from the last key.
+			// Four or eight DWORD bitmap words per record; set ranks subtract from the last key.
 			bool bitset = false;
 			std::optional<CountedRows> rows;
 			std::vector<std::pair<uint32_t, uint32_t>> byte_ranges;
 			std::optional<uint32_t> excluded; // A guard keeps this key from the read.
+			std::optional<MaskRanks> ranks;   // Records are the bits some mask word sets.
 
 			bool operator==(const SelectorRead& other) const = default;
 		};
