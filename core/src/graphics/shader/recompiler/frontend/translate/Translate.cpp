@@ -1186,6 +1186,14 @@ IR::Program TranslateProgram(const Decoder::Program& decoded, const CFG::Graph& 
 		                                               : IR::U32(IR::Value(0u));
 		entry_ir.SetExecLo(initial_lo);
 		entry_ir.SetExecHi(initial_hi);
+		const auto active_lane_count = [&] {
+			auto count = IR::U32(entry_ir.Emit(IR::ValueOpcode::BitCount32, {initial_lo}));
+			if (options.wave_size == 64u) {
+				count = entry_ir.IAdd(count, IR::U32(entry_ir.Emit(
+				    IR::ValueOpcode::BitCount32, {initial_hi})));
+			}
+			return count;
+		};
 		if (options.stage == ShaderType::Compute) {
 			const auto* cs = options.input_info.compute;
 			const auto  thread_ids =
@@ -1324,7 +1332,7 @@ IR::Program TranslateProgram(const Decoder::Program& decoded, const CFG::Graph& 
 				                      builtin(IR::StageInputKind::WorkgroupId, 1));
 			}
 		} else if (options.stage == ShaderType::Local) {
-			entry_ir.SetScalarReg(static_cast<IR::ScalarReg>(3), IR::U32(IR::Value(64u)));
+			entry_ir.SetScalarReg(static_cast<IR::ScalarReg>(3), active_lane_count());
 			entry_ir.SetVectorReg(static_cast<IR::VectorReg>(2),
 			                      builtin(IR::StageInputKind::VertexIndex));
 			entry_ir.SetVectorReg(static_cast<IR::VectorReg>(3), IR::U32(IR::Value(0u)));
@@ -1411,15 +1419,10 @@ IR::Program TranslateProgram(const Decoder::Program& decoded, const CFG::Graph& 
 		} else if (options.stage == ShaderType::Vertex) {
 			// Vulkan owns primitive assembly; each vertex subgroup is one NGG wave.
 			// ESVertCount describes input vertices, independently of lane ordinals.
-			auto vertex_count = IR::U32(entry_ir.Emit(IR::ValueOpcode::BitCount32, {initial_lo}));
-			if (options.wave_size == 64u) {
-				vertex_count = entry_ir.IAdd(vertex_count, IR::U32(entry_ir.Emit(
-				    IR::ValueOpcode::BitCount32, {initial_hi})));
-			}
 			entry_ir.SetScalarReg(static_cast<IR::ScalarReg>(2),
 			                      IR::U32(IR::Value(options.wave_size << 12u)));
 			entry_ir.SetScalarReg(static_cast<IR::ScalarReg>(3),
-			                      entry_ir.BitwiseOr(vertex_count, IR::U32(IR::Value(1u << 28u))));
+			                      entry_ir.BitwiseOr(active_lane_count(), IR::U32(IR::Value(1u << 28u))));
 			auto        vertex_index   = builtin(IR::StageInputKind::VertexIndex);
 			auto        instance_index = builtin(IR::StageInputKind::InstanceIndex);
 			const auto& vertex_input   = *options.input_info.vertex;
