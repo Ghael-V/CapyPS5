@@ -15,8 +15,8 @@ android {
         applicationId = "org.capyps5.emulator"
         minSdk = 31
         targetSdk = 34
-        versionCode = 3
-        versionName = "0.0.3"
+        versionCode = 4
+        versionName = "0.0.4"
 
         ndk {
             abiFilters.add("arm64-v8a")

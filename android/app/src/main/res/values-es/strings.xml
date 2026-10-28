@@ -191,12 +191,12 @@
     <string name="trophies_card_next">Por conseguir</string>
     <string name="whats_new_title">Lo nuevo en la v%1$s</string>
     <string-array name="whats_new_items">
-        <item>Juegos de Unreal Engine: las lecturas frecuentes de TLS y del reloj se hacen dentro del juego en vez de llamar al emulador cada vez.</item>
-        <item>El reloj del juego (RDTSC) ya coincide con la frecuencia que se les comunica, y los shaders pueden leer el reloj real de la GPU.</item>
-        <item>Primer soporte de fibers (sceFiber) en ARM: los juegos que los usan cerraban el emulador al arrancar.</item>
-        <item>Final Fantasy VII Rebirth y Mewgenics: ya están las funciones que necesitan.</item>
-        <item>Los dispatches de compute muy grandes se dividen para caber en los límites de Adreno (Astro Bot).</item>
-        <item>Nuevas librerías de decodificación y codificación JPEG, y más correcciones de KytyPS5.</item>
-        <item>Primeros pasos para juegos de PS4: aparecen con la etiqueta PS4, pero aún no se pueden jugar.</item>
+        <item>CapyPS5 Framegen: generación de fotogramas opcional que convierte 30 FPS en 60 (Ajustes > Rendimiento).</item>
+        <item>Nuevas opciones de rendimiento: resolución de sombras, prueba de profundidad temprana y límite de FPS.</item>
+        <item>Juegos de Unreal Engine 5: el compute asíncrono ya no frena el render, lo que dejaba los menús a 0-2 FPS.</item>
+        <item>Corregidas texturas y cierres en juegos cuyas sombras usan lecturas con comparación de profundidad (Castlevania).</item>
+        <item>Muchas correcciones de shaders y GPU de KytyPS5: gathers, operaciones atómicas, MSAA, copias de profundidad D16 y más.</item>
+        <item>Teclado físico y botón de teclado en pantalla para escribir texto, y diálogos del sistema que ya se pueden responder.</item>
+        <item>Compatible con Android 16 y dispositivos con páginas de 16 KB; audio y mandos más fluidos.</item>
     </string-array>
 </resources>
