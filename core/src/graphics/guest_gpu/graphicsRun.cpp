@@ -565,12 +565,21 @@ template void CommandProcessor::WaitRegMem<uint64_t>(uint32_t, const uint64_t*, 
                                                      uint32_t, uint32_t);
 
 void CommandProcessor::MemSemaphore(uint64_t* counter, bool signal, bool write) {
+	const auto address = reinterpret_cast<uint64_t>(counter);
 	if (signal) {
 		*counter = write ? 1u : *counter + 1u;
+		SyncRecord("MEM_SEMAPHORE signal", address, *counter, write ? 1u : 0u);
 	} else if (*counter == 0) {
+		if (g_current_execution != nullptr && g_current_execution->m_wait_retries++ == 0) {
+			SyncRecord("MEM_SEMAPHORE wait", address);
+		}
 		SuspendPm4();
 	} else {
 		(*counter)--;
+		if (g_current_execution != nullptr) {
+			g_current_execution->m_wait_retries = 0;
+		}
+		SyncRecord("MEM_SEMAPHORE pass", address, *counter);
 	}
 }
 

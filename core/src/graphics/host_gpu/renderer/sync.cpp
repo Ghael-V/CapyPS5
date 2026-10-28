@@ -285,6 +285,8 @@ int AddEqEvent(RenderContext& renderer, LibKernel::EventQueue::KernelEqueue eq, 
 	event.filter.trigger_func = InterruptEventTriggerFunc;
 
 	int result = LibKernel::EventQueue::KernelAddEvent(eq, event);
+	Common::DebugFlags::NoteOnce("CapyPS5-Eq", 0x4571000000000000ull | static_cast<uint32_t>(id),
+	                             "AddEqEvent id=%d result=0x%x", id, result);
 
 	if (result == 0) {
 		renderer.AddInterruptEq(eq, id);
