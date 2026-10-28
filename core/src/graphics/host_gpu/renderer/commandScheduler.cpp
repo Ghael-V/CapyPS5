@@ -400,6 +400,11 @@ void CommandScheduler::QueueOperation(Common::UniqueFunction<void>&& operation, 
 	operation();
 }
 
+void CommandScheduler::SetCompletionListener(std::function<void()> listener) {
+	std::lock_guard lock(m_operation_mutex);
+	m_completion_listener = std::move(listener);
+}
+
 bool CommandScheduler::HasPendingPriorityOperations() {
 	std::lock_guard lock(m_operation_mutex);
 	return !m_priority_operations.empty() || m_priority_active;
@@ -432,6 +437,9 @@ void CommandScheduler::PriorityOperationsThread(std::stop_token stop) {
 			std::lock_guard lock(m_operation_mutex);
 			m_priority_active      = false;
 			m_priority_active_tick = 0;
+			if (m_completion_listener) {
+				m_completion_listener();
+			}
 		}
 		m_operation_available.notify_all();
 	}
