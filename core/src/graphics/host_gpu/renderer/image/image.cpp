@@ -1088,10 +1088,15 @@ Image::Image(GraphicContext& graphics, CommandScheduler& scheduler, const ImageI
 	                                      &properties) != vk::Result::eSuccess ||
 	    !static_cast<bool>(properties.sampleCounts & create.samples)) {
 		EXIT("image format does not support required usage: format=%d type=%d usage=0x%x "
-		     "flags=0x%x samples=%u\n",
+		     "flags=0x%x samples=%u extent=%ux%ux%u levels=%u layers=%u guest_type=%u "
+		     "guest_format=%u tile=%u addr=0x%llx\n",
 		     static_cast<int>(create.format), static_cast<int>(create.imageType),
 		     static_cast<vk::ImageUsageFlags::MaskType>(create.usage),
-		     static_cast<vk::ImageCreateFlags::MaskType>(create.flags), info.samples);
+		     static_cast<vk::ImageCreateFlags::MaskType>(create.flags), info.samples,
+		     create.extent.width, create.extent.height, create.extent.depth, create.mipLevels,
+		     create.arrayLayers, static_cast<uint32_t>(info.type),
+		     static_cast<uint32_t>(info.guest_format), static_cast<uint32_t>(info.tile_mode),
+		     static_cast<unsigned long long>(info.data.address));
 	}
 
 	if (!graphics.CreateImage(create, backing)) {

@@ -15,6 +15,7 @@
 
 #ifdef __ANDROID__
 #include <pthread.h>
+#include <sys/system_properties.h>
 #endif
 
 namespace Common {
@@ -66,6 +67,11 @@ void DbgExit(int status) {
 	// Ending only the failing thread left the game frozen with no sign of the error (a shader
 	// decode failure on the GPU thread looked like a hang). Close the app; the log has the report.
 	Log::WriteFatal(fmt::format("DbgExit: closing the emulator (status {})", status));
+	// `setprop debug.capy.exit_abort 1` aborts instead, so the tombstone records the call stack.
+	char value[PROP_VALUE_MAX] = {};
+	if (__system_property_get("debug.capy.exit_abort", value) > 0 && value[0] == '1') {
+		std::abort();
+	}
 	std::_Exit(status);
 #else
 	std::_Exit(status);
