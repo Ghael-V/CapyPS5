@@ -21,7 +21,7 @@
 
 namespace Libs::Graphics {
 
-enum class ColorTransform : uint32_t { None, SwapBgra16, Reverse10_11_11 };
+enum class ColorTransform : uint32_t { None, SwapBgra16, Reverse10_11_11, Rotate2_10_10_10 };
 
 enum class VideoOutCompression : uint8_t {
 	Uncompressed,
@@ -108,6 +108,8 @@ struct ImageInfo {
 		switch (guest_format) {
 			case Prospero::BufferFormat::k10_11_11Float:
 				return ColorTransform::Reverse10_11_11;
+			case Prospero::BufferFormat::k2_10_10_10UNorm:
+				return ColorTransform::Rotate2_10_10_10;
 			default: return ColorTransform::None;
 		}
 	}
