@@ -390,6 +390,27 @@ foreach(shader_source IN LISTS gpu_blit_shader_sources)
 endforeach()
 list(APPEND kyty_emulator_src ${gpu_blit_shader_headers})
 
+# Frame generation (presentation): motion search and interpolation between presented frames.
+set(frame_gen_generated_dir "${PROJECT_BINARY_DIR}/frame_gen_shaders")
+foreach(shader_name IN ITEMS luma search median project still generate)
+	set(shader_source "${gpu_tiler_shader_dir}/frame_gen_${shader_name}.comp")
+	set(shader_spv "${frame_gen_generated_dir}/frame_gen_${shader_name}.spv")
+	set(shader_header "${frame_gen_generated_dir}/frame_gen_${shader_name}_spv.h")
+	string(TOUPPER "FRAME_GEN_${shader_name}_SPV" shader_symbol)
+	add_custom_command(
+		OUTPUT "${shader_header}"
+		COMMAND ${CMAKE_COMMAND} -E make_directory "${frame_gen_generated_dir}"
+		COMMAND "${KYTY_GLSLANG_VALIDATOR}" -V --target-env vulkan1.3 -Os
+		        -o "${shader_spv}" "${shader_source}"
+		COMMAND ${CMAKE_COMMAND} -DINPUT=${shader_spv} -DOUTPUT=${shader_header}
+		        -DSYMBOL=${shader_symbol} -P "${KYTY_SOURCE_DIR}/embed_spirv.cmake"
+		DEPENDS "${shader_source}"
+		VERBATIM
+	)
+	list(APPEND frame_gen_shader_headers "${shader_header}")
+endforeach()
+list(APPEND kyty_emulator_src ${frame_gen_shader_headers})
+
 list(APPEND kyty_emulator_src
 	"${KYTY_SOURCE_DIR}/emulator.h"
 	"${KYTY_SOURCE_DIR}/emulator.cpp"

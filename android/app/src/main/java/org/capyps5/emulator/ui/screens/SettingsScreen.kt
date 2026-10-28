@@ -176,6 +176,7 @@ fun SettingsScreen(
                 listOf(
                     coreItem(CoreOption.AsyncShaders),
                     coreItem(CoreOption.FrameLimit),
+                    coreItem(CoreOption.FrameGen),
                     SettingItem(
                         context.getString(R.string.perf_overlay), context.getString(R.string.perf_overlay_desc),
                         settings.overlayMode.label(context),

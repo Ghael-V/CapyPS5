@@ -67,6 +67,10 @@
     <string name="frame_limit_off">El del juego</string>
     <string name="frame_limit_30">30 FPS</string>
     <string name="frame_limit_20">20 FPS</string>
+    <string name="option_frame_gen">CapyPS5 Framegen</string>
+    <string name="option_frame_gen_desc">Dibuja fotogramas intermedios a partir del movimiento entre dos fotogramas del juego, para que 30 FPS se vean como 60. Añade un fotograma de latencia y algo de carga a la GPU; funciona mejor a partir de 25 FPS</string>
+    <string name="frame_gen_one">1 por fotograma (de 30 a 60)</string>
+    <string name="frame_gen_three">Hasta 3 por fotograma</string>
 
     <!-- Driver de GPU -->
     <string name="gpu_driver">Driver de GPU</string>

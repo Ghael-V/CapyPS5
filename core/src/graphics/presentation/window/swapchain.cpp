@@ -10,12 +10,14 @@
 #include "common/profiler.h"
 #include "common/telemetry.h"
 #include "common/threads.h"
+#include "common/timer.h"
 #include "gpu_blit_shaders/gpu_blit_fs_triangle_spv.h"
 #include "gpu_blit_shaders/gpu_video_out_overlay_spv.h"
 #include "graphics/host_gpu/graphicContext.h"
 #include "graphics/host_gpu/renderer/render.h"
 #include "graphics/host_gpu/renderer/renderContext.h"
 #include "graphics/host_gpu/vulkanCommon.h"
+#include "graphics/presentation/frameGen.h"
 #include "graphics/presentation/presenter.h"
 #include "graphics/presentation/systemOverlay.h"
 #include "graphics/presentation/videoOut.h"
@@ -212,8 +214,8 @@ void Presenter::Frame::Configure(GraphicContext& graphics, vk::Extent2D extent, 
 	}
 }
 
-void Presenter::Frame::Transit(vk::CommandBuffer command, vk::ImageLayout layout,
-                               vk::AccessFlags2 access) {
+static void TransitImage(vk::CommandBuffer command, VulkanImage& image, vk::ImageLayout layout,
+                         vk::AccessFlags2 access) {
 	const auto     stage  = access == vk::AccessFlagBits2::eTransferRead ||
 	                                access == vk::AccessFlagBits2::eTransferWrite
 	                            ? vk::PipelineStageFlagBits2::eTransfer
@@ -245,6 +247,11 @@ void Presenter::Frame::Transit(vk::CommandBuffer command, vk::ImageLayout layout
 	command.pipelineBarrier2(dependency);
 	image.state = {stage, access, layout};
 	image.subresource_states.clear();
+}
+
+void Presenter::Frame::Transit(vk::CommandBuffer command, vk::ImageLayout layout,
+                               vk::AccessFlags2 access) {
+	TransitImage(command, image, layout, access);
 }
 
 void Presenter::Frame::CopyFrom(CommandBuffer& command_buffer, Image& source) {
@@ -286,7 +293,7 @@ public:
 	void SetWantSrgb(bool want) noexcept { m_want_srgb = want; }
 	[[nodiscard]] Status AcquireNextImage();
 	[[nodiscard]] bool   PrepareSystemOverlay();
-	void     RecordPresentCommands(CommandBuffer& command, Presenter::Frame* source,
+	void     RecordPresentCommands(CommandBuffer& command, VulkanImage* source,
 	                               const Presenter::Layer& overlay, bool draw_system_overlay);
 	uint64_t Submit(CommandScheduler& scheduler);
 	[[nodiscard]] Status Present();
@@ -295,6 +302,7 @@ public:
 		return static_cast<uint32_t>(m_images.size());
 	}
 	[[nodiscard]] vk::Format Format() const noexcept { return m_format; }
+	[[nodiscard]] vk::Extent2D Extent() const noexcept { return m_extent; }
 	[[nodiscard]] vk::SwapchainKHR Handle() const noexcept { return m_handle; }
 
 private:
@@ -366,7 +374,14 @@ struct Presenter::Impl {
 		cache.UpdateImage(image_id);
 		return image;
 	}
-	void Present();
+	// Work recorded before the presentation blit when frame generation is on.
+	struct FrameGenStep {
+		bool  ingest   = false; // copy the newest guest frame into the generator
+		bool  generate = false; // show the frame generated at time t instead of the guest one
+		float t        = 0.0f;
+	};
+	void Present(const FrameGenStep* step = nullptr);
+	void PresentGuestFrame();
 
 	RenderContext&        renderer;
 	WindowContext&        window;
@@ -376,6 +391,15 @@ struct Presenter::Impl {
 	Common::Mutex         present_mutex;
 	std::array<Layer, 2>  layers {};
 	std::atomic<uint64_t> presented_overlay_revision {0};
+
+	// Frame generation: the frames generated between two guest frames are shown on the vblanks
+	// after the newer one arrives, then the newer one itself (one vblank of latency).
+	std::unique_ptr<FrameGenerator> frame_gen;
+	bool                            frame_gen_unsupported = false;
+	uint64_t                        last_guest_frame      = 0;
+	double                          guest_interval        = 0.0;
+	uint32_t                        generated_count       = 0; // for the newest frame; 0: none pending
+	uint32_t                        generated_next        = 0; // the next one to show, 1-based
 };
 
 void Swapchain::Create() {
@@ -779,14 +803,14 @@ void Swapchain::DrawOverlay(vk::CommandBuffer command, const Presenter::Layer& l
 	command.endRendering();
 }
 
-void Swapchain::RecordPresentCommands(CommandBuffer& command, Presenter::Frame* source,
+void Swapchain::RecordPresentCommands(CommandBuffer& command, VulkanImage* source,
                                       const Presenter::Layer& overlay, bool draw_system_overlay) {
 	EXIT_IF(m_image_index >= m_images.size());
 	auto       vk_command      = command.Handle();
 	const bool draw_overlay    = overlay.frame != nullptr;
 	const bool draw_attachment = draw_overlay || draw_system_overlay;
 	if (source != nullptr) {
-		source->Transit(vk_command, vk::ImageLayout::eTransferSrcOptimal,
+		TransitImage(vk_command, *source, vk::ImageLayout::eTransferSrcOptimal,
 		                vk::AccessFlagBits2::eTransferRead);
 	}
 	if (draw_overlay) {
@@ -818,8 +842,8 @@ void Swapchain::RecordPresentCommands(CommandBuffer& command, Presenter::Frame* 
 		region.srcSubresource.mipLevel       = 0;
 		region.srcSubresource.baseArrayLayer = 0;
 		region.srcSubresource.layerCount     = 1;
-		region.srcOffsets[1].x               = static_cast<int>(source->image.extent.width);
-		region.srcOffsets[1].y               = static_cast<int>(source->image.extent.height);
+		region.srcOffsets[1].x               = static_cast<int>(source->extent.width);
+		region.srcOffsets[1].y               = static_cast<int>(source->extent.height);
 		region.srcOffsets[1].z               = 1;
 		region.dstSubresource.aspectMask     = vk::ImageAspectFlagBits::eColor;
 		region.dstSubresource.mipLevel       = 0;
@@ -828,7 +852,7 @@ void Swapchain::RecordPresentCommands(CommandBuffer& command, Presenter::Frame* 
 		region.dstOffsets[1].x               = static_cast<int>(m_extent.width);
 		region.dstOffsets[1].y               = static_cast<int>(m_extent.height);
 		region.dstOffsets[1].z               = 1;
-		vk_command.blitImage(source->image.image, vk::ImageLayout::eTransferSrcOptimal,
+		vk_command.blitImage(source->image, vk::ImageLayout::eTransferSrcOptimal,
 		                     m_images[m_image_index], vk::ImageLayout::eTransferDstOptimal, 1,
 		                     &region, vk::Filter::eLinear);
 	} else {
@@ -1016,7 +1040,76 @@ void Presenter::Present(std::span<const Layer> layers) {
 		}
 		previous = layer;
 	}
-	m_impl->Present();
+	if (std::ranges::any_of(layers, [](const Layer& layer) { return layer.bus == 0; })) {
+		m_impl->PresentGuestFrame();
+	} else {
+		m_impl->Present();
+	}
+}
+bool Presenter::PresentGenerated() {
+	Common::LockGuard lock(m_impl->present_mutex);
+	auto&             impl = *m_impl;
+	if (impl.generated_count == 0) {
+		return false;
+	}
+	if (impl.generated_next <= impl.generated_count) {
+		Impl::FrameGenStep step {};
+		step.generate = true;
+		step.t        = static_cast<float>(impl.generated_next) /
+		         static_cast<float>(impl.generated_count + 1);
+		impl.generated_next++;
+		impl.Present(&step);
+	} else {
+		impl.generated_count = 0;
+		impl.Present();
+	}
+	return true;
+}
+
+void Presenter::Impl::PresentGuestFrame() {
+	// `setprop debug.capy.frame_gen N`: up to N generated frames between two guest frames.
+	static Common::DebugFlags::CachedValue frame_gen_setting("debug.capy.frame_gen", 0);
+	generated_count = 0;
+
+	const auto now = Common::Timer::QueryPerformanceCounter();
+	if (last_guest_frame != 0) {
+		const auto interval = static_cast<double>(now - last_guest_frame);
+		guest_interval = guest_interval == 0.0 ? interval : guest_interval * 0.75 + interval * 0.25;
+	}
+	last_guest_frame = now;
+
+	const auto max_generated =
+	    static_cast<uint32_t>(std::clamp<int64_t>(frame_gen_setting.Get(), 0, 3));
+	if (max_generated == 0 || layers[0].frame == nullptr || frame_gen_unsupported) {
+		Present();
+		return;
+	}
+	if (frame_gen == nullptr) {
+		frame_gen = std::make_unique<FrameGenerator>(window.graphic_ctx);
+		if (!frame_gen->Supported()) {
+			Common::DebugFlags::NoteOnce("CapyPS5-FrameGen", 0x4647u,
+			                             "frame generation is not supported by this GPU");
+			frame_gen.reset();
+			frame_gen_unsupported = true;
+			Present();
+			return;
+		}
+	}
+	// One generated frame per extra vblank the guest frame would stay on screen.
+	const auto period = static_cast<double>(Common::Timer::QueryPerformanceFrequency()) /
+	                    static_cast<double>(std::max(Config::GetVblankFrequency(), 1u));
+	const auto vblanks = static_cast<int64_t>(guest_interval / period + 0.5);
+	const auto generated =
+	    static_cast<uint32_t>(std::clamp<int64_t>(vblanks - 1, 0, max_generated));
+	FrameGenStep step {};
+	step.ingest = true;
+	if (generated != 0) {
+		generated_count = generated;
+		generated_next  = 2;
+		step.generate   = true;
+		step.t          = 1.0f / static_cast<float>(generated + 1);
+	}
+	Present(&step);
 }
 
 void Presenter::ClearLayer(int bus) {
@@ -1031,7 +1124,7 @@ void Presenter::ClearLayer(int bus) {
 	}
 }
 
-void Presenter::Impl::Present() {
+void Presenter::Impl::Present(const FrameGenStep* step) {
 	KYTY_PROFILER_FUNCTION();
 
 	const auto overlay_visual = GetSystemOverlayVisualState();
@@ -1047,6 +1140,9 @@ void Presenter::Impl::Present() {
 	if (swapchain.Handle() != nullptr && swapchain.NeedsResize()) {
 		RecoverSwapchain(Swapchain::Status::Recreate);
 	}
+	// A retried presentation reuses the frame generation work it already recorded.
+	bool         frame_gen_recorded = step == nullptr || frame_gen == nullptr;
+	VulkanImage* generated_source   = nullptr;
 	for (uint32_t attempt = 0; attempt < 2; attempt++) {
 		if (swapchain.Handle() == nullptr) {
 			RecoverSwapchain(Swapchain::Status::SurfaceLost);
@@ -1065,8 +1161,29 @@ void Presenter::Impl::Present() {
 			auto&             command = present_scheduler.BeginCommand();
 			const bool        draw_system_overlay =
 			    overlay_visual.active && swapchain.PrepareSystemOverlay();
-			swapchain.RecordPresentCommands(command, layers[0].frame, layers[1],
-			                                draw_system_overlay);
+			VulkanImage* source = layers[0].frame != nullptr ? &layers[0].frame->image : nullptr;
+			if (!frame_gen_recorded) {
+				frame_gen_recorded    = true;
+				const auto vk_command = command.Handle();
+				if (step->ingest && source != nullptr) {
+					layers[0].frame->Transit(vk_command, vk::ImageLayout::eTransferSrcOptimal,
+					                         vk::AccessFlagBits2::eTransferRead);
+					frame_gen->Ingest(vk_command, *source, swapchain.Extent());
+				}
+				if (step->generate) {
+					if (!step->ingest || frame_gen->Analyze(vk_command)) {
+						frame_gen->Generate(vk_command, step->t);
+						generated_source = &frame_gen->Output();
+					} else {
+						// No previous frame to generate from yet.
+						generated_count = 0;
+					}
+				}
+			}
+			if (generated_source != nullptr) {
+				source = generated_source;
+			}
+			swapchain.RecordPresentCommands(command, source, layers[1], draw_system_overlay);
 			const auto tick = swapchain.Submit(present_scheduler);
 			for (const auto& layer: layers) {
 				if (layer.frame != nullptr) {
