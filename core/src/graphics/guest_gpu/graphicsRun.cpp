@@ -144,6 +144,9 @@ GuestGpu::GuestGpu(RenderContext& renderer): m_renderer(renderer) {
 	m_gfx_cp = std::make_unique<CommandProcessor>(renderer, 0);
 	m_gfx_cp->Reset();
 	m_thread = std::jthread(ThreadRun, this);
+	// Label writes land when the host GPU finishes; a queue blocked on one should not sleep out
+	// the 100 ms stall timeout.
+	m_renderer.GetCommandScheduler().SetCompletionListener([this] { Wake(); });
 }
 
 GuestGpu::~GuestGpu() {
@@ -155,6 +158,7 @@ void GuestGpu::Shutdown() {
 	if (m_shutdown_complete) {
 		return;
 	}
+	m_renderer.GetCommandScheduler().SetCompletionListener({});
 	{
 		Common::LockGuard lock(m_queue_mutex);
 		m_accepting = false;
@@ -820,12 +824,24 @@ void GuestGpu::ThreadRun(void* data) {
 		}
 
 		EXIT_IF(!has_submission);
-		const bool complete = gpu->Process(submission);
+		bool       progressed = false;
+		const bool complete   = gpu->Process(submission, progressed);
 
 		Common::LockGuard lock(gpu->m_queue_mutex);
 		if (!complete) {
-			submission.blocked = true;
-			gpu->m_queues[submission.queue_id].push_front(std::move(submission));
+			// A submission that ran packets before blocking may have released another queue's
+			// wait (async compute and graphics hand labels back and forth every frame): retry the
+			// other queues now instead of after the 100 ms stall timeout.
+			if (progressed) {
+				for (auto& queue: gpu->m_queues) {
+					if (!queue.empty()) {
+						queue.front().blocked = false;
+					}
+				}
+			}
+			const auto queue_id = submission.queue_id;
+			submission.blocked  = true;
+			gpu->m_queues[queue_id].push_front(std::move(submission));
 			gpu->m_submission_count++;
 		} else {
 			for (auto& queue: gpu->m_queues) {
@@ -841,7 +857,7 @@ void GuestGpu::ThreadRun(void* data) {
 	}
 }
 
-bool GuestGpu::Process(Submission& submission) {
+bool GuestGpu::Process(Submission& submission, bool& progressed) {
 	const bool first_slice = !submission.started;
 	auto&      cp          = GetProcessor(submission.queue_id);
 
@@ -861,7 +877,6 @@ bool GuestGpu::Process(Submission& submission) {
 
 	switch (submission.type) {
 		case SubmissionType::Graphics: {
-			bool progressed = false;
 			submission.constant_complete |= submission.constant_commands.empty();
 			for (;;) {
 				bool round_progress = false;
@@ -926,7 +941,8 @@ bool GuestGpu::Process(Submission& submission) {
 			g_sync_stream = "compute";
 			complete = cp.Process(submission.command_execution, submission.commands) ==
 			           Pm4ProcessResult::Complete;
-			if (submission.command_execution.MadeProgress() || !complete) {
+			progressed = submission.command_execution.MadeProgress();
+			if (progressed || !complete) {
 				if (complete) {
 					m_renderer.RunGarbageCollector();
 				}

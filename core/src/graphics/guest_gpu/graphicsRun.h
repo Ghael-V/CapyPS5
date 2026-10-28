@@ -109,7 +109,8 @@ private:
 
 	void              Enqueue(Submission submission);
 	void              ProcessCommands();
-	bool              Process(Submission& submission);
+	// Returns whether the submission finished; `progressed` reports whether it ran any packet.
+	bool              Process(Submission& submission, bool& progressed);
 	static void       ThreadRun(void* data);
 	CommandProcessor& GetProcessor(uint32_t queue_id);
 
