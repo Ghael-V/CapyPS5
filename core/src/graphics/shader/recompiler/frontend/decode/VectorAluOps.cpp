@@ -42,7 +42,9 @@ constexpr Vop2OpcodeInfo VOP2_OPCODE_LIST[] = {
     {0x07u, Opcode::V_MUL_LEGACY_F32, Vop2SdwaProfile::Float32},
     {0x08u, Opcode::V_MUL_F32, Vop2SdwaProfile::Float32},
     {0x09u, Opcode::V_MUL_I32_I24, Vop2SdwaProfile::IntegerPartialDestination},
+    {0x0au, Opcode::V_MUL_HI_I32_I24, Vop2SdwaProfile::IntegerPartialDestination},
     {0x0bu, Opcode::V_MUL_U32_U24, Vop2SdwaProfile::IntegerPartialDestination},
+    {0x0cu, Opcode::V_MUL_HI_U32_U24, Vop2SdwaProfile::IntegerPartialDestination},
     {0x0fu, Opcode::V_MIN_F32},
     {0x10u, Opcode::V_MAX_F32},
     {0x11u, Opcode::V_MIN_I32, Vop2SdwaProfile::IntegerFullDestination},
@@ -388,6 +390,7 @@ constexpr OpcodeMap VOP3_OPCODE_LIST[] = {
     {0x311u, Opcode::V_PACK_B32_F16},
     {0x314u, Opcode::V_LSHLREV_B16},
     {0x319u, Opcode::V_SUBREV_I32},
+    {0x340u, Opcode::V_MAD_U16},
     {0x345u, Opcode::V_XAD_U32},
     {0x346u, Opcode::V_LSHL_ADD_U32},
     {0x347u, Opcode::V_ADD_LSHL_U32},
@@ -511,7 +514,7 @@ bool IsNativeVop3B16TernaryOpcode(Opcode opcode) {
 	return opcode == Opcode::V_MIN3_I16 || opcode == Opcode::V_MIN3_U16 ||
 	       opcode == Opcode::V_MAX3_I16 || opcode == Opcode::V_MAX3_U16 ||
 	       opcode == Opcode::V_MED3_I16 || opcode == Opcode::V_MED3_U16 ||
-	       opcode == Opcode::V_MAD_I16;
+	       opcode == Opcode::V_MAD_I16 || opcode == Opcode::V_MAD_U16;
 }
 
 bool IsNativeVop3B16BinaryOpcode(Opcode opcode) {
@@ -1554,9 +1557,10 @@ bool SupportsNativeVop3ResultModifiers(Opcode opcode) {
 bool SupportsNativeVop3Clamp(Opcode opcode) {
 	return SupportsNativeVop3ResultModifiers(opcode) || UsesInexactClampControl(opcode) ||
 	       opcode == Opcode::V_MAD_I16 || opcode == Opcode::V_MAD_U32_U16 ||
-	       opcode == Opcode::V_MAD_I32_I16 || opcode == Opcode::V_MIN3_I16 ||
-	       opcode == Opcode::V_MAX3_I16 || opcode == Opcode::V_MAX3_U16 ||
-	       opcode == Opcode::V_MED3_U16;
+	       opcode == Opcode::V_MAD_I32_I16 || opcode == Opcode::V_MAD_U16 ||
+	       opcode == Opcode::V_MIN3_I16 || opcode == Opcode::V_MAX3_I16 ||
+	       opcode == Opcode::V_MAX3_U16 || opcode == Opcode::V_MED3_U16 ||
+	       opcode == Opcode::V_MUL_HI_I32_I24 || opcode == Opcode::V_MUL_HI_U32_U24;
 }
 
 bool HasUnsupportedNativeVop3Modifiers(Opcode opcode, bool permlane, bool mad_mix,
@@ -1587,6 +1591,10 @@ bool HasUnsupportedNativeVop3Modifiers(Opcode opcode, bool permlane, bool mad_mi
 		return clamp != 0u || omod != 0u || neg != 0u;
 	}
 	switch (opcode) {
+		case Opcode::V_MUL_HI_I32_I24:
+		case Opcode::V_MUL_HI_U32_U24:
+			// The high product fits in 32 bits, so clamp has no effect.
+			return abs != 0u || op_sel != 0u || omod != 0u || neg != 0u;
 		case Opcode::V_LDEXP_F32: return (abs & ~1u) != 0u || op_sel != 0u || (neg & ~1u) != 0u;
 		case Opcode::V_CVT_F32_UBYTE0:
 		case Opcode::V_CVT_F32_UBYTE1:
