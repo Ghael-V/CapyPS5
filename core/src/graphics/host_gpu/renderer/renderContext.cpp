@@ -271,6 +271,9 @@ void RenderContext::TriggerInterrupt(int event_id, uint32_t context_id) {
 		}
 	}
 
+	Common::DebugFlags::NoteOnce("CapyPS5-Eq", 0x5471000000000000ull | static_cast<uint32_t>(event_id),
+	                             "TriggerInterrupt id=%d context=%u listeners=%zu", event_id,
+	                             context_id, registrations.size());
 	for (const auto& registration: registrations) {
 		const auto result = LibKernel::EventQueue::KernelTriggerEvent(
 		    registration.eq, static_cast<uintptr_t>(registration.event_id),
