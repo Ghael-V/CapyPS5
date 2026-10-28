@@ -176,7 +176,7 @@ private:
 	void Integer16Shift(const Decoder::Instruction& inst, IR::ValueOpcode opcode, bool arithmetic);
 	void Integer16Binary(const Decoder::Instruction& inst, IR::ValueOpcode opcode, bool sign);
 	void Integer16Ternary(const Decoder::Instruction& inst, IR::ValueOpcode opcode, bool sign);
-	void V_MAD_I16(const Decoder::Instruction& inst);
+	void Integer16Mad(const Decoder::Instruction& inst, bool sign);
 	void V_MAD_U32_U16(const Decoder::Instruction& inst);
 	void V_MAD_I32_I16(const Decoder::Instruction& inst);
 	void LegacyFloatMultiply(const Decoder::Instruction& inst, bool accumulate);
@@ -200,7 +200,7 @@ private:
 	void S_FF_I32_B64(const Decoder::Instruction& inst, bool find_zero);
 	void V_FFBH_32(const Decoder::Instruction& inst, bool sign);
 	void S_FLBIT_I32_B64(const Decoder::Instruction& inst, bool sign);
-	void Integer24(const Decoder::Instruction& inst, bool sign, bool addend);
+	void Integer24(const Decoder::Instruction& inst, bool sign, bool addend, bool high = false);
 	void V_MAD_U64_U32(const Decoder::Instruction& inst);
 	void V_SAD_U32(const Decoder::Instruction& inst);
 	void V_MSAD_U8(const Decoder::Instruction& inst);
