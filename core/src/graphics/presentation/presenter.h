@@ -39,6 +39,9 @@ public:
 	[[nodiscard]] RenderContext& Renderer() const noexcept;
 	void                         Present(Frame& frame);
 	void                         Present(std::span<const Layer> layers);
+	/** Shows the next frame generated after the newest guest frame, or that guest frame once
+	 * they are all shown; false when frame generation has nothing pending. */
+	[[nodiscard]] bool           PresentGenerated();
 	void                         ClearLayer(int bus);
 	void                         Discard(Frame& frame);
 

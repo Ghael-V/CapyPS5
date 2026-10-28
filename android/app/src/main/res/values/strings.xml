@@ -69,6 +69,10 @@
     <string name="frame_limit_off">Game default</string>
     <string name="frame_limit_30">30 FPS</string>
     <string name="frame_limit_20">20 FPS</string>
+    <string name="option_frame_gen">CapyPS5 Framegen</string>
+    <string name="option_frame_gen_desc">Draws in-between frames from the motion between two game frames, so 30 FPS looks like 60. Adds one frame of latency and some GPU load; works best from 25 FPS up</string>
+    <string name="frame_gen_one">1 per frame (30 to 60)</string>
+    <string name="frame_gen_three">Up to 3 per frame</string>
 
     <!-- GPU driver -->
     <string name="gpu_driver">GPU driver</string>

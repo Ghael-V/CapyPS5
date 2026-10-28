@@ -92,6 +92,17 @@ enum class CoreOption(
         ),
         0L,
     ),
+    FrameGen(
+        R.string.option_frame_gen,
+        R.string.option_frame_gen_desc,
+        "debug.capy.frame_gen",
+        listOf(
+            0L to R.string.disabled,
+            1L to R.string.frame_gen_one,
+            3L to R.string.frame_gen_three,
+        ),
+        0L,
+    ),
     ;
 
     fun title(context: Context) = context.getString(titleRes)
