@@ -134,10 +134,10 @@ void DefineTessellationInterfaces(EmitterState& state) {
 
 void DefineTessellationExecutionModes(EmitterState& state) {
 	const auto& tess = state.input_info.vertex->tess;
-	// Triangle or quad domain, integer or fractional-odd partitioning, clockwise output.
+	// Triangle or quad domain, integer or fractional-odd partitioning, triangle output.
 	EXIT_NOT_IMPLEMENTED((tess.domain != 1u && tess.domain != 2u) ||
 	                     (tess.partitioning != 0u && tess.partitioning != 2u) ||
-	                     tess.output_topology != 2u);
+	                     (tess.output_topology != 2u && tess.output_topology != 3u));
 	state.builder.RequireCapability(spv::CapabilityTessellation);
 	if (state.program.stage == ShaderType::TessellationControl) {
 		state.builder.AddExecutionMode(state.main_func, spv::ExecutionModeOutputVertices,
@@ -149,7 +149,9 @@ void DefineTessellationExecutionModes(EmitterState& state) {
 		state.builder.AddExecutionMode(
 		    state.main_func, tess.partitioning == 0u ? spv::ExecutionModeSpacingEqual
 		                                             : spv::ExecutionModeSpacingFractionalOdd);
-		state.builder.AddExecutionMode(state.main_func, spv::ExecutionModeVertexOrderCw);
+		state.builder.AddExecutionMode(state.main_func, tess.output_topology == 2u
+		                                                   ? spv::ExecutionModeVertexOrderCw
+		                                                   : spv::ExecutionModeVertexOrderCcw);
 	}
 }
 
