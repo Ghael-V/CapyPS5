@@ -556,6 +556,7 @@ struct Ngs2VoiceInternal {
 	};
 	struct Module {
 		std::vector<uint8_t>     param, work, state;
+		std::vector<float>       channel_matrix;
 		void                     KYTY_SYSV_ABI (*handler)(Ngs2UserFxProcessContext*) = nullptr;
 		std::array<uintptr_t, 3> user_data {};
 		uint32_t                 flags          = 1;
@@ -573,6 +574,7 @@ struct Ngs2VoiceInternal {
 	std::vector<std::vector<float>> matrices;
 	std::vector<Module>             modules;
 	std::vector<float>              samples;
+	std::vector<float>              mix_samples;
 	std::vector<float>              output_matrix;
 	uint32_t                        channels        = 0;
 	uint32_t                        output_id       = 0;
@@ -624,6 +626,27 @@ struct Ngs2VoiceInternal {
 
 	float* Buffer(uint32_t id, uint32_t grain) {
 		return samples.data() + size_t(id) * grain * channels;
+	}
+
+	void MixChannels(const std::vector<float>& matrix, uint32_t buffer, uint32_t grain) {
+		if (matrix.empty()) {
+			return;
+		}
+		EXIT_NOT_IMPLEMENTED(channels > 37);
+		auto* input = Buffer(buffer, grain);
+		mix_samples.assign(size_t(channels) * grain, 0.0f);
+		for (uint32_t dst = 0; dst < channels; ++dst) {
+			for (uint32_t src = 0; src < channels; ++src) {
+				const float level = matrix[dst * 37 + src];
+				if (level == 0.0f) {
+					continue;
+				}
+				for (uint32_t i = 0; i < grain; ++i) {
+					mix_samples[dst * grain + i] += input[src * grain + i] * level;
+				}
+			}
+		}
+		std::copy(mix_samples.begin(), mix_samples.end(), input);
 	}
 
 	void ResetSetupState() {
@@ -1962,6 +1985,10 @@ static void Ngs2RenderVoice(Ngs2VoiceInternal& voice, const std::vector<Ngs2Voic
 			for (size_t m = 0; m < voice.modules.size(); ++m) {
 				const auto& info   = custom.module[m];
 				auto&       module = voice.modules[m];
+				if (info.module_id == 0x17) {
+					voice.MixChannels(module.channel_matrix, info.source_buffer_id, grain);
+					continue;
+				}
 				if (info.module_id != 0x19 && info.module_id != 0x1f) {
 					if (!module.render_warned) {
 						Log::WriteToConsoleAndLog(fmt::sprintf(
@@ -2046,7 +2073,8 @@ int KYTY_SYSV_ABI Ngs2SystemRender(uintptr_t system_handle, const Ngs2RenderBuff
 		EXIT_NOT_IMPLEMENTED(voice->output_id >= num_buffer_info);
 		const auto& output = buffer_info[voice->output_id];
 		EXIT_NOT_IMPLEMENTED(output.buffer == nullptr);
-		EXIT_NOT_IMPLEMENTED((output.waveform_type != 0x12 && output.waveform_type != 0x18) ||
+		EXIT_NOT_IMPLEMENTED(output.waveform_type != 0x12 && output.waveform_type != 0x18);
+		EXIT_NOT_IMPLEMENTED(voice->rack->type == Ngs2RackType::Mastering &&
 		                     output.num_channels != voice->channels);
 		EXIT_NOT_IMPLEMENTED(output.buffer_size < grain * output.num_channels *
 		                                               (output.waveform_type == 0x12 ? sizeof(int16_t)
@@ -2068,6 +2096,9 @@ int KYTY_SYSV_ABI Ngs2SystemRender(uintptr_t system_handle, const Ngs2RenderBuff
 				const float level = gain * (voice->output_matrix.empty()
 				                                ? (src == dst ? 1.0f : 0.0f)
 				                                : voice->output_matrix.at(src * output.num_channels + dst));
+				if (level == 0.0f) {
+					continue;
+				}
 				for (uint32_t i = 0; i < grain; ++i) {
 					pcm[i * output.num_channels + dst] += voice->samples[src * grain + i] * level;
 				}
@@ -2684,7 +2715,7 @@ int KYTY_SYSV_ABI Ngs2VoiceControl(uintptr_t voice_handle, const Ngs2VoiceParamH
 				    voice->rack->option.custom_sampler.custom_rack_option.module[index].module_id;
 				auto& module = voice->modules[index];
 				if ((param->id & 0xffffffe0u) != (0x40000000u | module_id << 8u) ||
-				    (module_id != 0x19 && module_id != 0x1f)) {
+				    (module_id != 0x17 && module_id != 0x19 && module_id != 0x1f)) {
 					if (!module.control_warned) {
 						Log::WriteToConsoleAndLog(fmt::sprintf(
 						    "warning: NGS2 custom control 0x%08" PRIx32 " is ignored\n",
@@ -2704,6 +2735,16 @@ int KYTY_SYSV_ABI Ngs2VoiceControl(uintptr_t voice_handle, const Ngs2VoiceParamH
 						                    raw[2], raw[3], raw[4], raw[5], raw[6], raw[7]);
 					}
 #endif
+					break;
+				}
+				if (module_id == 0x17) {
+					EXIT_NOT_IMPLEMENTED(param->size != sizeof(Ngs2VoiceParamHeader) +
+					                                       37 * 37 * sizeof(float));
+					const auto* levels = reinterpret_cast<const float*>(param + 1);
+					module.channel_matrix.resize(37 * 37);
+					std::transform(levels, levels + module.channel_matrix.size(),
+					               module.channel_matrix.begin(),
+					               [](float level) { return std::clamp(level, -32.0f, 32.0f); });
 					break;
 				}
 				if (module_id == 0x19) {
