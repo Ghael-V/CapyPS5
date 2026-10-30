@@ -3015,6 +3015,25 @@ int KYTY_SYSV_ABI Ngs2VoiceGetStateFlags(uintptr_t voice_handle, uint32_t* state
 	return OK;
 }
 
+int KYTY_SYSV_ABI Ngs2VoiceQueryInfo(uintptr_t voice_handle, uint32_t query_id, void* info,
+                                     size_t info_size) {
+	PRINT_NAME();
+
+	struct SetupInfo {
+		uint32_t channels, flags;
+	};
+	EXIT_NOT_IMPLEMENTED(voice_handle == 0 || info == nullptr);
+	EXIT_NOT_IMPLEMENTED(query_id != 0x4001 || info_size != sizeof(SetupInfo));
+
+	auto* voice = reinterpret_cast<Ngs2VoiceInternal*>(voice_handle);
+
+	Common::LockGuard lock(voice->rack->ngs->mutex);
+
+	*static_cast<SetupInfo*>(info) = {voice->channels, 0};
+
+	return OK;
+}
+
 int KYTY_SYSV_ABI Ngs2SystemLock(uintptr_t system_handle) {
 	PRINT_NAME();
 
