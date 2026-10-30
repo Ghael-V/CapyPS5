@@ -263,8 +263,6 @@ struct ValueEmitContext {
 	uint32_t                                                           half       = 0;
 };
 
-enum class VertexInputScalarKind { Float, Sint, Uint };
-
 constexpr uint32_t NoImageComponent = 0xffffffffu;
 
 struct DppTargetLane {
@@ -295,12 +293,11 @@ bool PixelParameterIsFlat(const EmitterState& state, uint32_t attr);
 
 bool PixelParameterIsCustom(const EmitterState& state, uint32_t attr);
 
-VertexInputScalarKind VertexParameterScalarKind(const EmitterState& state, uint32_t location);
+Format::ComponentType VertexParameterScalarKind(const EmitterState& state, uint32_t location);
 
 uint32_t VertexParameterComponentCount(const InputBinding& input);
 
-uint32_t VertexParameterScalarType(EmitterState& state, VertexInputScalarKind kind);
-
+uint32_t VertexParameterScalarType(EmitterState& state, Format::ComponentType kind);
 
 uint32_t OutputVariableForExport(const EmitterState& state, const IR::ExportInfo& exp);
 uint32_t MrtOutputType(EmitterState& state, uint32_t index);
