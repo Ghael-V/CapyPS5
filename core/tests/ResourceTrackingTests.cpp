@@ -287,7 +287,7 @@ void TestInvariantIndirectImageMaterialization() {
   fixture->PlanAndTrack();
   auto plan = ExtractResourcePlan(fixture->program);
   EliminateDeadCode(fixture->program.blocks);
-  ValidateProgram(fixture->program, true);
+  ValidateProgram(fixture->program);
   const auto &source = *plan.descriptor_sources[plan.info.images[0].source].indirect_descriptor;
   Check(!source.selector && fixture->program.info.buffers.size() == 3u,
         "bounded image table retained CPU selector traversal or lost live loads");
@@ -2532,7 +2532,7 @@ ResourcePlan ConditionalSamplerPlan(bool diamond, bool reverse, bool reverse_phi
   Check(sampler_words[0].ResolveInstruction()->GetOpcode() == ValueOpcode::Phi,
         "host descriptor selection changed the GPU Phi");
   EliminateDeadCode(fixture.program.blocks);
-  ValidateProgram(fixture.program, true);
+  ValidateProgram(fixture.program);
   return ExtractResourcePlan(fixture.program);
 }
 

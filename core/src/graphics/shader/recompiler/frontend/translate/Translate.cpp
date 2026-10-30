@@ -1484,7 +1484,6 @@ IR::Program TranslateProgram(const Decoder::Program& decoded, const CFG::Graph& 
 		}
 		translator.AddBranchCondition(cfg, cfg_block, *block);
 	}
-	IR::ValidateProgram(result, false);
 	return result;
 }
 
