@@ -12070,7 +12070,7 @@ void TestTypedEntryStateIsMinimal() {
     IR::RewriteToSsa(values.blocks);
     IR::RemoveIdentities(values.blocks);
     IR::EliminateDeadCode(values.blocks);
-    IR::ValidateProgram(values, true);
+    IR::ValidateProgram(values);
   };
 
   check(32u);
@@ -12091,7 +12091,7 @@ void TestFinalSsaRejectsRegisterStatePseudos() {
     } else {
       ir.Emit(ValueOpcode::ReferenceU32, {ir.GetScalarReg(ScalarReg{0})});
     }
-    ExpectFatal([&] { ValidateProgram(program, true); },
+    ExpectFatal([&] { ValidateProgram(program); },
                 "final SSA accepted a register-state pseudo operation");
   };
 
@@ -12115,7 +12115,7 @@ void TestValuePhiValidation() {
 
 #if KYTY_PLATFORM != KYTY_PLATFORM_WINDOWS
   const auto expect_invalid = [](const Program &program, const char *text) {
-    ExpectFatal([&] { ValidateProgram(program, true); }, text);
+    ExpectFatal([&] { ValidateProgram(program); }, text);
   };
 #endif
   const auto validate = [&](InvalidPhi invalid) {
@@ -12167,7 +12167,7 @@ void TestValuePhiValidation() {
     }
 
     if (invalid == InvalidPhi::None) {
-      ValidateProgram(program, true);
+      ValidateProgram(program);
     }
 #if KYTY_PLATFORM != KYTY_PLATFORM_WINDOWS
     else {
@@ -12511,7 +12511,7 @@ void TestWave32MaskProjection() {
           "mask projection changed a raw scalar mask consumer");
     ResolveControlFlowIdentities(program);
     RemoveIdentities(program.blocks);
-    ValidateProgram(program, true);
+    ValidateProgram(program);
   }
 }
 
@@ -12619,7 +12619,7 @@ void TestNativeWideValueValidation() {
     }
   };
   const auto check_rejected = [](const Program &program, const char *text) {
-    ExpectFatal([&] { ValidateProgram(program, true); }, text);
+    ExpectFatal([&] { ValidateProgram(program); }, text);
   };
 
   {

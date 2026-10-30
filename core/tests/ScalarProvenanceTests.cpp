@@ -655,7 +655,7 @@ void TestControlFlowValueSurvivesReadLaneFolding() {
 
   Check(entry_info.condition == Value(true),
         "folded branch condition did not survive identity removal");
-  ValidateProgram(fixture.program, true);
+  ValidateProgram(fixture.program);
 }
 
 void TestDeadPhiCyclesAndPlanningRoots() {

@@ -222,7 +222,7 @@ std::vector<uint32_t> EmitProgram(IR::Program& program, ShaderStageInputInfo inp
 	if (program.info.buffers.size() > IR::ShaderInfo::MaxBuffers) {
 		Fail(program, "native shader exceeds the buffer resource limit");
 	}
-	IR::ValidateProgram(program, true);
+	IR::ValidateProgram(program);
 	program.bindings = {.push_data_start_dword = push_data_start_dword};
 	EmitterState state(program, input_info);
 	const auto* workgroup = ShaderWorkgroupInput(program.stage, input_info);
