@@ -6,6 +6,7 @@
 #include "common/assert.h"
 #include "common/common.h"
 #include "common/logging/log.h"
+#include "kernel/eventQueue.h"
 #include "libs/errno.h"
 #include "libs/libs.h"
 #include "libs/network.h"
@@ -768,6 +769,8 @@ namespace LibHttp2 {
 
 LIB_VERSION("Http2", 1, "Http2", 1, 1);
 
+namespace EventQueue = LibKernel::EventQueue;
+
 constexpr int HTTP2_ERROR_INVALID_ID   = -2122641152; /* 0x817B1100 */
 constexpr int HTTP2_ERROR_BEFORE_SEND  = -2122641307; /* 0x817B1065 */
 constexpr int HTTP2_ERROR_TIMEOUT      = -2122641304; /* 0x817B1068 */
@@ -828,6 +831,16 @@ struct Http2AsyncResult {
 	uint8_t padding[4];
 	void*   reserved;
 };
+
+struct Http2TriggerUserEventArgs {
+	EventQueue::KernelEqueue eq;
+	int                      uniq_id;
+	uint8_t                  padding[4];
+	void*                    udata;
+	void*                    reserved;
+};
+
+static_assert(sizeof(Http2TriggerUserEventArgs) == 32);
 
 static int g_http2_next_context_id  = 1;
 static int g_http2_next_template_id = 1;
@@ -1236,8 +1249,17 @@ static int KYTY_SYSV_ABI Http2SendRequest(int req_id, const void* post_data, siz
 	return request->second.send_result;
 }
 
+// Async operations complete at once; the caller's event queue gets the completion event.
+static void Http2TriggerUserEvent(const Http2TriggerUserEventArgs* kqueue_option) {
+	if (kqueue_option != nullptr) {
+		EventQueue::KernelTriggerUserEvent(kqueue_option->eq, kqueue_option->uniq_id,
+		                                   kqueue_option->udata);
+	}
+}
+
 static int KYTY_SYSV_ABI Http2SendRequestAsync(int req_id, const void* post_data, size_t size,
-                                               void* /*kqueue_option*/, void* /*option*/) {
+                                               const Http2TriggerUserEventArgs* kqueue_option,
+                                               void* /*option*/) {
 	PRINT_NAME();
 
 	LOGF("\t req_id    = %d\n", req_id);
@@ -1256,6 +1278,7 @@ static int KYTY_SYSV_ABI Http2SendRequestAsync(int req_id, const void* post_data
 	request->second.send_result  = HTTP2_ERROR_TIMEOUT;
 	request->second.async_result = request->second.send_result;
 	request->second.async_event  = 0;
+	Http2TriggerUserEvent(kqueue_option);
 
 	return 0;
 }
@@ -1405,7 +1428,8 @@ static int KYTY_SYSV_ABI Http2ReadData(int req_id, void* data, size_t size) {
 }
 
 static int KYTY_SYSV_ABI Http2ReadDataAsync(int req_id, void* data, size_t size,
-                                            void* /*kqueue_option*/, void* /*option*/) {
+                                            const Http2TriggerUserEventArgs* kqueue_option,
+                                            void* /*option*/) {
 	PRINT_NAME();
 
 	LOGF("\t req_id = %d\n", req_id);
@@ -1424,22 +1448,22 @@ static int KYTY_SYSV_ABI Http2ReadDataAsync(int req_id, void* data, size_t size,
 	const int send_result = request->second.send_result;
 	if (send_result != 0) {
 		request->second.async_result = send_result;
-		request->second.async_event  = 1;
-		return 0;
+	} else {
+		const auto& body      = request->second.response_body;
+		const auto  remaining = request->second.read_offset < body.size()
+		                            ? body.size() - request->second.read_offset
+		                            : 0;
+		const auto  to_copy   = size < remaining ? size : remaining;
+
+		if (to_copy != 0) {
+			std::memcpy(data, body.data() + request->second.read_offset, to_copy);
+			request->second.read_offset += to_copy;
+		}
+
+		request->second.async_result = static_cast<int>(to_copy);
 	}
-
-	const auto& body = request->second.response_body;
-	const auto  remaining =
-	    request->second.read_offset < body.size() ? body.size() - request->second.read_offset : 0;
-	const auto to_copy = size < remaining ? size : remaining;
-
-	if (to_copy != 0) {
-		std::memcpy(data, body.data() + request->second.read_offset, to_copy);
-		request->second.read_offset += to_copy;
-	}
-
-	request->second.async_result = static_cast<int>(to_copy);
-	request->second.async_event  = 1;
+	request->second.async_event = 1;
+	Http2TriggerUserEvent(kqueue_option);
 
 	return 0;
 }
