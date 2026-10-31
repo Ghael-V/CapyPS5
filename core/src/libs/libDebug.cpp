@@ -20,8 +20,23 @@ static KYTY_SYSV_ABI uint32_t RazorCpuIsCapturing() {
 	return 0;
 }
 
+// Razor CPU is the SDK's CPU profiler; markers and syncs have nothing to report to.
+static KYTY_SYSV_ABI int RazorCpuPushMarkerStatic(const char* /*name*/) {
+	PRINT_NAME();
+
+	return 0;
+}
+
+static KYTY_SYSV_ABI int RazorCpuSync() {
+	PRINT_NAME();
+
+	return 0;
+}
+
 LIB_DEFINE(InitRazorCpu_1) {
 	LIB_FUNC("EboejOQvLL4", LibRazorCpu::RazorCpuIsCapturing);
+	LIB_FUNC("uZrOwuNJX-M", LibRazorCpu::RazorCpuPushMarkerStatic);
+	LIB_FUNC("Ax7NjOzctIM", LibRazorCpu::RazorCpuSync);
 }
 
 } // namespace LibRazorCpu

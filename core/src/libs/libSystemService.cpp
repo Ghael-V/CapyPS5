@@ -262,6 +262,20 @@ static int KYTY_SYSV_ABI SystemServicePowerTick() {
 	return OK;
 }
 
+// A title can disable the system background music player and re-enable it later; there is no
+// system music player to stop.
+static int KYTY_SYSV_ABI SystemServiceDisableMusicPlayer() {
+	PRINT_NAME();
+
+	return OK;
+}
+
+static int KYTY_SYSV_ABI SystemServiceReenableMusicPlayer() {
+	PRINT_NAME();
+
+	return OK;
+}
+
 static int KYTY_SYSV_ABI SystemServiceReportAbnormalTermination(const void* info) {
 	PRINT_NAME();
 
@@ -581,6 +595,8 @@ LIB_DEFINE(InitSystemService_1) {
 	LIB_FUNC("8Lo6Zv94aho", SystemService::SystemServiceDisableNoticeScreenSkipFlagAutoSet);
 	LIB_FUNC("Q3utJvma4Mo", SystemService::SystemServiceSetNoticeScreenSkipFlag);
 	LIB_FUNC("XbbJC3E+L5M", SystemService::SystemServicePowerTick);
+	LIB_FUNC("x1UB9bwDSOw", SystemService::SystemServiceDisableMusicPlayer);
+	LIB_FUNC("9kPCz7Or+1Y", SystemService::SystemServiceReenableMusicPlayer);
 	LIB_FUNC("3s8cHiCBKBE", SystemService::SystemServiceReportAbnormalTermination);
 	SystemGesture::InitSystemGesture_1(s);
 }
