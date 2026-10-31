@@ -229,6 +229,7 @@ int KYTY_SYSV_ABI  NpRegisterNpReachabilityStateCallback(void* callback, void* u
 int KYTY_SYSV_ABI  NpGetNpId(int user_id, NpId* np_id);
 int KYTY_SYSV_ABI  NpGetOnlineId(int user_id, NpOnlineId* online_id);
 int KYTY_SYSV_ABI  NpGetAccountIdA(int user_id, uint64_t* account_id);
+int KYTY_SYSV_ABI  NpGetUserIdByAccountId(uint64_t account_id, int* user_id);
 int KYTY_SYSV_ABI  NpGetAccountCountryA(int user_id, void* country_code);
 int KYTY_SYSV_ABI  NpGetAccountAge(int req_id, int user_id, uint8_t* age);
 int KYTY_SYSV_ABI  NpGetAccountLanguage2(int req_id, int user_id, void* language_code);
