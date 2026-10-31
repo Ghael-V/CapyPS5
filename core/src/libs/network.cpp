@@ -4296,6 +4296,19 @@ int KYTY_SYSV_ABI NpGetAccountIdA(int user_id, uint64_t* account_id) {
 	return np_error_signed_out;
 }
 
+// No account is ever signed in, so no account id maps to a user.
+int KYTY_SYSV_ABI NpGetUserIdByAccountId(uint64_t account_id, int* user_id) {
+	PRINT_NAME();
+
+	LOGF("	 account_id = 0x%016" PRIx64 "
+", account_id);
+
+	if (account_id == 0 || user_id == nullptr) {
+		return np_error_invalid_argument;
+	}
+	return np_error_signed_out;
+}
+
 int KYTY_SYSV_ABI NpGetAccountCountryA(int user_id, void* country_code) {
 	PRINT_NAME();
 
