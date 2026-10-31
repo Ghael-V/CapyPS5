@@ -1459,8 +1459,9 @@ int KYTY_SYSV_ABI NetResolverAbort(int rid, int flags) {
 	return OK;
 }
 
-int KYTY_SYSV_ABI NetResolverStartNtoa(int rid, const char* hostname, void* addr, int timeout,
-                                       int retry, int flags) {
+int KYTY_SYSV_ABI NetResolverStartNtoaMultipleRecords(int rid, const char* hostname,
+                                                      NetResolverInfo* info, int timeout, int retry,
+                                                      int flags) {
 	PRINT_NAME();
 
 	LOGF("\t rid      = %d\n"
@@ -1470,10 +1471,7 @@ int KYTY_SYSV_ABI NetResolverStartNtoa(int rid, const char* hostname, void* addr
 	     "\t flags    = 0x%08x\n",
 	     rid, hostname != nullptr ? hostname : "<null>", timeout, retry, flags);
 
-	(void)timeout;
-	(void)retry;
-
-	if (hostname == nullptr || addr == nullptr || (flags & ~0x00010000) != 0) {
+	if (hostname == nullptr || info == nullptr || (flags & ~0x00010000) != 0) {
 		return NET_ERROR_EINVAL;
 	}
 
@@ -1482,7 +1480,11 @@ int KYTY_SYSV_ABI NetResolverStartNtoa(int rid, const char* hostname, void* addr
 		return NET_ERROR_EBADF;
 	}
 
-	if ((flags & 0x00010000) == 0 && NetInetPton(2, hostname, addr) == 1) {
+	*info = {};
+	if ((flags & 0x00010000) == 0 && NetInetPton(2, hostname, &info->addrs[0].addr) == 1) {
+		info->addrs[0].af = 2;
+		info->records     = 1;
+		info->dns4records = 1;
 		return OK;
 	}
 
@@ -1512,15 +1514,35 @@ int KYTY_SYSV_ABI NetResolverStartNtoa(int rid, const char* hostname, void* addr
 	for (auto* ai = result; ai != nullptr; ai = ai->ai_next) {
 		if (ai->ai_family == AF_INET && ai->ai_addr != nullptr &&
 		    ai->ai_addrlen >= sizeof(sockaddr_in)) {
-			const auto* in = reinterpret_cast<const sockaddr_in*>(ai->ai_addr);
-			std::memcpy(addr, &in->sin_addr, sizeof(in->sin_addr));
-			freeaddrinfo(result);
-			return OK;
+			if (info->records < static_cast<int>(std::size(info->addrs))) {
+				NetResolverAddr& out = info->addrs[info->records++];
+				const auto*      in  = reinterpret_cast<const sockaddr_in*>(ai->ai_addr);
+				std::memcpy(&out.addr, &in->sin_addr, sizeof(out.addr));
+				out.af = 2;
+			}
+			info->dns4records++;
 		}
 	}
 
 	freeaddrinfo(result);
-	return NET_ERROR_RESOLVER_ENORECORD;
+	return info->records > 0 ? OK : NET_ERROR_RESOLVER_ENORECORD;
+}
+
+int KYTY_SYSV_ABI NetResolverStartNtoa(int rid, const char* hostname, void* addr, int timeout,
+                                       int retry, int flags) {
+	PRINT_NAME();
+
+	if (addr == nullptr) {
+		return NET_ERROR_EINVAL;
+	}
+
+	NetResolverInfo info;
+	const int       ret =
+	    NetResolverStartNtoaMultipleRecords(rid, hostname, &info, timeout, retry, flags);
+	if (ret == OK) {
+		std::memcpy(addr, &info.addrs[0].addr, sizeof(info.addrs[0].addr));
+	}
+	return ret;
 }
 
 int KYTY_SYSV_ABI NetInetPton(int af, const char* src, void* dst) {
