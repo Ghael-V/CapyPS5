@@ -134,6 +134,13 @@ int KYTY_SYSV_ABI NetResolverStartNtoa(int rid, const char* hostname, void* addr
 	return FinishNetCall(Net::NetResolverStartNtoa(rid, hostname, addr, timeout, retry, flags));
 }
 
+int KYTY_SYSV_ABI NetResolverStartNtoaMultipleRecords(int rid, const char* hostname,
+                                                      Net::NetResolverInfo* info, int timeout,
+                                                      int retry, int flags) {
+	return FinishNetCall(
+	    Net::NetResolverStartNtoaMultipleRecords(rid, hostname, info, timeout, retry, flags));
+}
+
 int KYTY_SYSV_ABI NetInetPton(int af, const char* src, void* dst) {
 	return FinishNetCall(Net::NetInetPton(af, src, dst));
 }
@@ -240,6 +247,7 @@ LIB_DEFINE(InitNet_1_Net) {
 	LIB_FUNC("kJlYH5uMAWI", LibNet::NetResolverDestroy);
 	LIB_FUNC("AzqoBha7js4", LibNet::NetResolverAbort);
 	LIB_FUNC("Nd91WaWmG2w", LibNet::NetResolverStartNtoa);
+	LIB_FUNC("RCCY01Xd+58", LibNet::NetResolverStartNtoaMultipleRecords);
 	LIB_FUNC("8Kcp5d-q1Uo", LibNet::NetInetPton);
 	LIB_FUNC("9vA2aW+CHuA", LibNet::NetInetNtop);
 	LIB_FUNC("v6M4txecCuo", LibNet::NetEtherNtostr);
