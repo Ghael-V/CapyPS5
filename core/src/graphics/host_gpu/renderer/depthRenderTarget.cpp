@@ -175,9 +175,8 @@ static TextureCache::ImageDesc MakeDepthTargetDesc(const CommandBuffer& buffer,
 			           z.depth_view.slice_max);
 	}
 	// EXPCLEAR permits an HTile acceleration state; the host attachment is already expanded.
-	if (z.z_info.max_mip_level != 0 ||
-	    z.depth_view.current_mip_level != 0 || unsupported_shading_rate_encoding ||
-	    depth_address == 0 || (depth_address & 0xffffu) != 0) {
+	if (z.z_info.max_mip_level != 0 || unsupported_shading_rate_encoding || depth_address == 0 ||
+	    (depth_address & 0xffffu) != 0) {
 		DepthFatal("unsupported depth register state");
 	}
 	if (has_stencil) {
@@ -199,8 +198,10 @@ static TextureCache::ImageDesc MakeDepthTargetDesc(const CommandBuffer& buffer,
 	if (!z.size.valid) {
 		DepthFatal("missing depth extent");
 	}
-	const uint32_t width  = static_cast<uint32_t>(z.size.x_max) + 1u;
-	const uint32_t height = static_cast<uint32_t>(z.size.y_max) + 1u;
+	// With a single level, the selected mip is a surface of that mip's extent at the base address.
+	const auto     mip    = z.depth_view.current_mip_level;
+	const uint32_t width  = std::max((static_cast<uint32_t>(z.size.x_max) + 1u) >> mip, 1u);
+	const uint32_t height = std::max((static_cast<uint32_t>(z.size.y_max) + 1u) >> mip, 1u);
 	if (width > 16384 || height > 16384) {
 		DepthFatal("invalid depth extent");
 	}
