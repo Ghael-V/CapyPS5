@@ -553,6 +553,7 @@ struct Ngs2VoiceInternal {
 		Ngs2WaveformBlock info;
 		size_t            data_cursor    = 0;
 		uint32_t          repeated_count = 0;
+		bool              canceled       = false;
 	};
 	struct Module {
 		std::vector<uint8_t>     param, work, state;
@@ -726,7 +727,7 @@ struct Ngs2VoiceInternal {
 		const bool only_data = (flags & 2u) != 0;
 		const bool join      = only_data && (flags & 0x10u) == 0;
 		// CLEAR reopens a list that the previous addition closed.
-		EXIT_NOT_IMPLEMENTED((!accepts_blocks && !clear) || (flags & ~0x17u) != 0);
+		EXIT_NOT_IMPLEMENTED((!accepts_blocks && !clear) || (flags & ~0x1fu) != 0);
 		const auto retained = clear ? 0 : blocks.size();
 		Block      tail     = retained == 0 ? Block {} : blocks.back();
 		std::vector<Block> pending;
@@ -760,6 +761,12 @@ struct Ngs2VoiceInternal {
 			ClearWaveformBlocks();
 		} else if (retained != 0) {
 			blocks.back().info.data_size = tail.info.data_size;
+		}
+		// CANCEL marks the outstanding blocks; a marked block that has not started decodes as data only.
+		if ((flags & 8u) != 0) {
+			for (auto& block: blocks) {
+				block.canceled = true;
+			}
 		}
 		blocks.insert(blocks.end(), pending.begin(), pending.end());
 		accepts_blocks = (flags & 1u) != 0;
@@ -1677,7 +1684,7 @@ static bool Ngs2FinishBlock(Ngs2VoiceInternal& voice) {
 	                                  block.data,
 	                                  static_cast<uint32_t>(block.info.data_size),
 	                                  block.repeated_count,
-	                                  0,
+	                                  static_cast<uint32_t>(block.canceled),
 	                                  0};
 	if (!repeat) {
 		voice.blocks.pop_front();
@@ -1694,6 +1701,10 @@ static bool Ngs2DecodeFrame(Ngs2VoiceInternal& voice, std::vector<float>& frame,
 	frame_samples = 0;
 	while (voice.state == Ngs2VoicePlayState::Playing && !voice.blocks.empty()) {
 		auto& block = voice.blocks.front();
+		if (block.canceled && block.data_cursor == 0 && block.repeated_count == 0) {
+			block.info.num_samples = 0;
+			block.info.num_repeats = 0;
+		}
 		if (block.info.num_samples != 0 && block.data_cursor == 0) {
 			voice.duration_remaining = block.info.num_samples;
 			voice.skip_remaining     = block.info.num_skip_samples;
