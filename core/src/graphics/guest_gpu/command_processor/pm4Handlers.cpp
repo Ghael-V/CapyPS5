@@ -3667,6 +3667,10 @@ void GraphicsInitJmpTablesShIndirect() {
 	g_hw_sh_indirect_func[0x0ca] = [](KYTY_HW_SH_INDIRECT_ARGS) {
 		HwShIgnoreShaderRegister(cmd_offset, value);
 	};
+	// The same HS-front allocation word; the fused HS resource registers carry it (NHL 27).
+	g_hw_sh_indirect_func[0x14a] = [](KYTY_HW_SH_INDIRECT_ARGS) {
+		HwShIgnoreShaderRegister(cmd_offset, value);
+	};
 	g_hw_sh_indirect_func[Pm4::SPI_GRAPHICS_SHADER_CONTROL_GS] = [](KYTY_HW_SH_INDIRECT_ARGS) {
 		HwShIgnoreShaderRegister(cmd_offset, value);
 	};
