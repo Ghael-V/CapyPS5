@@ -589,6 +589,8 @@ static vk::Device VulkanCreateDevice(GraphicContext& graphics,
 
 	auto features12 = WindowContext::RequiredVulkan12Features();
 	features12.shaderSharedInt64Atomics = supported_features12.shaderSharedInt64Atomics;
+	features12.samplerFilterMinmax      = supported_features12.samplerFilterMinmax;
+	graphics.sampler_filter_minmax_enabled = supported_features12.samplerFilterMinmax == VK_TRUE;
 	features12.shaderBufferInt64Atomics = supported_features12.shaderBufferInt64Atomics;
 	features12.shaderOutputLayer        = supported_features12.shaderOutputLayer;
 	features12.shaderOutputViewportIndex = supported_features12.shaderOutputViewportIndex;
