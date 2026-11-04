@@ -180,6 +180,12 @@ bool SkipNoticeScreen() {
 	return g_config->skip_notice_screen;
 }
 
+// `setprop debug.capy.poll_backoff 0` lets failed event-flag polls spin again (A/B on Android).
+bool PollBackoffEnabled() {
+	static Common::DebugFlags::CachedValue property("debug.capy.poll_backoff", 1);
+	return g_config->poll_backoff_enabled && property.Get() != 0;
+}
+
 #if KYTY_PLATFORM == KYTY_PLATFORM_WINDOWS
 bool RedZoneProtectionEnabled() {
 	return g_config->red_zone_protection_enabled;

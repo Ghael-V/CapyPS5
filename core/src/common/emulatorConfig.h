@@ -83,6 +83,8 @@ struct ConfigOptions {
 	bool                   trophy_enabled              = true;
 	bool                   playgo_hack_enabled         = false;
 	bool                   skip_notice_screen          = false;
+	// Back-to-back failed zero-timeout event-flag polls back off: yield, then sleep briefly.
+	bool                   poll_backoff_enabled        = true;
 #if KYTY_PLATFORM == KYTY_PLATFORM_WINDOWS
 	bool red_zone_protection_enabled = false;
 #endif
@@ -137,6 +139,7 @@ bool TessellationEnabled();
 bool TrophyEnabled();
 bool PlayGoHackEnabled();
 bool SkipNoticeScreen();
+bool PollBackoffEnabled();
 #if KYTY_PLATFORM == KYTY_PLATFORM_WINDOWS
 bool RedZoneProtectionEnabled();
 #endif
