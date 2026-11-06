@@ -147,6 +147,8 @@ public:
 	[[nodiscard]] uint64_t HashGuestEdges() const;
 
 	[[nodiscard]] bool IsScaled() const noexcept { return scale != 1.0f; }
+	// A BCn image stored decoded on a GPU without BCn textures (see BcDecoder).
+	[[nodiscard]] bool IsBcDecoded() const noexcept { return m_bc_decoded; }
 	[[nodiscard]] static vk::Extent3D ScaledExtent(vk::Extent3D extent, float scale) noexcept;
 
 	ImageInfo        info;
@@ -167,6 +169,11 @@ public:
 
 private:
 	friend struct ImageTestAccess;
+
+	void UploadBcDecoded(std::span<const vk::BufferImageCopy> copies, vk::Buffer buffer,
+	                     uint64_t offset, uint64_t size);
+	[[nodiscard]] bool SkipBcDecodedCopy(const Image& source) const;
+	bool m_bc_decoded = false;
 
 	[[nodiscard]] static vk::ImageAspectFlags FullAspectMask(vk::Format format) noexcept;
 	[[nodiscard]] static uint32_t             CopyRows(uint64_t row_size, uint32_t rows,

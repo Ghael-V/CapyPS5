@@ -11,7 +11,10 @@
 #include "graphics/host_gpu/renderer/cache/streamBuffer.h"
 #include "graphics/host_gpu/renderer/commandScheduler.h"
 #include "graphics/host_gpu/renderer/gpuProfiler.h"
+#include "graphics/host_gpu/renderer/cache/textureCache.h"
+#include "graphics/host_gpu/renderer/image/bcDecoder.h"
 #include "graphics/host_gpu/renderer/image/imageView.h"
+#include "graphics/host_gpu/renderer/renderContext.h"
 #include "graphics/host_gpu/renderer/image/tiler.h"
 #include "graphics/host_gpu/renderer/renderTarget.h"
 #include "kernel/memory.h"
@@ -403,6 +406,10 @@ void Image::Upload(std::span<const vk::BufferImageCopy> copies, vk::Buffer buffe
 		Common::DebugFlags::LogDepthWrite("Upload", track_addr);
 	}
 	m_scheduler.EndRendering();
+	if (m_bc_decoded) {
+		UploadBcDecoded(copies, buffer, offset, size);
+		return;
+	}
 	if (IsScaled()) {
 		UploadScaled(copies, buffer, offset, size);
 		return;
@@ -440,6 +447,45 @@ void Image::Upload(std::span<const vk::BufferImageCopy> copies, vk::Buffer buffe
 	command.pipelineBarrier2(dependency);
 	Transit(vk::ImageLayout::eGeneral,
 	        vk::AccessFlagBits2::eShaderRead | vk::AccessFlagBits2::eTransferRead, {}, command);
+}
+
+void Image::UploadBcDecoded(std::span<const vk::BufferImageCopy> copies, vk::Buffer buffer,
+                            uint64_t offset, uint64_t size) {
+	auto* decoder = m_scheduler.Context().GetTextureCache().GetBcDecoder();
+	EXIT_IF(decoder == nullptr);
+	const auto format = BcDecodedFormatOf(info.pixel_format);
+	EXIT_IF(!format.has_value());
+	auto command = m_scheduler.Current().Handle();
+	Transit(vk::ImageLayout::eTransferDstOptimal, vk::AccessFlagBits2::eTransferWrite, {}, command);
+	for (const auto& copy: copies) {
+		vk::Buffer texels = nullptr;
+		if (const auto decoded =
+		        decoder->Decode(command, buffer, offset, size, *format, copy, texels)) {
+			command.copyBufferToImage(texels, backing.image, vk::ImageLayout::eTransferDstOptimal,
+			                          1, &*decoded);
+		} else {
+			// Undecodable (BC6H): black rather than whatever the memory held.
+			const vk::ClearColorValue       black {};
+			const vk::ImageSubresourceRange range {
+			    vk::ImageAspectFlagBits::eColor, copy.imageSubresource.mipLevel, 1,
+			    copy.imageSubresource.baseArrayLayer, copy.imageSubresource.layerCount};
+			command.clearColorImage(backing.image, vk::ImageLayout::eTransferDstOptimal, &black, 1,
+			                        &range);
+		}
+	}
+	Transit(vk::ImageLayout::eGeneral,
+	        vk::AccessFlagBits2::eShaderRead | vk::AccessFlagBits2::eTransferRead, {}, command);
+}
+
+bool Image::SkipBcDecodedCopy(const Image& source) const {
+	if ((m_bc_decoded || source.m_bc_decoded) && backing.format != source.backing.format) {
+		Common::DebugFlags::NoteOnce("CapyPS5-Bcn", 0x4243636f7079ull,
+		                             "copy between a decoded BCn image and format %d skipped",
+		                             static_cast<int>(m_bc_decoded ? source.backing.format
+		                                                           : backing.format));
+		return true;
+	}
+	return false;
 }
 
 void Image::Download(std::span<const vk::BufferImageCopy> copies, vk::Buffer buffer,
@@ -508,6 +554,9 @@ std::pair<uint32_t, uint32_t> Image::SanitizeCopyLayers(const Image& source,
 
 void Image::CopyImage(Image& source) {
 	EXIT_IF(source.backing.samples != backing.samples);
+	if (SkipBcDecodedCopy(source)) {
+		return;
+	}
 	if (source.scale != scale) {
 		BlitImage(source);
 		return;
@@ -645,6 +694,9 @@ uint32_t Image::CopyRows(uint64_t row_size, uint32_t rows, uint64_t capacity) no
 }
 
 void Image::CopyImageWithBuffer(Image& source, Buffer& buffer, TileManager& tiler) {
+	if (SkipBcDecodedCopy(source)) {
+		return;
+	}
 	EXIT_IF(buffer.Handle() == nullptr || source.backing.samples != 1 || backing.samples != 1);
 	if (static_cast<bool>(FullAspectMask(backing.format) & vk::ImageAspectFlagBits::eDepth)) {
 		Common::DebugFlags::LogDepthWrite("CopyImageWithBuffer", track_addr);
@@ -753,6 +805,9 @@ void Image::CopyImageWithBuffer(Image& source, Buffer& buffer, TileManager& tile
 void Image::CopyMip(Image& source, uint32_t mip, uint32_t layer) {
 	EXIT_IF(source.backing.samples != backing.samples || mip >= backing.mip_levels ||
 	        layer >= backing.layers);
+	if (SkipBcDecodedCopy(source)) {
+		return;
+	}
 	if (static_cast<bool>(FullAspectMask(backing.format) & vk::ImageAspectFlagBits::eDepth)) {
 		Common::DebugFlags::LogDepthWrite("CopyMip", track_addr);
 	}
@@ -1066,6 +1121,18 @@ Image::Image(GraphicContext& graphics, CommandScheduler& scheduler, const ImageI
 	create.mipLevels     = info.resources.levels;
 	create.arrayLayers   = info.IsVolume() ? 1u : info.resources.layers;
 	create.format        = info.pixel_format;
+	// Without BCn textures the image holds the decoded texels; uploads decode the blocks.
+	if (const auto decoded = BcDecodedFormatOf(info.pixel_format);
+	    decoded && graphics.bc_textures_decoded) {
+		m_bc_decoded  = true;
+		create.format = decoded->format;
+		create.usage  = vk::ImageUsageFlagBits::eTransferSrc |
+		               vk::ImageUsageFlagBits::eTransferDst | vk::ImageUsageFlagBits::eSampled;
+		create.flags  = vk::ImageCreateFlagBits::eMutableFormat;
+		if (info.IsVolume()) {
+			create.flags |= vk::ImageCreateFlagBits::e2DArrayCompatible;
+		}
+	}
 	create.tiling        = vk::ImageTiling::eOptimal;
 	create.initialLayout = vk::ImageLayout::eUndefined;
 	create.samples       = vulkan_sample_count(info.samples);

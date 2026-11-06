@@ -124,6 +124,9 @@ TextureCache::TextureCache(GraphicContext& graphics, CommandScheduler& scheduler
       m_tiler(graphics, scheduler, buffer_cache.GetUtilityBuffer(MemoryUsage::Stream)),
       m_buffer_cache(buffer_cache),
       m_readback_linear_images(Config::ReadbackLinearImagesEnabled()) {
+	if (m_graphics.bc_textures_decoded) {
+		m_bc_decoder = std::make_unique<BcDecoder>(graphics, scheduler);
+	}
 	if (m_graphics.CanReportMemoryUsage()) {
 		constexpr int64_t GiB = 1024ll * 1024 * 1024;
 		const auto        budget =
@@ -962,6 +965,10 @@ ImageId TextureCache::ExpandImage(const ImageInfo& info, ImageId source_id) {
 
 bool TextureCache::CanDownload(const Image& image) const {
 	const auto& info = image.info;
+	// Decoded BCn texels cannot be encoded back into the guest's blocks.
+	if (image.IsBcDecoded()) {
+		return false;
+	}
 	if (info.samples != 1 || image.backing.samples != 1 || info.resources.layers == 0 ||
 	    info.data.size % info.resources.layers != 0) {
 		return false;

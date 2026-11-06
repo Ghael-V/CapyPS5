@@ -12,6 +12,7 @@
 #include "graphics/host_gpu/pageManager.h"
 #include "graphics/host_gpu/regionManager.h"
 #include "graphics/host_gpu/renderer/cache/multiLevelPageTable.h"
+#include "graphics/host_gpu/renderer/image/bcDecoder.h"
 #include "graphics/host_gpu/renderer/image/blitHelper.h"
 #include "graphics/host_gpu/renderer/image/image.h"
 #include "graphics/host_gpu/renderer/image/tiler.h"
@@ -46,6 +47,9 @@ public:
 	             BufferCache& buffer_cache);
 	~TextureCache();
 	KYTY_CLASS_NO_COPY(TextureCache);
+
+	// Decodes BCn uploads on GPUs without BCn textures; null elsewhere.
+	[[nodiscard]] BcDecoder* GetBcDecoder() noexcept { return m_bc_decoder.get(); }
 
 	[[nodiscard]] ImageId       FindImage(ImageDesc& desc, bool exact_format = false);
 	void                        UpdateImage(ImageId id);
@@ -191,6 +195,7 @@ private:
 	PageManager&                                      m_page_manager;
 	BlitHelper                                        m_blit_helper;
 	TileManager                                       m_tiler;
+	std::unique_ptr<BcDecoder>                        m_bc_decoder;
 	BufferCache&                                      m_buffer_cache;
 	Common::SlotVector<Image>                         m_slot_images;
 	ImagePageTable                                    m_image_page_table;

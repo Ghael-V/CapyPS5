@@ -35,6 +35,8 @@ struct GraphicContext {
 	bool                               sample_rate_shading_enabled           = false;
 	bool                               sampler_anisotropy_enabled            = false;
 	bool                               sampler_filter_minmax_enabled         = false;
+	// No BCn textures (Mali system drivers): BCn images are stored decoded (BcDecoder).
+	bool                               bc_textures_decoded                   = false;
 	bool                               shader_image_int64_atomics_enabled    = false;
 	// bool fp64_denorm_preserve = false; // Temporarily disabled.
 	bool                               attachment_feedback_loop_enabled      = false;
