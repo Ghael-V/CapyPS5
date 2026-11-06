@@ -10388,7 +10388,7 @@ void TestGraphicsComputeGetreg() {
       IR::Program program;
       program.wave_size = wave;
       IR::Block block;
-      Frontend::Translator translator(program, &block, 1, false, true);
+      Frontend::Translator translator(program, &block, 1, Frontend::NoLaneSpills, false, true);
       translator.TranslateInstruction(decoded);
       bool wrote_vcc = false;
       for (const auto& inst : block) {
