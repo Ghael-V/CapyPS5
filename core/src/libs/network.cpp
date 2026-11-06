@@ -4300,8 +4300,7 @@ int KYTY_SYSV_ABI NpGetAccountIdA(int user_id, uint64_t* account_id) {
 int KYTY_SYSV_ABI NpGetUserIdByAccountId(uint64_t account_id, int* user_id) {
 	PRINT_NAME();
 
-	LOGF("	 account_id = 0x%016" PRIx64 "
-", account_id);
+	LOGF("\t account_id = 0x%016" PRIx64 "\n", account_id);
 
 	if (account_id == 0 || user_id == nullptr) {
 		return np_error_invalid_argument;
