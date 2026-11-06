@@ -686,8 +686,17 @@ static vk::Device VulkanCreateDevice(GraphicContext& graphics,
 	// VulkanFindPhysicalDevice already checked the required creation features. These
 	// requirements are specific to this creation path and are not part of device selection.
 	EXIT_NOT_IMPLEMENTED(supported_features2.features.shaderInt64 != VK_TRUE);
-	EXIT_NOT_IMPLEMENTED(supported_features2.features.vertexPipelineStoresAndAtomics != VK_TRUE);
-	EXIT_NOT_IMPLEMENTED(supported_features2.features.dualSrcBlend != VK_TRUE);
+	// Optional: requesting them on drivers without them (PanVK) failed device creation. Shaders
+	// that need them are then rejected at pipeline creation and their draws skipped.
+	for (const auto& [supported, name]:
+	     {std::pair {supported_features2.features.vertexPipelineStoresAndAtomics,
+	                 "vertexPipelineStoresAndAtomics"},
+	      std::pair {supported_features2.features.dualSrcBlend, "dualSrcBlend"}}) {
+		if (supported != VK_TRUE) {
+			Log::WriteToConsoleAndLog(fmt::format(
+			    "WARNING: {} is unavailable; shaders that need it will not render.\n", name));
+		}
+	}
 	vk::PhysicalDeviceFeatures device_features {};
 	device_features.fragmentStoresAndAtomics = VK_TRUE;
 	device_features.samplerAnisotropy        = supported_features2.features.samplerAnisotropy;
@@ -703,7 +712,7 @@ static vk::Device VulkanCreateDevice(GraphicContext& graphics,
 	device_features.shaderResourceMinLod                 = supported_features2.features.shaderResourceMinLod;
 	ShaderRecompiler::g_host_features.min_lod = supported_features2.features.shaderResourceMinLod == VK_TRUE;
 	device_features.independentBlend                     = VK_TRUE;
-	device_features.dualSrcBlend                         = VK_TRUE;
+	device_features.dualSrcBlend                         = supported_features2.features.dualSrcBlend;
 	device_features.tessellationShader                   = VK_TRUE;
 	device_features.sampleRateShading                    = VK_TRUE;
 	device_features.depthBiasClamp                       = VK_TRUE;
@@ -735,7 +744,8 @@ static vk::Device VulkanCreateDevice(GraphicContext& graphics,
 	     ShaderRecompiler::g_host_features.output_viewport_index,
 	     ShaderRecompiler::g_host_features.buffer_int64_atomics,
 	     graphics.storage_buffer_8bit_enabled);
-	device_features.vertexPipelineStoresAndAtomics       = VK_TRUE;
+	device_features.vertexPipelineStoresAndAtomics =
+	    supported_features2.features.vertexPipelineStoresAndAtomics;
 	graphics.sample_rate_shading_enabled                 = true;
 	device_features.shaderInt64 = VK_TRUE;
 	device_features.shaderFloat64 =
