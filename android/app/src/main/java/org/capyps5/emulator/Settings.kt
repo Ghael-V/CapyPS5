@@ -98,8 +98,9 @@ enum class CoreOption(
         "debug.capy.frame_gen",
         listOf(
             0L to R.string.disabled,
-            1L to R.string.frame_gen_one,
-            3L to R.string.frame_gen_three,
+            1L to R.string.frame_gen_x2,
+            2L to R.string.frame_gen_x3,
+            3L to R.string.frame_gen_x4,
         ),
         0L,
     ),

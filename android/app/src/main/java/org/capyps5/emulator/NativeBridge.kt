@@ -73,6 +73,7 @@ object NativeBridge {
     const val STAT_WAIT_UNMAPPED = 4
     const val STAT_NULL_BUFFERS = 5
     const val STAT_RUNNING = 6
+    const val STAT_GENERATED_FRAMES = 7 // CapyPS5 Framegen presents
 
     // Button bitmasks corresponding to PS5 DualSense
     const val BTN_SELECT = 1 shl 0

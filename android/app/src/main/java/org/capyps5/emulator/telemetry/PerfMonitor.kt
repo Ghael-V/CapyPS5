@@ -16,6 +16,8 @@ import java.io.File
 data class PerfSnapshot(
     val fps: Float = 0f,
     val hostFps: Float = 0f,
+    /** Frames CapyPS5 Framegen showed per second, on top of [fps]. */
+    val generatedFps: Float = 0f,
     val frameTimeMs: Float = 0f,
     val maxFrameTimeMs: Float = 0f,
     val cpuPercent: Float? = null,
@@ -97,6 +99,7 @@ class PerfMonitor(private val context: Context) {
         return PerfSnapshot(
             fps = fps,
             hostFps = rate(NativeBridge.STAT_HOST_PRESENTS),
+            generatedFps = rate(NativeBridge.STAT_GENERATED_FRAMES),
             frameTimeMs = if (fps > 0f) 1000f / fps else 0f,
             maxFrameTimeMs = (stats?.getOrNull(NativeBridge.STAT_MAX_FRAME_NS) ?: 0L) / 1e6f,
             cpuPercent = sampleCpu(),

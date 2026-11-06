@@ -289,6 +289,7 @@ JNIEXPORT jlongArray JNICALL Java_org_capyps5_emulator_NativeBridge_nativeGetSta
 	    static_cast<jlong>(g_wait_reg_mem_unmapped.load(std::memory_order_relaxed)),
 	    static_cast<jlong>(g_null_buffer_fallbacks.load(std::memory_order_relaxed)),
 	    g_is_running.load() ? 1 : 0,
+	    static_cast<jlong>(g_generated_frames.load(std::memory_order_relaxed)),
 	};
 	constexpr auto count = static_cast<jsize>(sizeof(values) / sizeof(values[0]));
 	jlongArray     array = env->NewLongArray(count);

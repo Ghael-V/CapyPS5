@@ -1199,6 +1199,9 @@ void Presenter::Impl::Present(const FrameGenStep* step) {
 
 		presented_overlay_revision.store(overlay_visual.revision, std::memory_order_release);
 		window.loop.presented_frames.fetch_add(1, std::memory_order_relaxed);
+		if (generated_source != nullptr) {
+			Common::Telemetry::g_generated_frames.fetch_add(1, std::memory_order_relaxed);
+		}
 		return;
 	}
 	LOGF("Vulkan presentation retry exhausted; dropping frame\n");
