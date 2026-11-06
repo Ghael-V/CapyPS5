@@ -5,6 +5,7 @@
 #include "graphics/shader/shader.h"
 
 #include "common/assert.h"
+#include "common/debugFlags.h"
 #include "common/common.h"
 #include "common/emulatorConfig.h"
 #include "common/logging/log.h"
@@ -22,7 +23,11 @@
 #include "kernel/memory.h"
 #include "libs/errno.h"
 
+#if defined(__ANDROID__)
+#include <android/log.h>
+#endif
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <bit>
 #include <cstdio>
@@ -32,6 +37,7 @@
 #include <span>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 #include <xxhash.h>
@@ -84,6 +90,79 @@ uint32_t ShaderCodeWords(uint64_t addr) {
 	std::scoped_lock lock(g_shader_map_mutex);
 	const auto iter = g_shader_map->find(addr);
 	return iter != g_shader_map->end() ? iter->second.data.code_size_bytes / sizeof(uint32_t) : 0;
+}
+
+uint32_t Gfx7ShaderCodeWords(uint64_t addr) {
+	if (addr == 0 || (addr & 3u) != 0) {
+		return 0;
+	}
+	constexpr uint64_t                  Limit = 256u * 1024u;
+	std::array<uint32_t, 1024>          block {};
+	constexpr uint64_t                  Step  = (block.size() - 1u) * sizeof(uint32_t);
+	for (uint64_t offset = 0; offset < Limit; offset += Step) {
+		if (!LibKernel::Memory::ReadGuestMemory(addr + offset, block.data(), sizeof(block))) {
+			return 0;
+		}
+		for (size_t i = 0; i + 1u < block.size(); i++) {
+			// "OrbShdr": 'O' 'r' 'b' 'S', then 'h' 'd' 'r'.
+			if (block[i] == 0x5362724fu && (block[i + 1u] & 0x00ffffffu) == 0x00726468u) {
+				return static_cast<uint32_t>(offset / sizeof(uint32_t) + i);
+			}
+		}
+	}
+	return 0;
+}
+
+void ShaderDebugDisassembleGfx7(uint64_t addr, const char* stage) {
+#if defined(__ANDROID__)
+	namespace Decoder = ShaderRecompiler::Decoder;
+	if (Decoder::GetGuestIsa() != Decoder::GuestIsa::Gfx7 || addr == 0) {
+		return;
+	}
+	static Common::DebugFlags::CachedValue enabled("debug.capy.gfx7_disasm", 0);
+	if (enabled.Get() == 0) {
+		return;
+	}
+	static std::mutex                   mutex;
+	static std::unordered_set<uint64_t> seen;
+	{
+		std::scoped_lock lock(mutex);
+		if (seen.size() >= 256 || !seen.insert(addr).second) {
+			return;
+		}
+	}
+	const auto words = Gfx7ShaderCodeWords(addr);
+	__android_log_print(ANDROID_LOG_WARN, "CapyPS5-Gfx7", "%s 0x%llx: %u dwords", stage,
+	                    static_cast<unsigned long long>(addr), words);
+	if (words == 0) {
+		return;
+	}
+	const std::span<const uint32_t> code {reinterpret_cast<const uint32_t*>(addr), words};
+	Decoder::Program                program;
+	program.code = code;
+	for (uint32_t word = 0; word < words;) {
+		auto& inst = program.instructions.emplace_back();
+		Decoder::DecodeInstruction(code, word, inst);
+		word += std::max<uint32_t>(inst.word_count, 1u);
+		if (inst.opcode == Decoder::Opcode::S_ENDPGM) {
+			break;
+		}
+	}
+	const auto text = Decoder::ProgramToString(program);
+	size_t     start = 0;
+	while (start < text.size()) {
+		const auto end = text.find('\n', start);
+		__android_log_print(ANDROID_LOG_WARN, "CapyPS5-Gfx7", "  %s| %s", stage,
+		                    text.substr(start, end == std::string::npos ? std::string::npos : end - start).c_str());
+		if (end == std::string::npos) {
+			break;
+		}
+		start = end + 1u;
+	}
+#else
+	(void)addr;
+	(void)stage;
+#endif
 }
 
 static ShaderMapEntry ShaderGetMappedData(uint64_t addr, const char* label) {

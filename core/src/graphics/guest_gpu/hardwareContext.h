@@ -536,6 +536,14 @@ struct GsShaderResource2 {
 	uint8_t shared_vgprs            = 0;
 };
 
+// The hardware vertex shader stage, used by PS4 (gfx7) games; PS5 games run vertex work as NGG
+// (ES/GS) instead.
+struct VsStageRegisters {
+	uint64_t data_addr = 0;
+	uint32_t rsrc1     = 0;
+	uint32_t rsrc2     = 0;
+};
+
 struct GsStageRegisters {
 	uint64_t          data_addr      = 0;
 	uint64_t          user_data_addr = 0;
@@ -616,6 +624,8 @@ struct VertexShaderInfo {
 	GsStageRegisters gs_regs;
 	UserSgprInfo     hs_user_sgpr;
 	UserSgprInfo     gs_user_sgpr;
+	VsStageRegisters vs_regs;
+	UserSgprInfo     vs_user_sgpr;
 };
 
 struct PixelShaderInfo {
@@ -1037,6 +1047,9 @@ public:
 	void SetHsShaderResource1(const HsShaderResource1& rsrc1) { m_vs.hs_regs.rsrc1 = rsrc1; }
 	void SetHsShaderResource2(const HsShaderResource2& rsrc2) { m_vs.hs_regs.rsrc2 = rsrc2; }
 	void SetGsShaderBase(uint64_t addr) { m_vs.gs_regs.data_addr = addr; }
+	void SetVsShaderBase(uint64_t addr) { m_vs.vs_regs.data_addr = addr; }
+	void SetVsShaderResource1(uint32_t value) { m_vs.vs_regs.rsrc1 = value; }
+	void SetVsShaderResource2(uint32_t value) { m_vs.vs_regs.rsrc2 = value; }
 	void SetGsUserDataAddress(uint32_t word, uint32_t value) {
 		SetUserDataAddressWord(m_vs.gs_regs.user_data_addr, word, value);
 	}
@@ -1073,6 +1086,12 @@ public:
 		m_vs.hs_user_sgpr.type[id]  = type;
 		m_vs.hs_user_sgpr.count =
 		    ((id + 1) > m_vs.hs_user_sgpr.count ? (id + 1) : m_vs.hs_user_sgpr.count);
+	}
+	void SetVsUserSgpr(uint32_t id, uint32_t value, UserSgprType type) {
+		m_vs.vs_user_sgpr.value[id] = value;
+		m_vs.vs_user_sgpr.type[id]  = type;
+		m_vs.vs_user_sgpr.count =
+		    ((id + 1) > m_vs.vs_user_sgpr.count ? (id + 1) : m_vs.vs_user_sgpr.count);
 	}
 	void SetGsUserSgpr(uint32_t id, uint32_t value, UserSgprType type) {
 		m_vs.gs_user_sgpr.value[id] = value;
