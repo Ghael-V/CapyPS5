@@ -576,14 +576,6 @@ Graphics::ImageInfo BufferAttributeGroup::ImageInfo(const VideoOutBuffer& buffer
 	if (!Graphics::DecodeVideoOutPixelFormat(attribute.pixel_format, pixel_format)) {
 		EXIT("unsupported video-out pixel format: 0x%016" PRIx64 "\n", attribute.pixel_format);
 	}
-	if (Graphics::IsHdrVideoOutPixelFormat(attribute.pixel_format)) {
-		static std::atomic_flag warned = ATOMIC_FLAG_INIT;
-		if (!warned.test_and_set(std::memory_order_relaxed)) {
-			Log::WriteToConsoleAndLog(fmt::format(
-			    "Warning: HDR-to-SDR conversion is not implemented; displaying PQ video-out "
-			    "pixels unchanged (format=0x{:016x}).\n", attribute.pixel_format));
-		}
-	}
 	const auto          tile_mode = Graphics::Prospero::TileMode::kRenderTarget;
 	Graphics::ImageInfo info {};
 	info.data            = {buffer.data_address, 0};
@@ -1094,6 +1086,7 @@ void FlipQueue::Prepare(uint64_t request_id, Graphics::CommandBuffer& buffer) {
 	uint32_t            height  = 0;
 	bool                current = false;
 	bool                premultiplied_alpha = false;
+	bool                hdr                 = false;
 	{
 		Common::LockGuard lock(cfg->mutex);
 		current = cfg->opened && !cfg->closing && cfg->generation == generation;
@@ -1115,6 +1108,8 @@ void FlipQueue::Prepare(uint64_t request_id, Graphics::CommandBuffer& buffer) {
 					     request_id, index, surface.group_index);
 				}
 				source_info = cfg->groups[surface.group_index].ImageInfo(surface);
+				hdr         = Graphics::IsHdrVideoOutPixelFormat(
+				    cfg->groups[surface.group_index].attribute.pixel_format);
 				premultiplied_alpha =
 				    (cfg->groups[surface.group_index].attribute.option &
 				     VIDEO_OUT_BUFFER_ATTRIBUTE_OPTION_ALPHA_PREMULTIPLIED) != 0;
@@ -1136,7 +1131,7 @@ void FlipQueue::Prepare(uint64_t request_id, Graphics::CommandBuffer& buffer) {
 		frame = &m_presenter.PrepareBlankFrame(width, height, index == VIDEO_OUT_BUFFER_INDEX_BLACK,
 		                                       &buffer);
 	} else {
-		frame = &m_presenter.PrepareFrame(buffer, source_info);
+		frame = &m_presenter.PrepareFrame(buffer, source_info, hdr);
 	}
 
 	Common::LockGuard lock(m_mutex);

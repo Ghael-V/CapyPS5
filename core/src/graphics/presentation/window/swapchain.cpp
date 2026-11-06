@@ -37,6 +37,7 @@ namespace Libs::Graphics {
 struct Presenter::Frame {
 	VulkanImage   image;
 	vk::ImageView view         = nullptr;
+	bool          hdr          = false; // PQ (HDR10) pixels, converted to SDR when drawn
 	uint64_t      present_tick = 0;
 	bool          busy         = false;
 
@@ -293,8 +294,10 @@ public:
 	void SetWantSrgb(bool want) noexcept { m_want_srgb = want; }
 	[[nodiscard]] Status AcquireNextImage();
 	[[nodiscard]] bool   PrepareSystemOverlay();
+	// An `hdr_source` is drawn through the HDR10-to-SDR conversion instead of the `source` blit.
 	void     RecordPresentCommands(CommandBuffer& command, VulkanImage* source,
-	                               const Presenter::Layer& overlay, bool draw_system_overlay);
+	                               Presenter::Frame* hdr_source, const Presenter::Layer& overlay,
+	                               bool draw_system_overlay);
 	uint64_t Submit(CommandScheduler& scheduler);
 	[[nodiscard]] Status Present();
 
@@ -307,7 +310,7 @@ public:
 
 private:
 	void Destroy();
-	void DrawOverlay(vk::CommandBuffer command, const Presenter::Layer& layer);
+	void DrawOverlay(vk::CommandBuffer command, const Presenter::Layer& layer, uint32_t flags = 0);
 
 	WindowContext&   m_window;
 	vk::SwapchainKHR m_handle = nullptr;
@@ -676,7 +679,8 @@ bool Swapchain::PrepareSystemOverlay() {
 	return m_system_overlay->PrepareFrame(m_extent, m_format, ImageCount());
 }
 
-void Swapchain::DrawOverlay(vk::CommandBuffer command, const Presenter::Layer& layer) {
+void Swapchain::DrawOverlay(vk::CommandBuffer command, const Presenter::Layer& layer,
+                            uint32_t flags) {
 	auto device = m_window.graphic_ctx.device;
 	if (m_overlay_pipeline == nullptr) {
 		vk::SamplerCreateInfo sampler {};
@@ -778,9 +782,9 @@ void Swapchain::DrawOverlay(vk::CommandBuffer command, const Presenter::Layer& l
 	write.descriptorType  = vk::DescriptorType::eCombinedImageSampler;
 	write.pImageInfo      = &image;
 	command.pushDescriptorSetKHR(vk::PipelineBindPoint::eGraphics, m_overlay_layout, 0, 1, &write);
-	const uint32_t premultiplied = layer.premultiplied_alpha;
-	command.pushConstants(m_overlay_layout, vk::ShaderStageFlagBits::eFragment, 0,
-	                      sizeof(premultiplied), &premultiplied);
+	flags |= layer.premultiplied_alpha ? 1u : 0u;
+	command.pushConstants(m_overlay_layout, vk::ShaderStageFlagBits::eFragment, 0, sizeof(flags),
+	                      &flags);
 	command.bindPipeline(vk::PipelineBindPoint::eGraphics, m_overlay_pipeline);
 	vk::RenderingAttachmentInfo attachment {};
 	attachment.imageView   = m_image_views[m_image_index];
@@ -804,11 +808,17 @@ void Swapchain::DrawOverlay(vk::CommandBuffer command, const Presenter::Layer& l
 }
 
 void Swapchain::RecordPresentCommands(CommandBuffer& command, VulkanImage* source,
-                                      const Presenter::Layer& overlay, bool draw_system_overlay) {
+                                      Presenter::Frame* hdr_source, const Presenter::Layer& overlay,
+                                      bool draw_system_overlay) {
 	EXIT_IF(m_image_index >= m_images.size());
 	auto       vk_command      = command.Handle();
 	const bool draw_overlay    = overlay.frame != nullptr;
-	const bool draw_attachment = draw_overlay || draw_system_overlay;
+	const bool draw_attachment = draw_overlay || draw_system_overlay || hdr_source != nullptr;
+	if (hdr_source != nullptr) {
+		source = nullptr;
+		hdr_source->Transit(vk_command, vk::ImageLayout::eShaderReadOnlyOptimal,
+		                    vk::AccessFlagBits2::eShaderRead);
+	}
 	if (source != nullptr) {
 		TransitImage(vk_command, *source, vk::ImageLayout::eTransferSrcOptimal,
 		                vk::AccessFlagBits2::eTransferRead);
@@ -884,6 +894,20 @@ void Swapchain::RecordPresentCommands(CommandBuffer& command, VulkanImage* sourc
 	                           vk::DependencyFlagBits::eByRegion, 0, nullptr, 0, nullptr, 1,
 	                           &to_present);
 	if (draw_attachment) {
+		if (hdr_source != nullptr) {
+			// PQ source, linear when stored as 16-bit float, opaque like the blit it replaces.
+			const uint32_t hdr_flags =
+			    4u | (hdr_source->image.format == vk::Format::eR16G16B16A16Sfloat ? 8u : 0u) | 16u;
+			DrawOverlay(vk_command, Presenter::Layer {hdr_source, 0, false}, hdr_flags);
+			if (draw_overlay || draw_system_overlay) {
+				to_present.srcAccessMask = vk::AccessFlagBits::eColorAttachmentWrite;
+				to_present.oldLayout     = vk::ImageLayout::eColorAttachmentOptimal;
+				vk_command.pipelineBarrier(vk::PipelineStageFlagBits::eColorAttachmentOutput,
+				                           vk::PipelineStageFlagBits::eColorAttachmentOutput,
+				                           vk::DependencyFlagBits::eByRegion, 0, nullptr, 0,
+				                           nullptr, 1, &to_present);
+			}
+		}
 		if (draw_overlay) {
 			DrawOverlay(vk_command, overlay);
 			if (draw_system_overlay) {
@@ -959,7 +983,7 @@ Presenter::Presenter(WindowContext& window): m_impl(std::make_unique<Impl>(windo
 
 Presenter::~Presenter() = default;
 
-Presenter::Frame& Presenter::PrepareFrame(CommandBuffer& buffer, const ImageInfo& info) {
+Presenter::Frame& Presenter::PrepareFrame(CommandBuffer& buffer, const ImageInfo& info, bool hdr) {
 	KYTY_PROFILER_FUNCTION();
 	EXIT_IF(buffer.IsInvalid());
 	Common::LockGuard render_lock(m_impl->renderer.GetMutex());
@@ -978,6 +1002,7 @@ Presenter::Frame& Presenter::PrepareFrame(CommandBuffer& buffer, const ImageInfo
 	frame->Configure(m_impl->window.graphic_ctx,
 	                 {image.backing.extent.width, image.backing.extent.height}, frame_format);
 	frame->CopyFrom(buffer, image);
+	frame->hdr = hdr;
 	return *frame;
 }
 
@@ -1080,7 +1105,9 @@ void Presenter::Impl::PresentGuestFrame() {
 
 	const auto max_generated =
 	    static_cast<uint32_t>(std::clamp<int64_t>(frame_gen_setting.Get(), 0, 3));
-	if (max_generated == 0 || layers[0].frame == nullptr || frame_gen_unsupported) {
+	// HDR frames are not generated from: the generator works on 8-bit SDR images.
+	if (max_generated == 0 || layers[0].frame == nullptr || layers[0].frame->hdr ||
+	    frame_gen_unsupported) {
 		Present();
 		return;
 	}
@@ -1183,7 +1210,12 @@ void Presenter::Impl::Present(const FrameGenStep* step) {
 			if (generated_source != nullptr) {
 				source = generated_source;
 			}
-			swapchain.RecordPresentCommands(command, source, layers[1], draw_system_overlay);
+			auto* hdr_source = generated_source == nullptr && layers[0].frame != nullptr &&
+			                           layers[0].frame->hdr
+			                       ? layers[0].frame
+			                       : nullptr;
+			swapchain.RecordPresentCommands(command, source, hdr_source, layers[1],
+			                                draw_system_overlay);
 			const auto tick = swapchain.Submit(present_scheduler);
 			for (const auto& layer: layers) {
 				if (layer.frame != nullptr) {
