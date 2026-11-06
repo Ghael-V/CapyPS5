@@ -19,6 +19,8 @@ inline std::atomic<uint64_t> g_last_game_frame_ns {0};
 inline std::atomic<uint64_t> g_max_frame_ns {0};
 // Host swapchain presents (can differ from game frames when the presenter repeats images).
 inline std::atomic<uint64_t> g_host_presents {0};
+// Presents of frames CapyPS5 Framegen generated between guest frames.
+inline std::atomic<uint64_t> g_generated_frames {0};
 // Places where emulation papered over a problem; non-zero rates point at real bugs.
 inline std::atomic<uint64_t> g_wait_reg_mem_timeouts {0};
 inline std::atomic<uint64_t> g_wait_reg_mem_unmapped {0};

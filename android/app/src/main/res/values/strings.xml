@@ -70,9 +70,10 @@
     <string name="frame_limit_30">30 FPS</string>
     <string name="frame_limit_20">20 FPS</string>
     <string name="option_frame_gen">CapyPS5 Framegen</string>
-    <string name="option_frame_gen_desc">Draws in-between frames from the motion between two game frames, so 30 FPS looks like 60. Adds one frame of latency and some GPU load; works best from 25 FPS up</string>
-    <string name="frame_gen_one">1 per frame (30 to 60)</string>
-    <string name="frame_gen_three">Up to 3 per frame</string>
+    <string name="option_frame_gen_desc">Draws extra frames between the game’s own, so it looks smoother. x2 doubles the frame rate (30 to 60), x3 triples it (20 to 60), x4 quadruples it (15 to 60); it never goes past the screen refresh rate. Adds one frame of latency and some GPU load</string>
+    <string name="frame_gen_x2">Framegen x2</string>
+    <string name="frame_gen_x3">Framegen x3</string>
+    <string name="frame_gen_x4">Framegen x4</string>
 
     <!-- GPU driver -->
     <string name="gpu_driver">GPU driver</string>

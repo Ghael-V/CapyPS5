@@ -63,7 +63,16 @@ fun PerfOverlay(mode: OverlayMode, snapshot: PerfSnapshot, fpsHistory: List<Floa
                     withStyle(SpanStyle(color = fpsColor(snapshot.fps), fontWeight = FontWeight.Bold)) {
                         append("%.0f".format(snapshot.fps))
                     }
-                    withStyle(SpanStyle(color = Label)) { append(" FPS  ") }
+                    withStyle(SpanStyle(color = Label)) { append(" FPS") }
+                    // With CapyPS5 Framegen: real frames, then everything shown including generated ones.
+                    if (snapshot.generatedFps >= 0.5f) {
+                        withStyle(SpanStyle(color = Label)) { append(" - ") }
+                        withStyle(SpanStyle(color = fpsColor(snapshot.fps + snapshot.generatedFps), fontWeight = FontWeight.Bold)) {
+                            append("%.0f".format(snapshot.fps + snapshot.generatedFps))
+                        }
+                        withStyle(SpanStyle(color = Label)) { append(" FG") }
+                    }
+                    append("  ")
                     append("%.1f".format(snapshot.frameTimeMs))
                     withStyle(SpanStyle(color = Label)) { append(" ms") }
                     if (mode == OverlayMode.Full) {
