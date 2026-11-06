@@ -1,0 +1,82 @@
+// SPDX-FileCopyrightText: Copyright 2026 CapyPS5 Project
+// SPDX-License-Identifier: GPL-2.0-only
+
+// Debug aid (`setprop debug.capy.bc_verify 1`, GPUs with BCn support): compares the texels
+// bcn_decode.comp wrote with the GPU's own decoding of the same blocks, counting the texels that
+// differ and keeping the first one with its block.
+
+#version 460 core
+
+layout(local_size_x = 8, local_size_y = 8) in;
+
+layout(set = 0, binding = 0) uniform sampler2D native_texture;
+
+layout(std430, set = 0, binding = 1) readonly buffer DecodedTexels {
+    uint texels[];
+};
+
+layout(std430, set = 0, binding = 2) readonly buffer InputBlocks {
+    uint blocks[];
+};
+
+layout(std430, set = 0, binding = 3) buffer Result {
+    uint mismatches;
+    uint claimed;
+    uint first_x;
+    uint first_y;
+    uint ours;
+    uint native;
+    uint block[4];
+};
+
+layout(push_constant) uniform PushConstants {
+    uint width;
+    uint height;
+    uint row_texels;      // decoded row pitch
+    uint bytes_per_texel; // 1, 2 or 4
+    uint blocks_x;
+    uint block_words;     // 2 or 4
+    uint input_offset;    // in words
+    uint tolerance;
+};
+
+void main() {
+    const uvec2 p = gl_GlobalInvocationID.xy;
+    if (p.x >= width || p.y >= height) {
+        return;
+    }
+    const vec4 fetched = texelFetch(native_texture, ivec2(p), 0);
+    const uint index = p.y * row_texels + p.x;
+    uint decoded;
+    uint expected;
+    if (bytes_per_texel == 4u) {
+        decoded = texels[index];
+        expected = packUnorm4x8(fetched);
+    } else if (bytes_per_texel == 2u) {
+        decoded = (texels[index >> 1] >> ((index & 1u) * 16u)) & 0xFFFFu;
+        expected = packUnorm4x8(vec4(fetched.rg, 0.0, 0.0));
+    } else {
+        decoded = (texels[index >> 2] >> ((index & 3u) * 8u)) & 0xFFu;
+        expected = packUnorm4x8(vec4(fetched.r, 0.0, 0.0, 0.0));
+    }
+    bool differs = false;
+    for (uint c = 0u; c < bytes_per_texel; ++c) {
+        const int a = int((decoded >> (c * 8u)) & 0xFFu);
+        const int b = int((expected >> (c * 8u)) & 0xFFu);
+        differs = differs || abs(a - b) > int(tolerance);
+    }
+    if (!differs) {
+        return;
+    }
+    atomicAdd(mismatches, 1u);
+    if (atomicCompSwap(claimed, 0u, 1u) == 0u) {
+        first_x = p.x;
+        first_y = p.y;
+        ours = decoded;
+        native = expected;
+        const uint base = input_offset + ((p.y / 4u) * blocks_x + p.x / 4u) * block_words;
+        for (uint w = 0u; w < 4u; ++w) {
+            block[w] = w < block_words ? blocks[base + w] : 0u;
+        }
+    }
+}

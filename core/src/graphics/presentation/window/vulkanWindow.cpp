@@ -700,8 +700,12 @@ static vk::Device VulkanCreateDevice(GraphicContext& graphics,
 	// Without BCn textures the images are stored decoded and uploads decode them on the GPU.
 	device_features.textureCompressionBC = supported_features2.features.textureCompressionBC;
 	// The same test that used to reject such devices, so GPUs that ran before keep native BCn.
-	// `setprop debug.capy.bc_decode 1` decodes on any GPU, to test the path without a Mali.
+	// `setprop debug.capy.bc_decode 1` decodes on any GPU, to test the path without a Mali; a
+	// larger value decodes only the formats whose bits it sets (bit n = BCn).
 	static Common::DebugFlags::CachedValue force_bc_decode("debug.capy.bc_decode", 0);
+	if (force_bc_decode.Get() > 1) {
+		graphics.bc_decoded_formats = static_cast<uint32_t>(force_bc_decode.Get());
+	}
 	graphics.bc_textures_decoded =
 	    force_bc_decode.Get() != 0 ||
 	    !(graphics.physical_device.getFormatProperties(vk::Format::eBc3SrgbBlock).optimalTilingFeatures &

@@ -37,6 +37,8 @@ struct GraphicContext {
 	bool                               sampler_filter_minmax_enabled         = false;
 	// No BCn textures (Mali system drivers): BCn images are stored decoded (BcDecoder).
 	bool                               bc_textures_decoded                   = false;
+	// Which BC numbers are decoded (bit n = BCn); all of them unless a test narrows it.
+	uint32_t                           bc_decoded_formats                    = 0xFEu;
 	bool                               shader_image_int64_atomics_enabled    = false;
 	// bool fp64_denorm_preserve = false; // Temporarily disabled.
 	bool                               attachment_feedback_loop_enabled      = false;
