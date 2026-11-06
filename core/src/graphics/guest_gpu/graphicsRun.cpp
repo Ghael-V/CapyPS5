@@ -377,20 +377,35 @@ void CommandProcessor::ResetDeCe() {
 
 void CommandProcessor::WaitCe() {
 	if (m_ce_count <= m_de_count && !m_ce_complete) {
+		if (g_current_execution != nullptr && g_current_execution->m_wait_retries++ == 0) {
+			SyncRecord("WAIT_ON_CE_COUNTER wait", m_ce_count, m_de_count);
+		}
 		SuspendPm4();
+	} else if (g_current_execution != nullptr) {
+		g_current_execution->m_wait_retries = 0;
 	}
 }
 
 void CommandProcessor::WaitDeDiff(uint32_t diff) {
 	EXIT_IF(m_de_count > m_ce_count);
 	if (m_ce_count - m_de_count >= diff) {
+		if (g_current_execution != nullptr && g_current_execution->m_wait_retries++ == 0) {
+			SyncRecord("WAIT_ON_DE_COUNTER_DIFF wait", m_ce_count, m_de_count, diff);
+		}
 		SuspendPm4();
+	} else if (g_current_execution != nullptr) {
+		g_current_execution->m_wait_retries = 0;
 	}
 }
 
 void CommandProcessor::WaitForRewind(bool valid) {
 	if (!valid) {
+		if (g_current_execution != nullptr && g_current_execution->m_wait_retries++ == 0) {
+			SyncRecord("REWIND wait");
+		}
 		SuspendPm4();
+	} else if (g_current_execution != nullptr) {
+		g_current_execution->m_wait_retries = 0;
 	}
 }
 
@@ -877,6 +892,9 @@ bool GuestGpu::Process(Submission& submission, bool& progressed) {
 		           m_submit_id + 1);
 		cp.SetSubmitId(++m_submit_id);
 		cp.ResetDeCe();
+		if (submission.type == SubmissionType::Graphics && !submission.constant_commands.empty()) {
+			SyncRecord("DE/CE sizes", submission.commands.size(), submission.constant_commands.size());
+		}
 		cp.SetFlip({});
 	}
 
@@ -894,6 +912,9 @@ bool GuestGpu::Process(Submission& submission, bool& progressed) {
 					submission.constant_complete =
 					    cp.Process(submission.constant_execution, submission.constant_commands) ==
 					    Pm4ProcessResult::Complete;
+					if (submission.constant_complete) {
+						SyncRecord("CE complete", cp.CeCount(), cp.DeCount());
+					}
 					round_progress |= submission.constant_execution.MadeProgress();
 				}
 				cp.SetCeComplete(submission.constant_complete);
@@ -902,6 +923,9 @@ bool GuestGpu::Process(Submission& submission, bool& progressed) {
 					submission.command_complete =
 					    cp.Process(submission.command_execution, submission.commands) ==
 					    Pm4ProcessResult::Complete;
+					if (submission.command_complete && !submission.constant_commands.empty()) {
+						SyncRecord("DE complete", cp.CeCount(), cp.DeCount());
+					}
 					round_progress |= submission.command_execution.MadeProgress();
 				}
 				progressed |= round_progress;
@@ -1244,6 +1268,11 @@ void CommandProcessor::ProcessPm4(Pm4Execution& execution) {
 		}
 		if (execution.m_suspended) {
 			execution.m_suspend_header = packet_header;
+			if (execution.m_last_suspend_packet != packet) {
+				execution.m_last_suspend_packet = packet;
+				SyncRecord("PM4 suspend", packet_header, total_dw - remaining_dw,
+				           reinterpret_cast<uint64_t>(packet));
+			}
 			return;
 		}
 		cursor.offset_dw += packet_dw;
@@ -1662,8 +1691,14 @@ void CommandProcessor::WaitFlipDone(uint32_t video_out_handle, uint32_t display_
 	// packet is retried once the buffer's flip is done (FlipQueue wakes the GPU thread).
 	if (!m_renderer.GetVideoOut().IsSafeForRendering(static_cast<int>(video_out_handle),
 	                                                 static_cast<int>(display_buffer_index))) {
+		if (g_current_execution != nullptr && g_current_execution->m_wait_retries++ == 0) {
+			SyncRecord("WAIT_FLIP_DONE wait", video_out_handle, display_buffer_index);
+		}
 		BufferFlush();
 		SuspendPm4();
+	} else if (g_current_execution != nullptr && g_current_execution->m_wait_retries != 0) {
+		SyncRecord("WAIT_FLIP_DONE pass", video_out_handle, display_buffer_index);
+		g_current_execution->m_wait_retries = 0;
 	}
 }
 

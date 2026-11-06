@@ -61,6 +61,8 @@ private:
 	// Header of the packet we suspended on; a different value on resume means the guest
 	// reused the command buffer while it was still in flight.
 	uint32_t m_suspend_header = 0;
+	// The packet this stream last suspended on, so each new suspension point is logged once.
+	const uint32_t* m_last_suspend_packet = nullptr;
 	// Last label written by this stream with WRITE_DATA. A following WAIT_REG_MEM on the same
 	// address must see it: on hardware nothing can run between the two, but here a guest CPU
 	// thread polling the label can reset it in the gap and the wait would never be satisfied.
@@ -148,6 +150,8 @@ public:
 	void WaitDeDiff(uint32_t diff);
 	void WaitForRewind(bool valid);
 	void IncrementDe();
+	[[nodiscard]] uint32_t DeCount() const noexcept { return m_de_count; }
+	[[nodiscard]] uint32_t CeCount() const noexcept { return m_ce_count; }
 	void IncrementCe();
 
 	void WriteConstRam(uint32_t offset, const uint32_t* src, uint32_t dw_num);
