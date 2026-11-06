@@ -197,12 +197,12 @@
     <string name="trophies_card_next">Still to earn</string>
     <string name="whats_new_title">What\'s new in v%1$s</string>
     <string-array name="whats_new_items">
-        <item>CapyPS5 Framegen: optional frame generation that turns 30 FPS into 60 (Settings > Performance).</item>
-        <item>New performance options: shadow resolution, early depth testing and a frame rate limit.</item>
-        <item>Unreal Engine 5 games: async compute no longer stalls rendering, which made menus crawl at 0-2 FPS.</item>
-        <item>Fixed textures and crashes in games whose shadows use depth-compare gathers (Castlevania).</item>
-        <item>Many shader and GPU fixes from KytyPS5: gathers, atomics, MSAA resolves, D16 depth copies and more.</item>
-        <item>Physical keyboard and on-screen keyboard toggle for text input, and system dialogs you can answer.</item>
-        <item>Android 16 and 16 KB page devices supported; smoother audio and controller input.</item>
+        <item>Mali GPUs on their system driver can now run games: BCn textures are decompressed on the GPU when the driver cannot sample them.</item>
+        <item>PanVK on Mali: the GPU is no longer rejected for missing vertex-stage stores or dual-source blending.</item>
+        <item>Framegen: the FPS counter shows real and total frames (XX FPS - YY FG), and the options are now called Framegen x2, x3 and x4.</item>
+        <item>Games that output HDR10 are converted to SDR for the screen.</item>
+        <item>Tessellation: quad domains, fractional-even spacing and counterclockwise output, plus new shader instructions.</item>
+        <item>Audio and network fixes from KytyPS5: NGS2 channel matrices and waveform blocks, Http2 and resolver calls, and functions for Palworld, Gran Turismo 7 and NHL 27.</item>
+        <item>Many more KytyPS5 graphics fixes: depth textures, mip aliasing, render targets, video-out formats and fonts.</item>
     </string-array>
 </resources>
