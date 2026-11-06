@@ -5,7 +5,9 @@
 #include "graphics/host_gpu/renderer/image/imageView.h"
 
 #include "common/assert.h"
+#include "common/debugFlags.h"
 #include "graphics/host_gpu/graphicContext.h"
+#include "graphics/host_gpu/renderer/image/bcDecoder.h"
 #include "graphics/host_gpu/renderer/image/image.h"
 
 #include <algorithm>
@@ -355,6 +357,17 @@ vk::ImageView Image::FindView(const ImageViewInfo& view_info) {
 	    IsStencilViewFormat(normalized.format)) {
 		normalized.format = image.format;
 		normalized.aspect = vk::ImageAspectFlagBits::eStencil;
+	}
+	if (m_bc_decoded) {
+		if (const auto decoded = BcDecodedFormatOf(normalized.format)) {
+			normalized.format = decoded->format;
+		} else if (!ImageViewOps::FormatsCompatible(image.format, normalized.format)) {
+			// A raw view of the blocks: the decoded texels are the closest thing there is.
+			Common::DebugFlags::NoteOnce("CapyPS5-Bcn", 0x424376696577ull,
+			                             "view of a decoded BCn image as format %d uses the texels",
+			                             static_cast<int>(normalized.format));
+			normalized.format = image.format;
+		}
 	}
 	normalized.usage = is_storage ? vk::ImageUsageFlagBits::eStorage : vk::ImageUsageFlags {};
 	for (const auto& cached: views) {

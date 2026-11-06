@@ -1,0 +1,374 @@
+// SPDX-FileCopyrightText: Copyright 2026 CapyPS5 Project
+// SPDX-FileCopyrightText: Copyright 2026 Ghael-V; Lemon BCn decoder, contributed to CapyPS5 by its author
+// SPDX-License-Identifier: GPL-2.0-only
+
+// Decodes raw BC1/2/3/4/5/7 blocks into texels, for GPUs without BCn texture support (the Mali
+// system drivers): those images are stored decoded and every upload goes through here. One
+// invocation decodes one 4x4 block.
+//
+// Output rows are padded to whole blocks (4 texels wide, 4 rows per block row) so every block
+// writes whole words: RGBA8 for BC1/2/3/7, R8 for BC4, RG8 for BC5, signed formats as SNORM bytes.
+
+#version 460 core
+
+layout(local_size_x = 64) in;
+
+layout(std430, set = 0, binding = 0) readonly buffer InputBlocks {
+    uint blocks[];
+};
+
+layout(std430, set = 0, binding = 1) writeonly buffer OutputTexels {
+    uint texels[];
+};
+
+layout(push_constant) uniform PushConstants {
+    uint blocks_x;
+    uint blocks_y;
+    uint slices;
+    uint format;
+    uint is_signed;
+    uint input_offset;  // in words
+    uint output_offset; // in words
+};
+
+const uint FORMAT_BC1 = 1;
+const uint FORMAT_BC2 = 2;
+const uint FORMAT_BC3 = 3;
+const uint FORMAT_BC4 = 4;
+const uint FORMAT_BC5 = 5;
+const uint FORMAT_BC7 = 7;
+
+// BC7 partition and anchor tables from the BC7 format specification (2 bits per texel; anchors:
+// 2-subset | 3-subset second << 4 | 3-subset third << 8).
+const uint PARTITIONS_2[64] = uint[](
+    0x50505050u, 0x40404040u, 0x54545454u, 0x54505040u, 0x50404000u, 0x55545450u,
+    0x55545040u, 0x54504000u, 0x50400000u, 0x55555450u, 0x55544000u, 0x54400000u,
+    0x55555440u, 0x55550000u, 0x55555500u, 0x55000000u, 0x55150100u, 0x00004054u,
+    0x15010000u, 0x00405054u, 0x00004050u, 0x15050100u, 0x05010000u, 0x40505054u,
+    0x00404050u, 0x05010100u, 0x14141414u, 0x05141450u, 0x01155440u, 0x00555500u,
+    0x15014054u, 0x05414150u, 0x44444444u, 0x55005500u, 0x11441144u, 0x05055050u,
+    0x05500550u, 0x11114444u, 0x41144114u, 0x44111144u, 0x15055054u, 0x01055040u,
+    0x05041050u, 0x05455150u, 0x14414114u, 0x50050550u, 0x41411414u, 0x00141400u,
+    0x00041504u, 0x00105410u, 0x10541000u, 0x04150400u, 0x50410514u, 0x41051450u,
+    0x05415014u, 0x14054150u, 0x41050514u, 0x41505014u, 0x40011554u, 0x54150140u,
+    0x50505500u, 0x00555050u, 0x15151010u, 0x54540404u
+);
+
+const uint PARTITIONS_3[64] = uint[](
+    0xAA685050u, 0x6A5A5040u, 0x5A5A4200u, 0x5450A0A8u, 0xA5A50000u, 0xA0A05050u,
+    0x5555A0A0u, 0x5A5A5050u, 0xAA550000u, 0xAA555500u, 0xAAAA5500u, 0x90909090u,
+    0x94949494u, 0xA4A4A4A4u, 0xA9A59450u, 0x2A0A4250u, 0xA5945040u, 0x0A425054u,
+    0xA5A5A500u, 0x55A0A0A0u, 0xA8A85454u, 0x6A6A4040u, 0xA4A45000u, 0x1A1A0500u,
+    0x0050A4A4u, 0xAAA59090u, 0x14696914u, 0x69691400u, 0xA08585A0u, 0xAA821414u,
+    0x50A4A450u, 0x6A5A0200u, 0xA9A58000u, 0x5090A0A8u, 0xA8A09050u, 0x24242424u,
+    0x00AA5500u, 0x24924924u, 0x24499224u, 0x50A50A50u, 0x500AA550u, 0xAAAA4444u,
+    0x66660000u, 0xA5A0A5A0u, 0x50A050A0u, 0x69286928u, 0x44AAAA44u, 0x66666600u,
+    0xAA444444u, 0x54A854A8u, 0x95809580u, 0x96969600u, 0xA85454A8u, 0x80959580u,
+    0xAA141414u, 0x96960000u, 0xAAAA1414u, 0xA05050A0u, 0xA0A5A5A0u, 0x96000000u,
+    0x40804080u, 0xA9A8A9A8u, 0xAAAAAA44u, 0x2A4A5254u
+);
+
+const uint ANCHORS[64] = uint[](
+    0x00000F3Fu, 0x0000083Fu, 0x000008FFu, 0x000003FFu, 0x00000F8Fu, 0x00000F3Fu, 0x000003FFu, 0x000008FFu,
+    0x00000F8Fu, 0x00000F8Fu, 0x00000F6Fu, 0x00000F6Fu, 0x00000F6Fu, 0x00000F5Fu, 0x00000F3Fu, 0x0000083Fu,
+    0x00000F3Fu, 0x00000832u, 0x00000F88u, 0x000003F2u, 0x00000F32u, 0x00000838u, 0x00000F68u, 0x000008AFu,
+    0x00000352u, 0x00000F88u, 0x00000682u, 0x00000A62u, 0x00000F88u, 0x00000F58u, 0x00000AF2u, 0x000008F2u,
+    0x00000F8Fu, 0x000003FFu, 0x00000F36u, 0x00000A58u, 0x00000A62u, 0x000008A8u, 0x0000098Fu, 0x00000AFFu,
+    0x000006F2u, 0x00000F38u, 0x000008F2u, 0x00000F52u, 0x000003F2u, 0x000006FFu, 0x000006FFu, 0x000008F6u,
+    0x00000F36u, 0x000003F2u, 0x00000F56u, 0x00000F58u, 0x00000F5Fu, 0x00000F8Fu, 0x00000F52u, 0x00000FA2u,
+    0x00000F5Fu, 0x00000FAFu, 0x00000F8Fu, 0x00000FDFu, 0x000003FFu, 0x00000FC2u, 0x00000F32u, 0x0000083Fu
+);
+
+// BC7 modes: subsets, partition bits, rotation bits, index selection bits, colour bits,
+// alpha bits, per-endpoint p-bits, shared p-bits, primary and secondary index bits.
+const uint NS[8] = uint[](3, 2, 3, 2, 1, 1, 1, 2);
+const uint PB[8] = uint[](4, 6, 6, 6, 0, 0, 0, 6);
+const uint RB[8] = uint[](0, 0, 0, 0, 2, 2, 0, 0);
+const uint ISB[8] = uint[](0, 0, 0, 0, 1, 0, 0, 0);
+const uint CB[8] = uint[](4, 6, 5, 7, 5, 7, 7, 5);
+const uint AB[8] = uint[](0, 0, 0, 0, 6, 8, 7, 5);
+const uint EPB[8] = uint[](1, 0, 0, 1, 0, 0, 1, 1);
+const uint SPB[8] = uint[](0, 1, 0, 0, 0, 0, 0, 0);
+const uint IB[8] = uint[](3, 3, 2, 2, 2, 2, 4, 2);
+const uint IB2[8] = uint[](0, 0, 0, 0, 3, 2, 0, 0);
+
+const uint WEIGHTS_2[4] = uint[](0, 21, 43, 64);
+const uint WEIGHTS_3[8] = uint[](0, 9, 18, 27, 37, 46, 55, 64);
+const uint WEIGHTS_4[16] = uint[](0, 4, 9, 13, 17, 21, 26, 30, 34, 38, 43, 47, 51, 55, 60, 64);
+
+// The raw block. Texels are worked out one at a time straight from it: no per-invocation arrays,
+// which some drivers keep in memory that isn't private to the invocation.
+uvec4 blk;
+
+uint Pack(uvec4 c) {
+    return (c.r & 0xFFu) | ((c.g & 0xFFu) << 8) | ((c.b & 0xFFu) << 16) | ((c.a & 0xFFu) << 24);
+}
+
+uvec4 Expand565(uint c) {
+    const uint r = (c >> 11) & 0x1Fu;
+    const uint g = (c >> 5) & 0x3Fu;
+    const uint b = c & 0x1Fu;
+    return uvec4((r << 3) | (r >> 2), (g << 2) | (g >> 4), (b << 3) | (b >> 2), 255u);
+}
+
+// BC1 colour block; BC2 and BC3 always use the four-colour mode.
+uvec4 ColorTexel(uint endpoints, uint indices, bool always_four_colors, uint texel) {
+    const uint c0 = endpoints & 0xFFFFu;
+    const uint c1 = endpoints >> 16;
+    const uvec4 e0 = Expand565(c0);
+    const uvec4 e1 = Expand565(c1);
+    const uint index = (indices >> (texel * 2u)) & 3u;
+    if (index == 0u) {
+        return e0;
+    }
+    if (index == 1u) {
+        return e1;
+    }
+    if (always_four_colors || c0 > c1) {
+        return index == 2u ? uvec4((e0.rgb * 2u + e1.rgb) / 3u, 255u)
+                           : uvec4((e1.rgb * 2u + e0.rgb) / 3u, 255u);
+    }
+    return index == 2u ? uvec4((e0.rgb + e1.rgb) >> 1, 255u) : uvec4(0u); // transparent black
+}
+
+// BC2 alpha: 4 bits per texel.
+uint ExplicitAlpha(uint lo, uint hi, uint texel) {
+    const uint a = ((texel < 8u ? lo : hi) >> ((texel & 7u) * 4u)) & 0xFu;
+    return a | (a << 4);
+}
+
+// C division, rounding towards zero.
+int Divide(int n, int d) {
+    return n < 0 ? -((-n) / d) : n / d;
+}
+
+// BC3 alpha, BC4 and each half of BC5, as a byte (SNORM bytes for signed formats).
+uint ChannelTexel(uint lo, uint hi, bool is_snorm, uint texel) {
+    int c0;
+    int c1;
+    if (is_snorm) {
+        c0 = int(lo << 24) >> 24;
+        c1 = int(lo << 16) >> 24;
+    } else {
+        c0 = int(lo & 0xFFu);
+        c1 = int((lo >> 8) & 0xFFu);
+    }
+    const uint offset = 16u + texel * 3u;
+    uint bits;
+    if (offset + 3u <= 32u) {
+        bits = lo >> offset;
+    } else if (offset >= 32u) {
+        bits = hi >> (offset - 32u);
+    } else {
+        bits = (lo >> offset) | (hi << (32u - offset));
+    }
+    const int index = int(bits & 7u);
+    int value;
+    if (index == 0) {
+        value = c0;
+    } else if (index == 1) {
+        value = c1;
+    } else if (c0 > c1) {
+        value = Divide((8 - index) * c0 + (index - 1) * c1, 7);
+    } else if (index < 6) {
+        value = Divide((6 - index) * c0 + (index - 1) * c1, 5);
+    } else if (index == 6) {
+        value = is_snorm ? -128 : 0;
+    } else {
+        value = is_snorm ? 127 : 255;
+    }
+    return uint(value) & 0xFFu;
+}
+
+uint BlockWord(uint word) {
+    return word == 0u ? blk.x : word == 1u ? blk.y : word == 2u ? blk.z : blk.w;
+}
+
+uint Bits(uint offset, uint count) {
+    if (count == 0u) {
+        return 0u;
+    }
+    const uint word = offset >> 5;
+    const uint shift = offset & 31u;
+    uint value = BlockWord(word) >> shift;
+    if (shift + count > 32u) {
+        value |= BlockWord(min(word + 1u, 3u)) << (32u - shift);
+    }
+    return value & ((1u << count) - 1u);
+}
+
+uint Subset(uint subsets, uint partition_index, uint texel) {
+    if (subsets == 2u) {
+        return (PARTITIONS_2[partition_index] >> (texel * 2u)) & 3u;
+    }
+    if (subsets == 3u) {
+        return (PARTITIONS_3[partition_index] >> (texel * 2u)) & 3u;
+    }
+    return 0u;
+}
+
+uint Weight(uint index, uint bits) {
+    return bits == 2u ? WEIGHTS_2[index] : bits == 3u ? WEIGHTS_3[index] : WEIGHTS_4[index];
+}
+
+uint Interpolate(uint e0, uint e1, uint weight) {
+    return ((64u - weight) * e0 + weight * e1 + 32u) >> 6;
+}
+
+uint Expand(uint value, uint bits) {
+    value <<= 8u - bits;
+    return value | (value >> bits);
+}
+
+// Decoded endpoint `e` of a BC7 block whose endpoints start at `pos`.
+uvec4 Bc7Endpoint(uint mode, uint pos, uint e) {
+    const uint endpoints = NS[mode] * 2u;
+    const uint color_bits = CB[mode];
+    const uint alpha_bits = AB[mode];
+    uvec4 c = uvec4(Bits(pos + e * color_bits, color_bits),
+                    Bits(pos + (endpoints + e) * color_bits, color_bits),
+                    Bits(pos + (endpoints * 2u + e) * color_bits, color_bits),
+                    Bits(pos + endpoints * 3u * color_bits + e * alpha_bits, alpha_bits));
+    const uint p_bits = pos + endpoints * (3u * color_bits + alpha_bits);
+    uint rgb_bits = color_bits;
+    uint a_bits = alpha_bits;
+    if (EPB[mode] != 0u) {
+        const uint p = Bits(p_bits + e, 1u);
+        c = (c << 1) | p;
+        rgb_bits += 1u;
+        a_bits += 1u;
+    } else if (SPB[mode] != 0u) {
+        const uint p = Bits(p_bits + e / 2u, 1u);
+        c.rgb = (c.rgb << 1) | p;
+        rgb_bits += 1u;
+    }
+    return uvec4(Expand(c.r, rgb_bits), Expand(c.g, rgb_bits), Expand(c.b, rgb_bits),
+                 alpha_bits != 0u ? Expand(c.a, a_bits) : 255u);
+}
+
+uvec4 Bc7Texel(uint texel) {
+    const uint mode_bits = blk.x & 0xFFu;
+    if (mode_bits == 0u) {
+        return uvec4(0u); // reserved mode: transparent black
+    }
+    const uint mode = uint(findLSB(mode_bits));
+    uint pos = mode + 1u;
+    const uint partition_index = Bits(pos, PB[mode]);
+    pos += PB[mode];
+    const uint rotation = Bits(pos, RB[mode]);
+    pos += RB[mode];
+    const uint selection = Bits(pos, ISB[mode]);
+    pos += ISB[mode];
+
+    const uint subsets = NS[mode];
+    const uint endpoints = subsets * 2u;
+    const uint s = Subset(subsets, partition_index, texel);
+    const uvec4 e0 = Bc7Endpoint(mode, pos, s * 2u);
+    const uvec4 e1 = Bc7Endpoint(mode, pos, s * 2u + 1u);
+
+    // Index bits: the anchor texel of each subset (texel 0, then the tables) has one bit fewer.
+    const uint anchor_1 = subsets == 2u ? ANCHORS[partition_index] & 0xFu
+                                        : (ANCHORS[partition_index] >> 4) & 0xFu;
+    const uint anchor_2 = (ANCHORS[partition_index] >> 8) & 0xFu;
+    const bool is_anchor = texel == 0u || (subsets >= 2u && texel == anchor_1) ||
+                           (subsets == 3u && texel == anchor_2);
+    uint anchors_before = texel > 0u ? 1u : 0u;
+    if (subsets >= 2u && anchor_1 < texel) {
+        anchors_before += 1u;
+    }
+    if (subsets == 3u && anchor_2 < texel) {
+        anchors_before += 1u;
+    }
+    const uint index_bits = IB[mode];
+    const uint index_bits_2 = IB2[mode];
+    uint p_bits = 0u;
+    if (EPB[mode] != 0u) {
+        p_bits = endpoints;
+    } else if (SPB[mode] != 0u) {
+        p_bits = subsets;
+    }
+    const uint primary_start = pos + endpoints * (3u * CB[mode] + AB[mode]) + p_bits;
+    const uint primary = Bits(primary_start + texel * index_bits - anchors_before,
+                              index_bits - (is_anchor ? 1u : 0u));
+    uint secondary = 0u;
+    if (index_bits_2 != 0u) {
+        const uint secondary_start = primary_start + 16u * index_bits - subsets;
+        secondary = Bits(secondary_start + texel * index_bits_2 - (texel > 0u ? 1u : 0u),
+                         index_bits_2 - (texel == 0u ? 1u : 0u));
+    }
+    const bool color_secondary = selection == 1u;
+    const bool alpha_secondary = index_bits_2 != 0u && selection == 0u;
+    const uint cw = color_secondary ? Weight(secondary, index_bits_2) : Weight(primary, index_bits);
+    const uint aw = alpha_secondary ? Weight(secondary, index_bits_2) : Weight(primary, index_bits);
+    uvec4 c = uvec4(Interpolate(e0.r, e1.r, cw), Interpolate(e0.g, e1.g, cw),
+                    Interpolate(e0.b, e1.b, cw), Interpolate(e0.a, e1.a, aw));
+    if (rotation == 1u) {
+        c = c.agbr;
+    } else if (rotation == 2u) {
+        c = c.rabg;
+    } else if (rotation == 3u) {
+        c = c.rgab;
+    }
+    return c;
+}
+
+// The texel as RGBA8 (BC1/2/3/7), R8 (BC4) or RG8 (BC5) in the low bytes.
+uint DecodeTexel(uint texel) {
+    const bool is_snorm = is_signed != 0u;
+    switch (format) {
+    case FORMAT_BC1:
+        return Pack(ColorTexel(blk.x, blk.y, false, texel));
+    case FORMAT_BC2:
+        return Pack(uvec4(ColorTexel(blk.z, blk.w, true, texel).rgb,
+                          ExplicitAlpha(blk.x, blk.y, texel)));
+    case FORMAT_BC3:
+        return Pack(uvec4(ColorTexel(blk.z, blk.w, true, texel).rgb,
+                          ChannelTexel(blk.x, blk.y, false, texel)));
+    case FORMAT_BC4:
+        return ChannelTexel(blk.x, blk.y, is_snorm, texel);
+    case FORMAT_BC5:
+        return ChannelTexel(blk.x, blk.y, is_snorm, texel) |
+               (ChannelTexel(blk.z, blk.w, is_snorm, texel) << 8);
+    default:
+        return Pack(Bc7Texel(texel));
+    }
+}
+
+void main() {
+    const uint block_index = gl_GlobalInvocationID.x;
+    const uint blocks_per_slice = blocks_x * blocks_y;
+    if (block_index >= blocks_per_slice * slices) {
+        return;
+    }
+    const uint slice = block_index / blocks_per_slice;
+    const uint in_slice = block_index % blocks_per_slice;
+    const uint bx = in_slice % blocks_x;
+    const uint by = in_slice / blocks_x;
+
+    const bool is_16_bytes = format != FORMAT_BC1 && format != FORMAT_BC4;
+    const uint base = input_offset + block_index * (is_16_bytes ? 4u : 2u);
+    blk = uvec4(blocks[base], blocks[base + 1u], is_16_bytes ? blocks[base + 2u] : 0u,
+                is_16_bytes ? blocks[base + 3u] : 0u);
+
+    const uint bytes_per_texel = format == FORMAT_BC4 ? 1u : format == FORMAT_BC5 ? 2u : 4u;
+    const uint row_words = blocks_x * bytes_per_texel;
+    for (uint y = 0; y < 4u; ++y) {
+        const uint row = (slice * blocks_y + by) * 4u + y;
+        const uint out_base = output_offset + row * row_words + bx * bytes_per_texel;
+        const uint t0 = DecodeTexel(y * 4u);
+        const uint t1 = DecodeTexel(y * 4u + 1u);
+        const uint t2 = DecodeTexel(y * 4u + 2u);
+        const uint t3 = DecodeTexel(y * 4u + 3u);
+        if (bytes_per_texel == 4u) {
+            texels[out_base] = t0;
+            texels[out_base + 1u] = t1;
+            texels[out_base + 2u] = t2;
+            texels[out_base + 3u] = t3;
+        } else if (bytes_per_texel == 2u) {
+            texels[out_base] = t0 | (t1 << 16);
+            texels[out_base + 1u] = t2 | (t3 << 16);
+        } else {
+            texels[out_base] = t0 | (t1 << 8) | (t2 << 16) | (t3 << 24);
+        }
+    }
+}

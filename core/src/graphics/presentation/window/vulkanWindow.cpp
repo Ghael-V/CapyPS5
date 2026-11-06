@@ -394,7 +394,6 @@ static void VulkanFindPhysicalDevice(vk::Instance instance, vk::SurfaceKHR surfa
 		check_format(vk::Format::eD32Sfloat, depth_features, "depth buffer");
 		check_format(vk::Format::eD32SfloatS8Uint, depth_features, "depth buffer");
 		check_format(vk::Format::eD16Unorm, depth_features, "depth buffer");
-		check_format(vk::Format::eBc3SrgbBlock, texture_features, "texture");
 		check_format(vk::Format::eR8G8B8A8Srgb, texture_features, "texture");
 		check_format(vk::Format::eR8Unorm, texture_features, "texture");
 		check_format(vk::Format::eR8G8Unorm, texture_features, "texture");
@@ -698,6 +697,18 @@ static vk::Device VulkanCreateDevice(GraphicContext& graphics,
 		}
 	}
 	vk::PhysicalDeviceFeatures device_features {};
+	// Without BCn textures the images are stored decoded and uploads decode them on the GPU.
+	device_features.textureCompressionBC = supported_features2.features.textureCompressionBC;
+	// The same test that used to reject such devices, so GPUs that ran before keep native BCn.
+	// `setprop debug.capy.bc_decode 1` decodes on any GPU, to test the path without a Mali.
+	static Common::DebugFlags::CachedValue force_bc_decode("debug.capy.bc_decode", 0);
+	graphics.bc_textures_decoded =
+	    force_bc_decode.Get() != 0 ||
+	    !(graphics.physical_device.getFormatProperties(vk::Format::eBc3SrgbBlock).optimalTilingFeatures &
+	      vk::FormatFeatureFlagBits::eSampledImage);
+	if (graphics.bc_textures_decoded) {
+		LOGF("BCn textures are unsupported: they are decoded on upload\n");
+	}
 	device_features.fragmentStoresAndAtomics = VK_TRUE;
 	device_features.samplerAnisotropy        = supported_features2.features.samplerAnisotropy;
 	graphics.sampler_anisotropy_enabled      = device_features.samplerAnisotropy == VK_TRUE;
