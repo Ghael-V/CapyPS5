@@ -341,6 +341,11 @@ void ShaderInit();
 void ShaderMapUserData(uint64_t addr, const ShaderMappedData& data);
 /** Code size in dwords of the shader registered at `addr`, 0 when none is (debug dumps). */
 uint32_t ShaderCodeWords(uint64_t addr);
+// PS4 (gfx7) shaders come without AGC metadata: their code ends at the "OrbShdr" footer Gnm puts
+// after it. 0 when no footer is found in the first 256 KiB.
+uint32_t Gfx7ShaderCodeWords(uint64_t addr);
+// `setprop debug.capy.gfx7_disasm 1`: log each PS4 shader's disassembly once (tag CapyPS5-Gfx7).
+void ShaderDebugDisassembleGfx7(uint64_t addr, const char* stage);
 /** Called with each shader's code range before it is read; returns true when it brought in GPU
  *  writes (the code may have changed since it was registered). */
 void ShaderSetCodeSync(std::function<bool(uint64_t, uint64_t)> sync);
