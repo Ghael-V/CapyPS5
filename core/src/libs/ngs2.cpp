@@ -3006,7 +3006,10 @@ int KYTY_SYSV_ABI Ngs2VoiceGetState(uintptr_t voice_handle, Ngs2VoiceState* stat
 	PRINT_NAME();
 
 	EXIT_NOT_IMPLEMENTED(state == nullptr);
-	EXIT_NOT_IMPLEMENTED(voice_handle == 0);
+	if (voice_handle == 0) {
+		// Rayman Legends (PS4) polls voices it has not created yet.
+		return NGS2_ERROR_INVALID_VOICE_HANDLE;
+	}
 
 	auto* voice = reinterpret_cast<Ngs2VoiceInternal*>(voice_handle);
 

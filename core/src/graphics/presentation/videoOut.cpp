@@ -12,6 +12,7 @@
 #include "common/emulatorConfig.h"
 #include "common/logging/log.h"
 #include "common/profiler.h"
+#include "common/singleton.h"
 #include "common/stringUtils.h"
 #include "common/telemetry.h"
 #include "common/threads.h"
@@ -27,11 +28,13 @@
 #include "kernel/pthread.h"
 #include "libs/errno.h"
 #include "libs/libs.h"
+#include "loader/runtimeLinker.h"
 #include "loader/systemContent.h"
 
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <cstddef>
 #include <fmt/format.h>
 #include <list>
 #include <thread>
@@ -118,6 +121,37 @@ struct VideoOutBufferAttribute2 {
 	uint64_t reserved1[3];
 };
 
+// PS4 layout (sceVideoOutSetBufferAttribute / sceVideoOutRegisterBuffers): a 32-bit pixel format,
+// an explicit pitch and gfx7 tiling.
+struct VideoOutBufferAttributePs4 {
+	uint32_t pixel_format;
+	uint32_t tiling_mode;
+	uint32_t aspect_ratio;
+	uint32_t width;
+	uint32_t height;
+	uint32_t pitch_in_pixel;
+	uint32_t option;
+	uint32_t reserved0;
+	uint64_t reserved1;
+};
+static_assert(sizeof(VideoOutBufferAttributePs4) == 40);
+
+constexpr uint32_t VIDEO_OUT_PS4_TILING_MODE_TILE   = 0;
+constexpr uint32_t VIDEO_OUT_PS4_TILING_MODE_LINEAR = 1;
+
+// The PS4 pixel formats as the PS5 values that name the same layout.
+[[nodiscard]] static bool Ps4PixelFormat(uint32_t ps4_format, uint64_t& format) {
+	switch (ps4_format) {
+		case 0x80000000u: format = 0x8000000000000000ull; return true; // A8R8G8B8_SRGB
+		case 0x80002200u: format = 0x8000000022000000ull; return true; // A8B8G8R8_SRGB
+		case 0x88060000u: format = 0x8100000600000000ull; return true; // A2R10G10B10
+		case 0x88000000u: format = 0x8100000000000000ull; return true; // A2R10G10B10_SRGB
+		case 0x88740000u: format = 0x8100070400000000ull; return true; // A2R10G10B10_BT2020_PQ
+		case 0xC1060000u: format = 0xc001000600000000ull; return true; // A16R16G16B16_FLOAT
+		default: return false;
+	}
+}
+
 // PS5 layout
 struct VideoOutFlipStatus {
 	uint64_t count                    = 0;
@@ -180,8 +214,13 @@ struct BufferAttributeGroup {
 	VideoOutBufferAttribute2 attribute {};
 	int                      category = VIDEO_OUT_BUFFER_ATTRIBUTE_CATEGORY_UNCOMPRESSED;
 	bool                     occupied = false;
+	// Registered through the PS4 API: `attribute` holds the translated format and size.
+	bool     ps4        = false;
+	uint32_t ps4_pitch  = 0;
+	uint32_t ps4_tiling = 0;
 
 	[[nodiscard]] Graphics::ImageInfo ImageInfo(const VideoOutBuffer& buffer) const;
+	[[nodiscard]] Graphics::ImageInfo Ps4ImageInfo(const VideoOutBuffer& buffer) const;
 };
 
 struct VideoOutConfig {
@@ -558,7 +597,46 @@ static int ReserveFlipRequest(VideoOutDriver::Impl& driver, int handle, int inde
 	return OK;
 }
 
+Graphics::ImageInfo BufferAttributeGroup::Ps4ImageInfo(const VideoOutBuffer& buffer) const {
+	Graphics::VideoOutPixelFormatInfo pixel_format {};
+	if (!Graphics::DecodeVideoOutPixelFormat(attribute.pixel_format, pixel_format)) {
+		EXIT("unsupported video-out pixel format: 0x%016" PRIx64 "\n", attribute.pixel_format);
+	}
+	if (ps4_tiling != VIDEO_OUT_PS4_TILING_MODE_LINEAR) {
+		// gfx7 2D-thin display tiling is not decoded yet (backward compatibility, block 6): the
+		// buffer is shown as if it were linear until the gfx7 detiler exists.
+		Common::DebugFlags::NoteOnce("CapyPS5-VideoOut", 0x50533474696cull,
+		                             "PS4 tiled video-out buffers shown untiled (%ux%u)",
+		                             attribute.width, attribute.height);
+	}
+	if (ps4_pitch != attribute.width) {
+		EXIT("PS4 linear video-out buffers with a pitch other than the width are not supported yet "
+		     "(%ux%u, pitch %u)\n",
+		     attribute.width, attribute.height, ps4_pitch);
+	}
+	Graphics::ImageInfo info {};
+	info.data            = {buffer.data_address, 0};
+	info.pixel_format    = pixel_format.format;
+	info.guest_format    = pixel_format.guest_format;
+	info.type            = Graphics::Prospero::ImageType::kColor2D;
+	info.extent          = {attribute.width, attribute.height, 1};
+	info.resources       = {1, 1};
+	info.bytes_per_block = pixel_format.bytes_per_element;
+	info.samples         = 1;
+	info.tile_mode       = Graphics::Prospero::TileMode::kLinear;
+	info.bgra16          = pixel_format.bgra16;
+	info.UpdateSize();
+	if (info.data.size == 0) {
+		EXIT("invalid PS4 video-out surface footprint\n");
+	}
+	Graphics::ImageOps::Validate(info);
+	return info;
+}
+
 Graphics::ImageInfo BufferAttributeGroup::ImageInfo(const VideoOutBuffer& buffer) const {
+	if (ps4) {
+		return Ps4ImageInfo(buffer);
+	}
 	const auto compression = Graphics::ClassifyVideoOutCompression(
 	    category == VIDEO_OUT_BUFFER_ATTRIBUTE_CATEGORY_COMPRESSED, buffer.metadata_address,
 	    attribute.dcc_control, attribute.dcc_cb_register_clear_color);
@@ -1223,7 +1301,11 @@ void FlipQueue::SignalDoneLocked() {
 bool FlipQueue::IsSafeForRendering(VideoOutConfig& cfg, int index) {
 	Common::LockGuard lock(m_mutex);
 	auto matches = [&cfg, index](const auto& r) { return r.cfg == &cfg && r.index == index; };
-	const bool safe = std::none_of(m_requests.begin(), m_requests.end(), matches) &&
+	// A GPU flip still only reserved has its flip packet later in the stream than this wait: it is
+	// the flip of the frame about to be drawn (PS4 SubmitAndFlip waits for the buffer's previous
+	// flip, then draws and flips it again). Waiting on it would never end.
+	auto pending = [&matches](const auto& r) { return matches(r) && r.state != RequestState::Reserved; };
+	const bool safe = std::none_of(m_requests.begin(), m_requests.end(), pending) &&
 	                  std::none_of(m_cpu_requests.begin(), m_cpu_requests.end(), matches);
 	m_gpu_waiting |= !safe;
 	return safe;
@@ -1556,6 +1638,110 @@ KYTY_SYSV_ABI int VideoOutRegisterBuffers2(int handle, int set_index, int buffer
 	return OK;
 }
 
+KYTY_SYSV_ABI void VideoOutSetBufferAttribute(VideoOutBufferAttributePs4* attribute,
+                                              uint32_t pixel_format, uint32_t tiling_mode,
+                                              uint32_t aspect_ratio, uint32_t width,
+                                              uint32_t height, uint32_t pitch_in_pixel) {
+	PRINT_NAME();
+
+	EXIT_NOT_IMPLEMENTED(attribute == nullptr);
+
+	LOGF("\t pixel_format   = %08" PRIx32 "\n"
+	     "\t tiling_mode    = %" PRIu32 "\n"
+	     "\t aspect_ratio   = %" PRIu32 "\n"
+	     "\t width          = %" PRIu32 "\n"
+	     "\t height         = %" PRIu32 "\n"
+	     "\t pitch_in_pixel = %" PRIu32 "\n",
+	     pixel_format, tiling_mode, aspect_ratio, width, height, pitch_in_pixel);
+
+	memset(attribute, 0, sizeof(VideoOutBufferAttributePs4));
+	attribute->pixel_format   = pixel_format;
+	attribute->tiling_mode    = tiling_mode;
+	attribute->aspect_ratio   = aspect_ratio;
+	attribute->width          = width;
+	attribute->height         = height;
+	attribute->pitch_in_pixel = pitch_in_pixel;
+}
+
+// PS4: one attribute for the buffers, no metadata; returns the attribute set it took.
+KYTY_SYSV_ABI int VideoOutRegisterBuffers(int handle, int buffer_index_start,
+                                          void* const* addresses, int buffer_num,
+                                          const VideoOutBufferAttributePs4* attribute) {
+	PRINT_NAME();
+
+	auto* ctx = DriverState().Get(handle);
+	if (ctx == nullptr) {
+		return VIDEO_OUT_ERROR_INVALID_HANDLE;
+	}
+	if (addresses == nullptr) {
+		return VIDEO_OUT_ERROR_INVALID_ADDRESS;
+	}
+	if (attribute == nullptr) {
+		return VIDEO_OUT_ERROR_INVALID_OPTION;
+	}
+	if (buffer_index_start < 0 || buffer_index_start >= VIDEO_OUT_BUFFER_NUM_MAX ||
+	    buffer_num < 1 || buffer_num > VIDEO_OUT_BUFFER_NUM_MAX ||
+	    buffer_index_start + buffer_num > VIDEO_OUT_BUFFER_NUM_MAX) {
+		return VIDEO_OUT_ERROR_INVALID_VALUE;
+	}
+#if defined(__ANDROID__)
+	__android_log_print(ANDROID_LOG_WARN, "CapyPS5-VideoOut",
+	                    "RegisterBuffers (PS4) n=%d %ux%u pitch=%u fmt=0x%08x tiling=%u",
+	                    buffer_num, attribute->width, attribute->height, attribute->pitch_in_pixel,
+	                    attribute->pixel_format, attribute->tiling_mode);
+#endif
+	BufferAttributeGroup group {};
+	if (!Ps4PixelFormat(attribute->pixel_format, group.attribute.pixel_format)) {
+		EXIT("unsupported PS4 video-out pixel format: 0x%08" PRIx32 "\n", attribute->pixel_format);
+	}
+	group.attribute.width  = attribute->width;
+	group.attribute.height = attribute->height;
+	group.category         = VIDEO_OUT_BUFFER_ATTRIBUTE_CATEGORY_UNCOMPRESSED;
+	group.occupied         = true;
+	group.ps4              = true;
+	group.ps4_pitch        = attribute->pitch_in_pixel;
+	group.ps4_tiling       = attribute->tiling_mode;
+
+	std::vector<VideoOutBuffer> registrations;
+	registrations.reserve(static_cast<size_t>(buffer_num));
+	for (int i = 0; i < buffer_num; i++) {
+		LOGF("\t buffers[%d] = %p\n", buffer_index_start + i, addresses[i]);
+		registrations.push_back({
+		    .group_index      = -1,
+		    .data_address     = reinterpret_cast<uint64_t>(addresses[i]),
+		    .metadata_address = 0,
+		});
+		(void)group.ImageInfo(registrations.back());
+	}
+
+	Common::LockGuard lock(ctx->mutex);
+	if (ctx->closing) {
+		return VIDEO_OUT_ERROR_INVALID_HANDLE;
+	}
+	int set_index = -1;
+	for (int index = 0; index < VIDEO_OUT_BUFFER_ATTRIBUTE_NUM_MAX; index++) {
+		if (!ctx->groups[index].occupied) {
+			set_index = index;
+			break;
+		}
+	}
+	if (set_index < 0) {
+		return VIDEO_OUT_ERROR_INVALID_INDEX;
+	}
+	for (int i = 0; i < buffer_num; i++) {
+		if (ctx->buffers[buffer_index_start + i].Occupied()) {
+			return VIDEO_OUT_ERROR_SLOT_OCCUPIED;
+		}
+	}
+	ctx->groups[set_index] = group;
+	for (int i = 0; i < buffer_num; i++) {
+		auto& buffer       = ctx->buffers[buffer_index_start + i];
+		buffer             = registrations[static_cast<size_t>(i)];
+		buffer.group_index = set_index;
+	}
+	return set_index;
+}
+
 KYTY_SYSV_ABI int VideoOutSubmitChangeBufferAttribute2(int handle, int set_index,
                                                        const VideoOutBufferAttribute2* attribute,
                                                        void*                           option) {
@@ -1703,7 +1889,13 @@ KYTY_SYSV_ABI int VideoOutGetFlipStatus(int handle, VideoOutFlipStatus* status) 
 		return VIDEO_OUT_ERROR_INVALID_HANDLE;
 	}
 
-	DriverState().GetFlipQueue().GetFlipStatus(*ctx, *status);
+	VideoOutFlipStatus flip {};
+	DriverState().GetFlipQueue().GetFlipStatus(*ctx, flip);
+	// The PS4 status is the first 64 bytes of the PS5 one, with the same fields there.
+	static_assert(offsetof(VideoOutFlipStatus, submitProcessTimeCounter) == 64);
+	const bool ps4 = Common::Singleton<Loader::RuntimeLinker>::Instance()->MainProgramIsPs4();
+	memcpy(status, &flip,
+	       ps4 ? offsetof(VideoOutFlipStatus, submitProcessTimeCounter) : sizeof(VideoOutFlipStatus));
 
 	LOGF("\t count = %" PRIu64 "\n"
 	     "\t processTime = %" PRIu64 "\n"
@@ -1713,9 +1905,9 @@ KYTY_SYSV_ABI int VideoOutGetFlipStatus(int handle, VideoOutFlipStatus* status) 
 	     "\t gcQueueNum = %d\n"
 	     "\t flipPendingNum = %d\n"
 	     "\t currentBuffer = %d\n",
-	     status->count, status->processTime, status->processTimeCounter,
-	     status->submitProcessTimeCounter, status->flipArg, status->gcQueueNum,
-	     status->flipPendingNum, status->currentBuffer);
+	     flip.count, flip.processTime, flip.processTimeCounter,
+	     flip.submitProcessTimeCounter, flip.flipArg, flip.gcQueueNum,
+	     flip.flipPendingNum, flip.currentBuffer);
 
 	return OK;
 }
