@@ -7,6 +7,7 @@
 #include "common/common.h"
 #include "graphics/host_gpu/vulkanCommon.h"
 
+#include <array>
 #include <cstdint>
 #include <memory>
 #include <optional>
@@ -19,7 +20,7 @@ struct GraphicContext;
 
 // How a BCn image is stored on a GPU without BCn textures.
 struct BcDecodedFormat {
-	uint32_t   shader_format = 0; // 1-7, the BC number; 6 (BC6H) is not decoded
+	uint32_t   shader_format = 0; // 1-7, the BC number
 	bool       is_signed     = false;
 	vk::Format format        = vk::Format::eUndefined;
 	uint32_t   texel_bytes   = 0;
@@ -43,13 +44,27 @@ public:
 	       uint64_t source_size, const BcDecodedFormat& format, const vk::BufferImageCopy& copy,
 	       vk::Buffer& decoded);
 
+	// `setprop debug.capy.bc_verify 1` on GPUs with BCn support: compares the texels the last
+	// Decode wrote (`texels`, from `decoded`) with the GPU's own decoding of the blocks, logging
+	// the uploads that differ (tag CapyPS5-BcnVerify).
+	[[nodiscard]] static bool VerifyEnabled();
+	void Verify(vk::CommandBuffer command, vk::Buffer source, vk::Format block_format,
+	            const BcDecodedFormat& format, const vk::BufferImageCopy& copy,
+	            const vk::BufferImageCopy& texels);
+
 private:
+	void CreateVerifyPipeline();
+
 	GraphicContext&         m_graphics;
 	CommandScheduler&       m_scheduler;
 	vk::DescriptorSetLayout m_descriptor_layout = nullptr;
 	vk::PipelineLayout      m_pipeline_layout   = nullptr;
-	vk::Pipeline            m_pipeline          = nullptr;
+	std::array<vk::Pipeline, 8> m_pipelines {}; // by shader format (BC1-7)
 	std::unique_ptr<Buffer> m_output;
+	vk::DescriptorSetLayout m_verify_descriptor_layout = nullptr;
+	vk::PipelineLayout      m_verify_pipeline_layout   = nullptr;
+	vk::Pipeline            m_verify_pipeline          = nullptr;
+	vk::Sampler             m_verify_sampler           = nullptr;
 };
 
 } // namespace Libs::Graphics

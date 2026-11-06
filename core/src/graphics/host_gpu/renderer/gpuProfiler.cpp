@@ -311,8 +311,22 @@ void ReportHang() {
 		return;
 	}
 	// Scopes are collected in order, so the hung one is among the first still pending: its begin
-	// timestamp is written and its end is not.
-	for (size_t i = 0; i < state.pending.size() && i < 12; i++) {
+	// timestamp is written and its end is not. Finished scopes not yet collected are skipped,
+	// keeping the last two before the first unfinished one for context.
+	size_t first = 0;
+	while (first < state.pending.size()) {
+		std::array<uint64_t, 4> values {};
+		(void)state.graphics->device.getQueryPoolResults(
+		    state.pool, state.pending[first].query, 2, sizeof(values), values.data(),
+		    2 * sizeof(uint64_t),
+		    vk::QueryResultFlagBits::e64 | vk::QueryResultFlagBits::eWithAvailability);
+		if (values[1] == 0 || values[3] == 0) {
+			break;
+		}
+		first++;
+	}
+	first = first >= 2 ? first - 2 : 0;
+	for (size_t i = first; i < state.pending.size() && i < first + 12; i++) {
 		const auto& scope = state.pending[i];
 		std::array<uint64_t, 4> values {};
 		(void)state.graphics->device.getQueryPoolResults(

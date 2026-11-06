@@ -463,8 +463,11 @@ void Image::UploadBcDecoded(std::span<const vk::BufferImageCopy> copies, vk::Buf
 		        decoder->Decode(command, buffer, offset, size, *format, copy, texels)) {
 			command.copyBufferToImage(texels, backing.image, vk::ImageLayout::eTransferDstOptimal,
 			                          1, &*decoded);
+			if (BcDecoder::VerifyEnabled()) {
+				decoder->Verify(command, buffer, info.pixel_format, *format, copy, *decoded);
+			}
 		} else {
-			// Undecodable (BC6H): black rather than whatever the memory held.
+			// Undecodable (outside the staging range, too large): black rather than garbage.
 			const vk::ClearColorValue       black {};
 			const vk::ImageSubresourceRange range {
 			    vk::ImageAspectFlagBits::eColor, copy.imageSubresource.mipLevel, 1,
@@ -478,14 +481,24 @@ void Image::UploadBcDecoded(std::span<const vk::BufferImageCopy> copies, vk::Buf
 }
 
 bool Image::SkipBcDecodedCopy(const Image& source) const {
-	if ((m_bc_decoded || source.m_bc_decoded) && backing.format != source.backing.format) {
-		Common::DebugFlags::NoteOnce("CapyPS5-Bcn", 0x4243636f7079ull,
-		                             "copy between a decoded BCn image and format %d skipped",
-		                             static_cast<int>(m_bc_decoded ? source.backing.format
-		                                                           : backing.format));
-		return true;
+	if (!m_bc_decoded && !source.m_bc_decoded) {
+		return false;
 	}
-	return false;
+	// Decoded BC1, BC3 and BC7 images all look like RGBA8, but their guest layouts differ (8- or
+	// 16-byte blocks), so a copy between them would use the wrong extents.
+	if (m_bc_decoded && source.m_bc_decoded) {
+		const auto format        = BcDecodedFormatOf(info.pixel_format);
+		const auto source_format = BcDecodedFormatOf(source.info.pixel_format);
+		if (format->shader_format == source_format->shader_format &&
+		    format->texel_bytes == source_format->texel_bytes) {
+			return false;
+		}
+	}
+	Common::DebugFlags::NoteOnce("CapyPS5-Bcn", 0x4243636f7079ull,
+	                             "copy between a decoded BCn image and format %d skipped",
+	                             static_cast<int>(m_bc_decoded ? source.backing.format
+	                                                           : backing.format));
+	return true;
 }
 
 void Image::Download(std::span<const vk::BufferImageCopy> copies, vk::Buffer buffer,
@@ -1123,7 +1136,8 @@ Image::Image(GraphicContext& graphics, CommandScheduler& scheduler, const ImageI
 	create.format        = info.pixel_format;
 	// Without BCn textures the image holds the decoded texels; uploads decode the blocks.
 	if (const auto decoded = BcDecodedFormatOf(info.pixel_format);
-	    decoded && graphics.bc_textures_decoded) {
+	    decoded && graphics.bc_textures_decoded &&
+	    (graphics.bc_decoded_formats & (1u << decoded->shader_format)) != 0) {
 		m_bc_decoded  = true;
 		create.format = decoded->format;
 		create.usage  = vk::ImageUsageFlagBits::eTransferSrc |
