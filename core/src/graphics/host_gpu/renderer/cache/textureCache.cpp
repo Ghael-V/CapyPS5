@@ -343,8 +343,9 @@ void TextureCache::DeleteImage(ImageId id) {
 		const auto metadata = m_surface_metas.find(image->info.metadata.range.address);
 		if (metadata != m_surface_metas.end() &&
 		    image->info.metadata.kind == ImageMetadataKind::Htile &&
-		    metadata->second.type == MetaDataInfo::Type::HTile) {
-			// A later binding may have reused this address for another metadata type.
+		    metadata->second.type == MetaDataInfo::Type::HTile && metadata->second.owner == id) {
+			// A later binding may have reused this address for another metadata type, and only
+			// the last image to acquire an HTile range releases its clear state.
 			m_surface_metas.erase(metadata);
 		}
 	}
@@ -1730,9 +1731,11 @@ vk::ImageView TextureCache::FindDepthTarget(ImageId id, const ImageDesc& desc) {
 	image.info.stencil = desc.info.stencil;
 	image.info.metadata = desc.info.metadata;
 	if (desc.info.HasMetadata()) {
-		m_surface_metas.emplace(desc.info.metadata.range.address,
-		                        MetaDataInfo {.type       = MetaDataInfo::Type::HTile,
-		                                      .clear_mask = image.info.htile_clear_mask});
+		const auto metadata =
+		    m_surface_metas.emplace(desc.info.metadata.range.address,
+		                            MetaDataInfo {.type       = MetaDataInfo::Type::HTile,
+		                                          .clear_mask = image.info.htile_clear_mask}).first;
+		metadata->second.owner = id;
 	}
 	RefreshImage(id);
 	CommitGpuWrite(image);

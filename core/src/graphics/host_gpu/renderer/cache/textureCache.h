@@ -98,6 +98,8 @@ private:
 
 		Type     type;
 		uint32_t clear_mask = UINT32_MAX;
+		// The depth image that last acquired this HTile range.
+		ImageId owner;
 	};
 
 	struct OverlapResult {
