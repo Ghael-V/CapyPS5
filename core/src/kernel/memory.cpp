@@ -3161,6 +3161,21 @@ int KYTY_SYSV_ABI KernelGetPrtAperture(int index, void** addr, size_t* len) {
 	return OK;
 }
 
+// Names change in whole 16 KiB pages, like protections.
+static int RenameVirtualRange(uint64_t vaddr, uint64_t len, const char* name) {
+	constexpr uint64_t page_size   = 0x4000;
+	const auto         start       = vaddr & ~(page_size - 1);
+	const auto         page_offset = vaddr - start;
+	if (len > UINT64_MAX - (page_size - 1) - page_offset) {
+		return KERNEL_ERROR_EINVAL;
+	}
+	if (len != 0) {
+		g_virtual_ranges->Rename(start, (page_offset + len + page_size - 1) & ~(page_size - 1),
+		                         name);
+	}
+	return OK;
+}
+
 int KYTY_SYSV_ABI KernelSetVirtualRangeName(const void* addr, uint64_t len, const char* name) {
 	PRINT_NAME();
 
@@ -3183,9 +3198,7 @@ int KYTY_SYSV_ABI KernelSetVirtualRangeName(const void* addr, uint64_t len, cons
 
 	g_physical_memory->SetVirtualRangeName(vaddr, len, name);
 	g_flexible_memory->SetVirtualRangeName(vaddr, len, name);
-	g_virtual_ranges->Rename(vaddr, len, name);
-
-	return OK;
+	return RenameVirtualRange(vaddr, len, name);
 }
 
 int KYTY_SYSV_ABI KernelClearVirtualRangeName(const void* addr, uint64_t len) {
@@ -3201,9 +3214,7 @@ int KYTY_SYSV_ABI KernelClearVirtualRangeName(const void* addr, uint64_t len) {
 
 	g_physical_memory->SetVirtualRangeName(vaddr, len, "");
 	g_flexible_memory->SetVirtualRangeName(vaddr, len, "");
-	g_virtual_ranges->Rename(vaddr, len, "");
-
-	return OK;
+	return RenameVirtualRange(vaddr, len, "");
 }
 
 static bool FreeGuestMemoryOwner(uint64_t vaddr, uint64_t size) {
