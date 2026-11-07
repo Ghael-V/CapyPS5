@@ -2518,11 +2518,21 @@ void CommandProcessor::TriggerEvent(uint32_t event_type, uint32_t event_index,
 	}
 }
 
+void CommandProcessor::WriteBackImages() {
+	// GPU-written images are copied back without holding any signal: a held signal exposes the host
+	// GPU's speed. Guest accesses to them wait for the copies.
+	if (m_renderer.GetTextureCache().WriteBackImages()) {
+		GetScheduler().Flush();
+	}
+}
+
 void CommandProcessor::Flip() {
 	if (GraphicsRunDebugDumpEnabled()) {
 		LOGF("CommandProcessor::Flip()\n");
 	}
 
+	// A flip carries a GL2 writeback.
+	WriteBackImages();
 	auto& command = CurrentBuffer();
 	auto request = Sync::PrepareVideoOutFlip(command, m_flip.handle, m_flip.index, m_flip.flip_mode,
 	                                         m_flip.flip_arg);
@@ -2532,6 +2542,8 @@ void CommandProcessor::Flip() {
 }
 
 void CommandProcessor::Flip(void* dst_gpu_addr, uint32_t value) {
+	// A flip carries a GL2 writeback.
+	WriteBackImages();
 	auto& command = CurrentBuffer();
 
 	if (GraphicsRunDebugDumpEnabled()) {
@@ -2553,6 +2565,8 @@ void CommandProcessor::Flip(void* dst_gpu_addr, uint32_t value) {
 
 void CommandProcessor::FlipWithInterrupt(uint32_t eop_event_type, uint32_t cache_action,
                                          void* dst_gpu_addr, uint32_t value) {
+	// A flip carries a GL2 writeback.
+	WriteBackImages();
 	auto& command = CurrentBuffer();
 
 	if (GraphicsRunDebugDumpEnabled()) {

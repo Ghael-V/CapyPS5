@@ -1313,6 +1313,11 @@ KYTY_HW_UC_PARSER(HwUcSetGdsOaRegisters) {
 KYTY_CP_OP_PARSER(CpOpAcquireMem) {
 	KYTY_PROFILER_FUNCTION();
 
+	// GCR_CNTL GL2_WB (bit 15) over the whole GL2 (GL2_RANGE, bits 11-12, zero) makes GPU writes
+	// visible to the CPU.
+	if (cmd_id == 0xc0065800 && (buffer[6] & 0x9800u) == 0x8000u) {
+		cp.WriteBackImages();
+	}
 	return KYTY_PM4_LEN(cmd_id) - 1u;
 }
 
@@ -2358,6 +2363,10 @@ KYTY_CP_OP_PARSER(CpOpReleaseMem) {
 	LogUnknownReleaseMemGcr(gcr_cntl);
 
 	const bool gl2_writeback = ((gcr_cntl & GcrGl2Writeback) != 0);
+	// A GL2 writeback makes GPU writes CPU-visible even without a signal; before any label below.
+	if (gl2_writeback) {
+		cp.WriteBackImages();
+	}
 
 	auto trigger_interrupt = [&]() {
 		switch (interrupt_selector) {

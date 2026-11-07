@@ -101,6 +101,9 @@ public:
 
 	void UnmapMemory(uint64_t address, uint64_t size);
 	void ProcessDownloadImages();
+	// A GL2 writeback makes GPU-written images visible to the CPU; returns whether a download was
+	// recorded.
+	[[nodiscard]] bool WriteBackImages();
 	void RunGarbageCollector();
 	// Debug aid (frame trace image dump): writes a GPU-modified image back to guest memory.
 	bool DebugDownloadImage(ImageId id) {

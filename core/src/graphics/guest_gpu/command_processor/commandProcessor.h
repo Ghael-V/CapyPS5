@@ -129,6 +129,9 @@ public:
 	                        uint32_t eop_event_type, uint32_t cache_action, uint32_t event_index,
 	                        uint32_t event_write_source, void* dst_gpu_addr, uint64_t value,
 	                        uint32_t interrupt_selector, uint32_t interrupt_context_id = 0);
+	// A GL2 writeback (RELEASE_MEM or ACQUIRE_MEM over the whole GL2, or a flip) makes GPU writes
+	// visible to the CPU.
+	void WriteBackImages();
 	void Flip();
 	void Flip(void* dst_gpu_addr, uint32_t value);
 	void FlipWithInterrupt(uint32_t eop_event_type, uint32_t cache_action, void* dst_gpu_addr,

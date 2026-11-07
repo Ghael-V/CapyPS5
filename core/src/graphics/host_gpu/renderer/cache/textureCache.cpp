@@ -3217,4 +3217,10 @@ void TextureCache::ProcessDownloadImages() {
 	m_download_images.clear();
 }
 
+bool TextureCache::WriteBackImages() {
+	// Upstream's storage readback (--readback-storage-images), which downloads queued images here,
+	// is not ported.
+	return false;
+}
+
 } // namespace Libs::Graphics
