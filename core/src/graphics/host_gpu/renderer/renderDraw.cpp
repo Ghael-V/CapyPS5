@@ -1181,6 +1181,20 @@ bool RenderExecutor::PrepareDrawRenderState(CommandBuffer& buffer, const DrawCal
 	if (!state.programs.vertex[0]) {
 		return false;
 	}
+	// An empty screen scissor rasterizes nothing in any viewport, so only vertex-stage buffer
+	// writes would remain (mip reductions may end with a 0x0 pass past the last level).
+	if (const auto& vp = buffer.GetRegisters().GetScreenViewport();
+	    vp.screen_scissor_right <= vp.screen_scissor_left ||
+	    vp.screen_scissor_bottom <= vp.screen_scissor_top) {
+		bool vertex_writes = false;
+		for (const auto& stage:
+		     std::span {state.vertex_info.data(), state.programs.VertexStageCount()}) {
+			vertex_writes |= HasShaderBufferWrites(stage.stage);
+		}
+		if (!vertex_writes) {
+			return false;
+		}
+	}
 	uint32_t mrt_mask = 0;
 	if (state.ps_active) {
 		for (const auto& output: state.ps_input_info.stage.program->info.outputs) {
