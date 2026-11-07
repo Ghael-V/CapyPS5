@@ -51,9 +51,14 @@ struct ImageMetadataInfo {
 };
 
 struct ImageSubresources {
-	uint32_t levels                                      = 1;
-	uint32_t layers                                      = 1;
-	auto     operator<=>(const ImageSubresources&) const = default;
+	uint32_t levels = 1;
+	uint32_t layers = 1;
+
+	// No ordering: {levels, layers} compares levels first, so {1, 8} < {10, 1}. Use Contains.
+	[[nodiscard]] bool           operator==(const ImageSubresources&) const noexcept = default;
+	[[nodiscard]] constexpr bool Contains(const ImageSubresources& other) const noexcept {
+		return levels >= other.levels && layers >= other.layers;
+	}
 };
 
 struct ImageSubresourceRange {

@@ -200,6 +200,11 @@ private:
 	[[nodiscard]] ImageId       ResolveDepthOverlap(const ImageInfo& requested, BindingType binding,
 	                                                ImageId cached);
 	[[nodiscard]] ImageId       ExpandImage(const ImageInfo& info, ImageId source);
+	// Replaces `retired` by `replacement` through guest memory when the replacement does not
+	// contain the retired subresources; false when that does not apply (callers copy instead).
+	[[nodiscard]] bool          RetireThroughGuestMemory(ImageId replacement, ImageId retired);
+	// Downloads a GPU-written image into the buffer cache's copy of its guest range.
+	[[nodiscard]] bool          PublishToBuffer(Image& image);
 	void                        AdoptGfx7MicroLevels(ImageId id, const ImageIds& candidates);
 	void                        RefreshImage(ImageId id);
 	void                        MaterializeColorClear(ImageId id, const ImageDesc& desc,

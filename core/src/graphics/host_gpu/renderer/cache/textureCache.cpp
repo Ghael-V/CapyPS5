@@ -984,7 +984,7 @@ ImageId TextureCache::ResolveDepthOverlap(const ImageInfo& requested, BindingTyp
 	    requested.pitch == cached.info.pitch &&
 	    (requested.resources == cached.info.resources || retain_cached_layout) &&
 	    !IsSupportedSampledDepthFormat(cached.info.pixel_format, requested.pixel_format);
-	bool recreate = cached.info.resources < requested.resources ||
+	bool recreate = !cached.info.resources.Contains(requested.resources) ||
 	                requested.IsVolume() != cached.info.IsVolume();
 	switch (binding) {
 		case BindingType::Texture:
@@ -1025,6 +1025,19 @@ ImageId TextureCache::ResolveDepthOverlap(const ImageInfo& requested, BindingTyp
 	if (cached.binding.is_bound || cached.binding.is_target) {
 		cached.binding.needs_rebind = true;
 	}
+	// Deleting the owner of an HTile range erases its clear state. When the replacement uses the
+	// same range, it takes ownership first, so a pending fast clear still reaches its next pass.
+	if (cached.info.metadata.kind == ImageMetadataKind::Htile &&
+	    replacement.info.metadata.kind == ImageMetadataKind::Htile &&
+	    replacement.info.metadata.range.address == cached.info.metadata.range.address) {
+		const auto metadata = m_surface_metas.find(cached.info.metadata.range.address);
+		if (metadata != m_surface_metas.end() && metadata->second.owner == cached_id) {
+			metadata->second.owner = replacement_id;
+		}
+	}
+	if (RetireThroughGuestMemory(replacement_id, cached_id)) {
+		return replacement_id;
+	}
 	if (cached.backing.samples == replacement.backing.samples) {
 		const bool copy_supported =
 		    cached.backing.samples == 1 || cached.backing.format == replacement.backing.format ||
@@ -1055,16 +1068,6 @@ ImageId TextureCache::ResolveDepthOverlap(const ImageInfo& requested, BindingTyp
 		LOGF_COLOR(Log::Color::BrightYellow,
 		           "TextureCache: unsupported unequal-sample depth overlap copy (%u -> %u)\n",
 		           cached.backing.samples, replacement.backing.samples);
-	}
-	// Deleting the owner of an HTile range erases its clear state. When the replacement uses the
-	// same range, it takes ownership first, so a pending fast clear still reaches its next pass.
-	if (cached.info.metadata.kind == ImageMetadataKind::Htile &&
-	    replacement.info.metadata.kind == ImageMetadataKind::Htile &&
-	    replacement.info.metadata.range.address == cached.info.metadata.range.address) {
-		const auto metadata = m_surface_metas.find(cached.info.metadata.range.address);
-		if (metadata != m_surface_metas.end() && metadata->second.owner == cached_id) {
-			metadata->second.owner = replacement_id;
-		}
 	}
 	FreeImage(cached_id);
 	return replacement_id;
@@ -1164,7 +1167,8 @@ TextureCache::OverlapResult TextureCache::ResolveOverlap(const ImageInfo& reques
 		                              requested.resources.levels == cached.info.resources.levels;
 		// PS5 mip tails can expose more levels without increasing the guest allocation.
 		if ((requested.pixel_format == cached.info.pixel_format || compatible_array) &&
-		    requested.type == cached.info.type && requested.resources > cached.info.resources &&
+		    requested.type == cached.info.type &&
+		    !cached.info.resources.Contains(requested.resources) &&
 		    (requested.data.size > cached.info.data.size ||
 		     (requested.data.size == cached.info.data.size &&
 		      requested.extent == cached.info.extent &&
@@ -1250,6 +1254,9 @@ ImageId TextureCache::ExpandImage(const ImageInfo& info, ImageId source_id) {
 	if (source.binding.is_bound || source.binding.is_target) {
 		source.binding.needs_rebind = true;
 	}
+	if (RetireThroughGuestMemory(expanded_id, source_id)) {
+		return expanded_id;
+	}
 	InitializeImage(expanded_id);
 	const int32_t mip = source.info.MipOf(info);
 	const int32_t layer = source.info.SliceOf(info, mip);
@@ -1261,6 +1268,45 @@ ImageId TextureCache::ExpandImage(const ImageInfo& info, ImageId source_id) {
 	}
 	FreeImage(source_id);
 	return expanded_id;
+}
+
+bool TextureCache::RetireThroughGuestMemory(ImageId replacement_id, ImageId retired_id) {
+	const auto& replacement = m_slot_images[replacement_id].info;
+	auto&       retired     = m_slot_images[retired_id];
+	// A replacement that drops subresources of the retired image cannot take them by subresource
+	// index: a level of one shape is a layer of the other at the same guest offset. It starts
+	// from the guest bytes instead, after the retired image's GPU writes are published there.
+	// Stencil planes are not part of that publish, so images with stencil keep the copy path.
+	if (replacement.type != retired.info.type ||
+	    replacement.resources.Contains(retired.info.resources) || replacement.samples != 1 ||
+	    replacement.metadata.compression != VideoOutCompression::Uncompressed ||
+	    retired.info.HasStencil() ||
+	    (retired.IsGpuModified() && (!retired.SafeToDownload() || !PublishToBuffer(retired)))) {
+		return false;
+	}
+	InitializeImage(replacement_id);
+	FreeImage(retired_id);
+	return true;
+}
+
+bool TextureCache::PublishToBuffer(Image& image) {
+	const auto& info = image.info;
+	// As in the GC, tiled PS4 (gfx7) layouts cannot be written back by the gfx10 tiler.
+	const bool gfx7_tiled =
+	    info.IsTiled() && (info.gfx7_micro_pitch != 0 || info.gfx7_guest_size != 0);
+	if (gfx7_tiled || !info.data.Valid() || !CanDownload(image)) {
+		return false;
+	}
+	// The GPU bytes go to the buffer cache's copy of the range (marked GPU-written there), in
+	// command order before any upload from it, so nothing waits for the GPU.
+	auto [buffer, offset] = m_buffer_cache.ObtainBuffer(info.data.address, info.data.size, true);
+	if (buffer == nullptr || !buffer->IsInBounds(info.data.address, info.data.size)) {
+		return false;
+	}
+	DownloadImage(image, *buffer, offset, info.data.size, info.resources.levels);
+	image.ClearGpuModified();
+	image.MarkBufferModified();
+	return true;
 }
 
 bool TextureCache::CanDownload(const Image& image) const {
@@ -1880,7 +1926,14 @@ ImageId TextureCache::FindImage(ImageDesc& desc, bool exact_format) {
 			if (needs_color ||
 			    (exact_format && resolved.info.pixel_format != desc.info.pixel_format)) {
 				result = {};
-			} else if (resolved.info.resources < desc.info.resources) {
+			} else if (!resolved.info.resources.Contains(desc.info.resources)) {
+				// Publish its GPU writes first: the new image starts from the guest bytes.
+				if (CanDownload(resolved)) {
+					RefreshImage(result);
+					if (resolved.SafeToDownload() && !resolved.info.HasStencil()) {
+						(void)PublishToBuffer(resolved);
+					}
+				}
 				FreeImage(result);
 				result = {};
 			}
