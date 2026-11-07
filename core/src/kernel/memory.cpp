@@ -525,6 +525,37 @@ public:
 		return true;
 	}
 
+	// Ranges overlapping the span, clipped to it; holes are skipped. Returns the bytes covered.
+	uint64_t QueryFragments(uint64_t start, uint64_t size, std::vector<Range>* out) {
+		EXIT_IF(out == nullptr);
+
+		Common::LockGuard lock(m_mutex);
+		out->clear();
+		if (start == 0 || size == 0 || size > UINT64_MAX - start) {
+			return 0;
+		}
+		const auto end     = start + size;
+		uint64_t   covered = 0;
+		for (const auto& range: m_ranges) {
+			const auto range_end = End(range.start, range.size);
+			if (range_end <= start) {
+				continue;
+			}
+			if (range.start >= end) {
+				break;
+			}
+			Range part = range;
+			part.start = std::max(start, range.start);
+			part.size  = std::min(end, range_end) - part.start;
+			if (part.type == VirtualRangeType::Direct) {
+				part.offset += part.start - range.start;
+			}
+			covered += part.size;
+			out->push_back(part);
+		}
+		return covered;
+	}
+
 	bool QuerySpan(uint64_t start, uint64_t size, std::vector<Range>* out) {
 		EXIT_IF(out == nullptr);
 
@@ -4926,15 +4957,15 @@ static int ProtectMemoryUnfolded(const void* addr, size_t len, int prot) {
 	auto vaddr = reinterpret_cast<uint64_t>(addr);
 
 	LOGF("\t addr = 0x%016" PRIx64 "\n"
-	     "\t len  = 0x%016" PRIx64 "\n",
-	     vaddr, static_cast<uint64_t>(len));
+	     "\t len  = 0x%016" PRIx64 "\n"
+	     "\t prot = 0x%08" PRIx32 "\n",
+	     vaddr, static_cast<uint64_t>(len), static_cast<uint32_t>(prot));
 
 	constexpr uint64_t PAGE_SIZE    = 0x4000;
 	auto               aligned_addr = vaddr & ~(PAGE_SIZE - 1);
 	const auto         page_offset  = vaddr - aligned_addr;
-	if (len > UINT64_MAX - page_offset || len + page_offset > UINT64_MAX - (PAGE_SIZE - 1)) {
-		EXIT("memory-protection range overflows: addr=0x%016" PRIx64 " size=0x%016" PRIx64 "\n",
-		     vaddr, static_cast<uint64_t>(len));
+	if (len > UINT64_MAX - (PAGE_SIZE - 1) - page_offset) {
+		return KERNEL_ERROR_EINVAL;
 	}
 	auto aligned_len = (len + page_offset + PAGE_SIZE - 1) & ~(PAGE_SIZE - 1);
 
@@ -4948,35 +4979,26 @@ static int ProtectMemoryUnfolded(const void* addr, size_t len, int prot) {
 	if (!DecodeMemoryProtection(prot, &mode, &gpu_mode)) {
 		return KERNEL_ERROR_EINVAL;
 	}
-	std::vector<VirtualRanges::Range> old_ranges;
-	if (!g_virtual_ranges->QuerySpan(aligned_addr, aligned_len, &old_ranges) ||
-	    std::any_of(old_ranges.begin(), old_ranges.end(),
-	                [](const auto& range) { return !IsCommittedRangeType(range.type); })) {
-		EXIT("memory-protection range is not fully mapped: addr=0x%016" PRIx64 " size=0x%016" PRIx64
-		     "\n",
-		     aligned_addr, aligned_len);
-	}
-	const auto old_mode = static_cast<VirtualMemory::Mode>(
-	    old_ranges.front().protection & (PROT_CPU_READ | PROT_CPU_WRITE | PROT_CPU_EXEC));
-	bool ok = g_guest_address_space->Protect(aligned_addr, aligned_len, mode);
-
-	if (!ok) {
-		EXIT("host memory-protection update failed: addr=0x%016" PRIx64 " size=0x%016" PRIx64
-		     " prot=0x%08x\n",
-		     aligned_addr, aligned_len, prot);
-	}
-	NotifyGuestProtection(aligned_addr, aligned_len, mode);
-	for (const auto& old_range: old_ranges) {
-		if (old_range.type == VirtualRangeType::Direct) {
-			g_physical_memory->ProtectMapping(old_range.start, old_range.size, prot, mode,
-			                                  gpu_mode);
-		} else if (old_range.type == VirtualRangeType::Flexible) {
-			g_flexible_memory->Protect(old_range.start, old_range.size, prot, mode, gpu_mode);
+	// Reserved ranges and holes have nothing to protect (they used to end the emulator).
+	std::vector<VirtualRanges::Range> ranges;
+	g_virtual_ranges->QueryFragments(aligned_addr, aligned_len, &ranges);
+	for (const auto& range: ranges) {
+		if (!IsCommittedRangeType(range.type)) {
+			continue;
 		}
+		if (!g_guest_address_space->Protect(range.start, range.size, mode)) {
+			EXIT("host memory-protection update failed: addr=0x%016" PRIx64 " size=0x%016" PRIx64
+			     " prot=0x%08x\n",
+			     range.start, range.size, prot);
+		}
+		NotifyGuestProtection(range.start, range.size, mode);
+		if (range.type == VirtualRangeType::Direct) {
+			g_physical_memory->ProtectMapping(range.start, range.size, prot, mode, gpu_mode);
+		} else if (range.type == VirtualRangeType::Flexible) {
+			g_flexible_memory->Protect(range.start, range.size, prot, mode, gpu_mode);
+		}
+		g_virtual_ranges->Protect(range.start, range.size, prot);
 	}
-	g_virtual_ranges->Protect(aligned_addr, aligned_len, prot);
-
-	LOGF("\t prot: %s -> %s\n", magic_enum::enum_name(old_mode), magic_enum::enum_name(mode));
 
 	return OK;
 }
