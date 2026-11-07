@@ -5226,11 +5226,16 @@ int KYTY_SYSV_ABI KernelMemoryPoolCommit(void* addr, size_t len, int type, int p
 		return KERNEL_ERROR_EINVAL;
 	}
 
-	VirtualRanges::Range old_range {};
-	if (!g_virtual_ranges->Query(vaddr, 0, &old_range) ||
-	    old_range.type != VirtualRangeType::PoolReserved ||
-	    len > old_range.size - (vaddr - old_range.start)) {
-		return KERNEL_ERROR_EACCES;
+	// The span may cover several pool reservations (names split them); none may be committed.
+	std::vector<VirtualRanges::Range> ranges;
+	if (!g_virtual_ranges->QuerySpan(vaddr, len, &ranges) ||
+	    std::any_of(ranges.begin(), ranges.end(),
+	                [](const auto& range) { return !IsPooledRangeType(range.type); })) {
+		return KERNEL_ERROR_EINVAL;
+	}
+	if (std::any_of(ranges.begin(), ranges.end(),
+	                [](const auto& range) { return range.type == VirtualRangeType::Pooled; })) {
+		return KERNEL_ERROR_EBUSY;
 	}
 
 	std::vector<PooledMemory::Mapping> mappings;
@@ -5262,10 +5267,11 @@ int KYTY_SYSV_ABI KernelMemoryPoolCommit(void* addr, size_t len, int type, int p
 		mapped.push_back(mapping);
 	}
 
-	if (!g_virtual_ranges->ReplaceSpan(vaddr, len, VirtualRangeType::PoolReserved, 0, prot, type,
-	                                   VirtualRangeType::Pooled, old_range.name)) {
-		rollback();
-		return KERNEL_ERROR_EBUSY;
+	// Validated above: each fragment is an uncommitted pool reservation.
+	for (const auto& range: ranges) {
+		EXIT_IF(!g_virtual_ranges->ReplaceSpan(range.start, range.size,
+		                                       VirtualRangeType::PoolReserved, 0, prot, type,
+		                                       VirtualRangeType::Pooled, range.name));
 	}
 
 	MapGpuRange(vaddr, len);
