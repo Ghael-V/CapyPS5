@@ -1143,8 +1143,9 @@ int KYTY_SYSV_ABI KernelStat(const char* path, FileStat* sb) {
 	if (is_dir) {
 		stat.st_size =
 		    static_cast<int64_t>(PackDirents(Common::File::GetDirEntries(real_file_name)).size());
-		stat.st_blksize = 512;
-		stat.st_blocks  = stat.st_size / 512;
+		// Directories report a 64 KiB st_blksize; games size one whole-directory getdents from it.
+		stat.st_blksize = 0x10000;
+		stat.st_blocks  = (stat.st_size + 511) / 512;
 	} else {
 		stat.st_size    = static_cast<int64_t>(info->size);
 		stat.st_blksize = 512;
@@ -1213,8 +1214,8 @@ int KYTY_SYSV_ABI KernelFstat(int d, FileStat* sb) {
 		stat.st_blocks  = (stat.st_size + 511) / 512;
 	} else {
 		stat.st_size    = static_cast<int64_t>(file->dirents.size());
-		stat.st_blksize = 512;
-		stat.st_blocks  = stat.st_size / 512;
+		stat.st_blksize = 0x10000; // see StatHostPath
+		stat.st_blocks  = (stat.st_size + 511) / 512;
 	}
 
 	SecToTimespec(&stat.st_atim, at.ToUnix());
