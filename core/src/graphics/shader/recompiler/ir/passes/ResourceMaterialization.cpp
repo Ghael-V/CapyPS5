@@ -1421,6 +1421,7 @@ void ApplyResourceSpecialization(Program& program, const ResourceSpecialization&
 
 	auto& memory_info = program.memory_info;
 	const ImageRemap image_remap(specialization);
+	std::vector<bool> memory_live(memory_info.size(), false);
 	for (auto* block: program.blocks) {
 		for (auto it = block->begin(); it != block->end(); ++it) {
 			auto& inst = *it;
@@ -1506,10 +1507,13 @@ void ApplyResourceSpecialization(Program& program, const ResourceSpecialization&
 			EXIT_IF(image.indirect_root == memory.resource &&
 			        inst.GetOpcode() != ValueOpcode::ImageSampleRaw &&
 			        inst.GetOpcode() != ValueOpcode::ImageRead);
+			memory_live[index] = true;
 		}
 	}
-	for (auto& memory: memory_info) {
-		if (memory.kind == ResourceKind::Image && !memory.planning_only) {
+	// Only image memory entries that live image operations reach are remapped.
+	for (size_t index = 0; index < memory_info.size(); index++) {
+		auto& memory = memory_info[index];
+		if (memory_live[index] && memory.kind == ResourceKind::Image && !memory.planning_only) {
 			memory.resource = image_remap[memory.resource];
 		}
 	}
