@@ -2396,34 +2396,27 @@ void TextureCache::RunGarbageCollector() {
 		const uint64_t age       = std::min<uint64_t>(aggressive ? 160 : pressured ? 80 : 16, tick);
 		size_t         deletions = aggressive ? 40 : pressured ? 20 : 10;
 		std::vector<ImageId> candidates;
-		candidates.reserve(deletions);
 		// Deleting depth recursively deletes its stencil association, so finish LRU traversal
-		// first.
-		m_lru_cache.ForEachItemBelow(tick - age, [&](ImageId id) {
-			candidates.push_back(id);
-			return candidates.size() == deletions;
-		});
+		// first. Kept images do not use up the deletion budget.
+		m_lru_cache.ForEachItemBelow(tick - age, [&](ImageId id) { candidates.push_back(id); });
 		for (const auto id: candidates) {
 			if (deletions == 0) {
 				break;
 			}
-			--deletions;
 			auto owner = m_slot_images.try_get(id);
 			if (owner == nullptr || !owner->registered || owner->depth_id) {
 				continue;
 			}
-			if (owner->IsGpuModified()) {
-				const bool safe = owner->SafeToDownload();
-				if (safe && owner->info.IsTiled()) {
-					continue;
-				}
-				if (safe && !pressured) {
-					continue;
-				}
-				if (safe && !DownloadImageMemory(id)) {
-					continue;
-				}
+			// GPU-written images, tiled ones included, are written back under memory pressure
+			// only; stencil-backed ones stay, and so do tiled PS4 (gfx7) layouts, which the
+			// gfx10 tiler cannot write back.
+			const bool gfx7_tiled = owner->info.IsTiled() && (owner->info.gfx7_micro_pitch != 0 ||
+			                                                  owner->info.gfx7_guest_size != 0);
+			if (owner->SafeToDownload() && (!pressured || owner->info.HasStencil() || gfx7_tiled ||
+			                                !DownloadImageMemory(id))) {
+				continue;
 			}
+			--deletions;
 			FreeImage(id);
 			if (m_total_used_memory < m_critical_gc_memory && aggressive) {
 				deletions >>= 2;
