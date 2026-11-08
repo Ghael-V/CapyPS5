@@ -940,6 +940,12 @@ void BufferCache::CopyBuffer(uint64_t dst_vaddr, uint64_t src_vaddr, uint64_t si
 		     src_vaddr, dst_vaddr, size, static_cast<int>(src_gds), static_cast<int>(dst_gds));
 		return;
 	}
+	// A copy into whole levels of a GPU-written image lands on its GPU contents, not stale guest
+	// bytes, while no buffer holds the range.
+	if (src_memory && dst_memory && !IsRegionRegistered(dst_vaddr, size) &&
+	    m_texture_cache.CopyToImage(dst_vaddr, src_vaddr, size)) {
+		return;
+	}
 	if (src_memory && dst_memory && !IsRegionGpuModified(dst_vaddr, size) &&
 	    !IsRegionGpuModified(src_vaddr, size) && !m_texture_cache.FindImageFromRange(src_vaddr, size)) {
 		// Copy through the guest mappings (as upstream does) so caches see the write.
