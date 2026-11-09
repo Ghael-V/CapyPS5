@@ -361,11 +361,13 @@ void Visit(Program& program, ShaderStageInputInfo input_info, InputUsage& inputs
 					}
 				}
 				info.coherent_buffers |= memory.coherent;
+				info.uses_dma |= !memory.planning_only;
 			}
 		}
 		if (buffer_access != BufferAccess::None) {
-			if (kind == ResourceKind::IndirectBuffer && op != ValueOpcode::ReadConstBuffer) {
-				info.subgroup_local_invocation_id = true;
+			if (kind == ResourceKind::IndirectBuffer) {
+				info.uses_dma = true;
+				info.subgroup_local_invocation_id |= op != ValueOpcode::ReadConstBuffer;
 			}
 			if (kind == ResourceKind::Buffer) {
 				info.coherent_buffers |= memory.coherent;
@@ -573,7 +575,7 @@ void Visit(Program& program, ShaderStageInputInfo input_info, InputUsage& inputs
 		case ValueOpcode::ReadConst: info.uses_flattened_srt = true; break;
 		case ValueOpcode::BitwiseXor32: info.has_bitwise_xor = true; break;
 		case ValueOpcode::StoreCompletion: info.subgroup_barrier = true; break;
-		case ValueOpcode::BvhIntersect: info.bvh = true; break;
+		case ValueOpcode::BvhIntersect: info.bvh = info.uses_dma = true; break;
 		case ValueOpcode::ConditionRef:
 			info.subgroup_ballot |=
 			    inst.Flags<CFG::BranchCondition>() != CFG::BranchCondition::ScalarInstruction;
@@ -639,7 +641,7 @@ void CollectShaderInfo(Program& program, ShaderStageInputInfo input_info) {
 	info.user_data_registers.clear();
 	info.live_buffers = 0;
 	info.has_bitwise_xor = info.uses_lds = info.uses_gds = info.uses_flattened_srt =
-	    info.uses_dispatch_threads = info.uses_swizzle = false;
+	    info.uses_dispatch_threads = info.uses_swizzle = info.uses_dma = false;
 	info.bvh = info.subgroup_ballot = info.subgroup_barrier = info.subgroup_shuffle = info.helper_invocation =
 	    info.subgroup_local_invocation_id = info.compute_derivatives = info.image_gather_extended =
 	    info.function_lds = info.function_scratch = info.pixel_valid_mask = info.buffer_int64_atomics =
