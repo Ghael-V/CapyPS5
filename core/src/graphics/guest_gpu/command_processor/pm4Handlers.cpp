@@ -15,6 +15,7 @@
 #include "graphics/host_gpu/renderer/renderContext.h"
 #include "graphics/presentation/videoOut.h"
 #include "graphics/presentation/window.h"
+#include "graphics/shader/recompiler/frontend/decode/ShaderDecoder.h"
 #include "graphics/shader/shader.h"
 #include "kernel/memory.h"
 #include "libs/agc.h"
@@ -56,6 +57,11 @@
 #define KYTY_CP_OP_PARSER(f) uint32_t f(KYTY_CP_OP_PARSER_ARGS)
 
 namespace Libs::Graphics {
+
+// The running game is a PS4 one: some registers have gfx7 layouts.
+[[nodiscard]] static bool IsGfx7() {
+	return ShaderRecompiler::Decoder::GetGuestIsa() == ShaderRecompiler::Decoder::GuestIsa::Gfx7;
+}
 
 namespace {
 
@@ -861,7 +867,9 @@ KYTY_HW_CTX_PARSER(HwCtxSetStencilControl) {
 KYTY_HW_CTX_PARSER(HwCtxSetStencilInfo) {
 	// Handles one register; CpOpSetContextReg walks multi-register packets.
 	if (cmd_offset == Pm4::DB_STENCIL_INFO) {
-		cp.GetCtx().SetDepthStencilInfo(HW::DepthStencilInfo::Decode(buffer[0]));
+		// gfx7: one format bit; HTile is not used for PS4 depth targets.
+		cp.GetCtx().SetDepthStencilInfo(
+		    HW::DepthStencilInfo::Decode(IsGfx7() ? (buffer[0] & 1u) | 0x20000000u : buffer[0]));
 	}
 	return 1;
 }
@@ -2706,6 +2714,11 @@ void GraphicsInitJmpTablesCxIndirect() {
 		g_hw_ctx_indirect_func[cmd_offset] = [](KYTY_HW_CTX_INDIRECT_ARGS) {
 			uint32_t      slot = (cmd_offset - Pm4::CB_COLOR0_INFO) / 15;
 			HW::ColorInfo info;
+			if (IsGfx7()) {
+				// Format, number type, swap, blend and round bits match gfx10. The PS4 CMASK,
+				// FMASK and tile bits describe metadata these targets do not use.
+				value &= 0x00079ffcu;
+			}
 			info.format =
 			    static_cast<Prospero::ChannelLayout>(KYTY_PM4_GET(value, CB_COLOR0_INFO, FORMAT));
 			info.channel_type = static_cast<Prospero::ChannelType>(
@@ -2731,6 +2744,14 @@ void GraphicsInitJmpTablesCxIndirect() {
 		g_hw_ctx_indirect_func[cmd_offset] = [](KYTY_HW_CTX_INDIRECT_ARGS) {
 			uint32_t        slot = (cmd_offset - Pm4::CB_COLOR0_ATTRIB) / 15;
 			HW::ColorAttrib attrib;
+			if (IsGfx7()) {
+				// NUM_SAMPLES 14:12, NUM_FRAGMENTS 16:15, FORCE_DST_ALPHA_1 17.
+				attrib.num_samples             = (value >> 12u) & 7u;
+				attrib.num_fragments           = (value >> 15u) & 3u;
+				attrib.force_dest_alpha_to_one = ((value >> 17u) & 1u) != 0u;
+				cp.GetCtx().SetColorAttrib(slot, attrib);
+				return;
+			}
 			attrib.force_dest_alpha_to_one =
 			    KYTY_PM4_GET(value, CB_COLOR0_ATTRIB, FORCE_DST_ALPHA_1) != 0;
 			attrib.num_samples   = KYTY_PM4_GET(value, CB_COLOR0_ATTRIB, NUM_SAMPLES);
@@ -2851,6 +2872,34 @@ void GraphicsInitJmpTablesCxIndirect() {
 			base.addr &= 0xFFFF00FFFFFFFFFFull;
 			base.addr |= (static_cast<uint64_t>(value) & 0xffu) << 40u;
 			cp.GetCtx().SetColorDccAddr(slot, base);
+		};
+	}
+
+	// gfx7 has no ATTRIB2/ATTRIB3: the size comes from CB_COLORn_PITCH (TILE_MAX, in 8-pixel
+	// units) and CB_COLORn_SLICE (TILE_MAX, in 64-pixel units).
+	for (uint32_t slot = 0; slot < 8u; slot++) {
+		g_hw_ctx_indirect_func[Pm4::CB_COLOR0_PITCH_GFX7 + slot * 15u] = [](KYTY_HW_CTX_INDIRECT_ARGS) {
+			if (!IsGfx7()) {
+				return;
+			}
+			const uint32_t slot = (cmd_offset - Pm4::CB_COLOR0_PITCH_GFX7) / 15u;
+			auto attrib2        = cp.GetCtx().GetRenderTarget(slot).attrib2;
+			attrib2.width       = ((value & 0x7ffu) + 1u) * 8u;
+			cp.GetCtx().SetColorAttrib2(slot, attrib2);
+			HW::ColorAttrib3 attrib3;
+			attrib3.tile_mode = Prospero::TileMode::kRenderTarget;
+			attrib3.dimension = 1u; // 2D
+			cp.GetCtx().SetColorAttrib3(slot, attrib3);
+		};
+		g_hw_ctx_indirect_func[Pm4::CB_COLOR0_SLICE_GFX7 + slot * 15u] = [](KYTY_HW_CTX_INDIRECT_ARGS) {
+			if (!IsGfx7()) {
+				return;
+			}
+			const uint32_t slot = (cmd_offset - Pm4::CB_COLOR0_SLICE_GFX7) / 15u;
+			auto attrib2        = cp.GetCtx().GetRenderTarget(slot).attrib2;
+			const uint64_t pixels = (uint64_t {value & 0x3fffffu} + 1u) * 64u;
+			attrib2.height = attrib2.width != 0u ? static_cast<uint32_t>(pixels / attrib2.width) : 0u;
+			cp.GetCtx().SetColorAttrib2(slot, attrib2);
 		};
 	}
 
@@ -3306,7 +3355,8 @@ void GraphicsInitJmpTablesCxIndirect() {
 	};
 
 	g_hw_ctx_indirect_func[Pm4::DB_Z_INFO] = [](KYTY_HW_CTX_INDIRECT_ARGS) {
-		cp.GetCtx().SetDepthZInfo(HW::DepthZInfo::Decode(value));
+		// gfx7: only the format and sample count mean the same; its tile and HTile bits do not.
+		cp.GetCtx().SetDepthZInfo(HW::DepthZInfo::Decode(IsGfx7() ? value & 0xfu : value));
 	};
 
 	g_hw_ctx_indirect_func[Pm4::DB_DEPTH_BOUNDS_MIN] = [](KYTY_HW_CTX_INDIRECT_ARGS) {
@@ -3317,6 +3367,9 @@ void GraphicsInitJmpTablesCxIndirect() {
 	};
 
 	g_hw_ctx_indirect_func[Pm4::DB_STENCIL_INFO] = [](KYTY_HW_CTX_INDIRECT_ARGS) {
+		if (IsGfx7()) {
+			value = (value & 1u) | 0x20000000u; // one format bit; no HTile for PS4 depth targets
+		}
 		cp.GetCtx().SetDepthStencilInfo(HW::DepthStencilInfo::Decode(value));
 	};
 
@@ -3404,6 +3457,18 @@ void GraphicsInitJmpTablesCxIndirect() {
 		r.stencil_write_disable = KYTY_PM4_GET(value, DB_DEPTH_VIEW, STENCIL_READ_ONLY) != 0;
 		r.current_mip_level     = KYTY_PM4_GET(value, DB_DEPTH_VIEW, MIPID);
 		cp.GetCtx().SetDepthDepthView(r);
+	};
+
+	// gfx7 DB_DEPTH_SIZE: PITCH_TILE_MAX and HEIGHT_TILE_MAX, in 8-pixel units.
+	g_hw_ctx_indirect_func[Pm4::DB_DEPTH_SIZE_GFX7] = [](KYTY_HW_CTX_INDIRECT_ARGS) {
+		if (!IsGfx7()) {
+			return;
+		}
+		HW::DepthDepthSizeXY r;
+		r.x_max = static_cast<uint16_t>(((value & 0x7ffu) + 1u) * 8u - 1u);
+		r.y_max = static_cast<uint16_t>((((value >> 11u) & 0x7ffu) + 1u) * 8u - 1u);
+		r.valid = true;
+		cp.GetCtx().SetDepthDepthSizeXY(r);
 	};
 
 	g_hw_ctx_indirect_func[Pm4::DB_DEPTH_SIZE_XY] = [](KYTY_HW_CTX_INDIRECT_ARGS) {

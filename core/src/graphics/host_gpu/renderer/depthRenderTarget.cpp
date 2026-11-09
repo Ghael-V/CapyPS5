@@ -34,14 +34,12 @@
 namespace Libs::Graphics {
 
 [[noreturn]] static void DepthFatal(const char* format, ...) {
-	std::fputs("Depth target fatal: ", stderr);
+	char    reason[256];
 	va_list args;
 	va_start(args, format);
-	std::vfprintf(stderr, format, args);
+	std::vsnprintf(reason, sizeof(reason), format, args);
 	va_end(args);
-	std::fputc('\n', stderr);
-	std::fflush(stderr);
-	EXIT("unsupported render state; details were printed above\n");
+	EXIT("unsupported depth render state: %s\n", reason);
 }
 
 static vk::StencilOp ConvertStencilOp(uint8_t value, uint8_t write_mask, uint8_t op_value) {

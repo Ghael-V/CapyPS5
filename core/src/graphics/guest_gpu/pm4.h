@@ -175,6 +175,11 @@ constexpr uint32_t PA_SC_SCREEN_SCISSOR_BR_BR_Y_MASK  = 0xFFFF;
 
 constexpr uint32_t DB_DFSM_CONTROL = 0xE;
 
+// gfx7 (PS4) registers that gfx10 replaced.
+constexpr uint32_t DB_DEPTH_SIZE_GFX7   = 0x16;
+constexpr uint32_t CB_COLOR0_PITCH_GFX7 = 0x319;
+constexpr uint32_t CB_COLOR0_SLICE_GFX7 = 0x31A;
+
 constexpr uint32_t DB_Z_INFO                               = 0x10;
 constexpr uint32_t DB_Z_INFO_FORMAT_SHIFT                  = 0;
 constexpr uint32_t DB_Z_INFO_FORMAT_MASK                   = 0x3;
