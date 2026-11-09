@@ -30,6 +30,7 @@
 #include "loader/symbolDatabase.h"
 #include "loader/x64InstructionEmulator.h"
 
+#include <array>
 #include <algorithm>
 #include <atomic>
 #include <cstddef>
@@ -209,7 +210,11 @@ static uint64_t RegisterStubbedImport(uint32_t index, const Program* program,
 }
 
 static KYTY_SYSV_ABI uint64_t UnresolvedImportStub(uint64_t record_id) {
-	const auto log_index = g_unresolved_stub_call_log_count.fetch_add(1);
+	// A few lines per import: one polled every frame must not use up the log for the others.
+	static std::array<std::atomic<uint32_t>, 8192> calls_per_import {};
+	const bool first_calls = record_id >= calls_per_import.size() ||
+	                         calls_per_import[record_id].fetch_add(1, std::memory_order_relaxed) < 3u;
+	const auto log_index   = first_calls ? g_unresolved_stub_call_log_count.fetch_add(1) : 1024u;
 	if (log_index < 1024) {
 		if (record_id < g_stubbed_imports.size()) {
 			const auto& record = g_stubbed_imports[record_id];
