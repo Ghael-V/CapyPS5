@@ -139,6 +139,7 @@ uint32_t CpOpCopyData(CommandProcessor&, uint32_t, const uint32_t*, uint32_t, ui
 uint32_t CpOpEventWrite(CommandProcessor&, uint32_t, const uint32_t*, uint32_t, uint32_t);
 uint32_t CpOpEventWriteEop(CommandProcessor&, uint32_t, const uint32_t*, uint32_t, uint32_t);
 uint32_t CpOpEventWriteEos(CommandProcessor&, uint32_t, const uint32_t*, uint32_t, uint32_t);
+uint32_t CpOpSetConfigReg(CommandProcessor&, uint32_t, const uint32_t*, uint32_t, uint32_t);
 uint32_t CpOpDmaData(CommandProcessor&, uint32_t, const uint32_t*, uint32_t, uint32_t);
 uint32_t CpOpAcquireMem(CommandProcessor&, uint32_t, const uint32_t*, uint32_t, uint32_t);
 uint32_t CpOpSetContextReg(CommandProcessor&, uint32_t, const uint32_t*, uint32_t, uint32_t);

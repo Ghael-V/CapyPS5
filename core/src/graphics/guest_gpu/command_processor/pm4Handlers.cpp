@@ -1837,10 +1837,21 @@ KYTY_CP_OP_PARSER(CpOpEventWriteEop) {
 	return 5;
 }
 
+// gfx7 config registers: nothing the renderer reads lives there. Packets are logged once per register.
+KYTY_CP_OP_PARSER(CpOpSetConfigReg) {
+	Common::DebugFlags::NoteOnce("CapyPS5-Pm4", 0x53434600000000ull | buffer[0],
+	                             "SET_CONFIG_REG 0x%08x = 0x%08x (ignored)", buffer[0], buffer[1]);
+	return KYTY_PM4_LEN(cmd_id) - 1u;
+}
+
 KYTY_CP_OP_PARSER(CpOpEventWriteEos) {
 	KYTY_PROFILER_FUNCTION();
 
-	EXIT_NOT_IMPLEMENTED(cmd_id != 0xC0034802);
+	// PS4 packets carry no shader-type bit in the header.
+	EXIT_NOT_IMPLEMENTED(cmd_id != 0xC0034802 && !(IsGfx7() && cmd_id == 0xC0034800));
+	Common::DebugFlags::NoteOnce("CapyPS5-Eos", 0x454f5300ull | ((buffer[2] >> 29u) & 7u),
+	                             "EVENT_WRITE_EOS header=0x%08x control=0x%08x command=%u", cmd_id, buffer[0],
+	                             (buffer[2] >> 29u) & 7u);
 
 	uint32_t cache_policy       = (buffer[0] >> 25u) & 0x3u;
 	uint32_t event_write_dest   = 0;
