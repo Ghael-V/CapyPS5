@@ -279,7 +279,10 @@ void Gfx7TextureSharpToGfx10(uint32_t* fields) {
 	const uint32_t type      = word3 >> 28u;
 	const uint32_t last_mip  = (word3 >> 16u) & 0xfu;
 	const bool     array     = type == 12u || type == 13u || type == 15u;
-	const uint32_t depth     = array ? (fields[5] >> 13u) & 0x1fffu : fields[4] & 0x1fffu;
+	// gfx7 counts whole cubes in a cube T#; gfx10 counts faces.
+	const uint32_t depth     = array       ? (fields[5] >> 13u) & 0x1fffu
+	                           : type == 11u ? ((fields[4] & 0x1fffu) + 1u) * 6u - 1u
+	                                         : fields[4] & 0x1fffu;
 	const uint32_t base_array = fields[5] & 0x1fffu;
 	const uint32_t pitch      = (fields[4] >> 13u) & 0x3fffu;
 	// gfx7 tiling is not decoded yet. Indices 0..7 are depth surfaces and 9..12 the displayable

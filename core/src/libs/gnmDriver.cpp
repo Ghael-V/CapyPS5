@@ -478,6 +478,23 @@ uint32_t KYTY_SYSV_ABI GnmGetGpuCoreClockFrequency() {
 	return 800000000u;
 }
 
+// The SGPR offsets are per shader stage (Cs, Ps, Vs, Gs, Es, Hs, Ls), as in shadPS4.
+int KYTY_SYSV_ABI GnmDrawIndirect(uint32_t* cmd, uint32_t size, uint32_t data_offset, uint32_t stage,
+                                  uint32_t vertex_sgpr, uint32_t instance_sgpr, uint32_t /*flags*/) {
+	PRINT_NAME();
+	static constexpr std::array<uint32_t, 7> SgprBase {0u, 0u, 0x4cu, 0u, 0xccu, 0u, 0x14cu};
+	if (cmd == nullptr || size != 9u || stage >= SgprBase.size() || vertex_sgpr >= 0x10u || instance_sgpr >= 0x10u) {
+		return -1;
+	}
+	cmd[0] = Type3(0x24u, 4u); // DRAW_INDIRECT
+	cmd[1] = data_offset;
+	cmd[2] = vertex_sgpr == 0u ? 0u : vertex_sgpr + SgprBase[stage];
+	cmd[3] = instance_sgpr == 0u ? 0u : instance_sgpr + SgprBase[stage];
+	cmd[4] = 2u; // auto index
+	WriteNop(cmd + 5, 4u);
+	return OK;
+}
+
 uint32_t KYTY_SYSV_ABI GnmDrawInitDefaultHardwareState(uint32_t* cmd, uint32_t size) {
 	PRINT_NAME();
 	if (cmd == nullptr || size < HwInitPacketSize) {
@@ -928,6 +945,7 @@ LIB_DEFINE(InitGnmDriver_1) {
 	LIB_FUNC("VJNjFtqiF5w", Gnm::GnmSetHsShader);
 	LIB_FUNC("vckdzbQ46SI", Gnm::GnmSetLsShader);
 	LIB_FUNC("Idffwf3yh8s", Gnm::GnmDrawInitDefaultHardwareState);
+	LIB_FUNC("4v+otIIdjqg", Gnm::GnmDrawIndirect);
 	LIB_FUNC("ffrNQOshows", Gnm::GnmComputeWaitOnAddress);
 	LIB_FUNC("Fwvh++m9IQI", Gnm::GnmGetGpuCoreClockFrequency);
 	LIB_FUNC("8lH54sfjfmU", Gnm::GnmDrawInitToDefaultContextState);

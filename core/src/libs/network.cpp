@@ -2280,6 +2280,12 @@ int KYTY_SYSV_ABI Setsockopt(int s, int level, int optname, const void* optval, 
 	if (!GetSocketBackend(s, &socket, &state)) {
 		return -1;
 	}
+	// A console-only socket option with no host equivalent. P2P sockets too: refusing it made Unreal's net driver
+	// give up on listening, and the engine reloaded its title map forever.
+	if (level == 0xffff && optname == 0x20000) {
+		return 0;
+	}
+
 	if (state.p2p) {
 		Common::LockGuard lock(g_socket_mutex);
 		auto&             slot = g_sockets[static_cast<size_t>(s)];
@@ -2515,8 +2521,14 @@ int64_t KYTY_SYSV_ABI Recvfrom(int s, void* buf, uint64_t len, int flags, void* 
 
 	NativeSocket                    socket = INVALID_NATIVE_SOCKET;
 	std::shared_ptr<SocketTransport> transport;
-	if (!GetSocketBackend(s, &socket, nullptr, &transport)) {
+	SocketSlot                      state;
+	if (!GetSocketBackend(s, &socket, &state, &transport)) {
 		return -1;
+	}
+	// P2P sockets carry no peers here. Unreal's net driver reads until told there is nothing left;
+	// any other error kept it reading forever.
+	if (state.p2p) {
+		return SetGuestSocketError(Posix::POSIX_EWOULDBLOCK);
 	}
 
 	const int host_flags = ConvertMessageFlags(flags);

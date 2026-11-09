@@ -1520,6 +1520,44 @@ static int64_t KYTY_SYSV_ABI write(int d, const void* buf, size_t nbytes) {
 	if ((d == 1 || d == 2) && buf != nullptr && guest_stdout.Get() != 0) {
 		__android_log_print(ANDROID_LOG_WARN, "CapyPS5-Stdout", "%.*s", static_cast<int>(std::min<size_t>(nbytes, 900u)),
 		                    static_cast<const char*>(buf));
+		// With value 2, also the guest call chain that printed it (frame pointers).
+		Cpu::GuestRegisters regs {};
+		if (guest_stdout.Get() == 2 && Cpu::GetCurrentGuestRegisters(&regs)) {
+			std::string chain;
+			uint64_t    frame = regs.rbp;
+			for (int i = 0; i < 16 && frame != 0; i++) {
+				uint64_t next[2] = {};
+				if (!Memory::ReadGuestMemory(frame, next, sizeof(next))) {
+					break;
+				}
+				chain += fmt::format(" {:x}", next[1]);
+				frame = next[0];
+			}
+			__android_log_print(ANDROID_LOG_WARN, "CapyPS5-Stdout", "  chain:%s", chain.c_str());
+			// The text the stack points at, Unreal's UTF-16 strings included (map URLs).
+			std::string found;
+			for (uint64_t slot = regs.rsp; slot < regs.rsp + 0x6000 && found.size() < 1500; slot += 8) {
+				uint64_t value = 0;
+				if (!Memory::ReadGuestMemory(slot, &value, sizeof(value)) || value < 0x100000000ull) {
+					continue;
+				}
+				uint16_t text[48] = {};
+				if (!Memory::ReadGuestMemory(value, text, sizeof(text))) {
+					continue;
+				}
+				std::string item;
+				for (auto c: text) {
+					if (c < 0x20 || c > 0x7e) {
+						break;
+					}
+					item.push_back(static_cast<char>(c));
+				}
+				if (item.size() >= 5 && found.find(item) == std::string::npos) {
+					found += " | " + item;
+				}
+			}
+			__android_log_print(ANDROID_LOG_WARN, "CapyPS5-Stdout", "  text:%s", found.c_str());
+		}
 	}
 #endif
 	return POSIX_N_CALL(FileSystem::KernelWrite(d, buf, nbytes));
