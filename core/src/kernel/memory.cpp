@@ -1150,6 +1150,15 @@ bool ReadGuestMemory(uint64_t vaddr, void* data, uint64_t size) {
 		                             "protected guest read 0x%llx size=%llu: reading through the fault handler",
 		                             static_cast<unsigned long long>(vaddr),
 		                             static_cast<unsigned long long>(size));
+		// Only GPU-written bytes need the fault handler. Anything else here is memory the game
+		// itself made unreadable (or released) while the GPU still references it: nothing would
+		// service that fault, so read what backs it instead of taking the process down.
+		if (g_gpu_resources != nullptr && !GetGpuResources().GetBufferCache().HasGpuDirtyBytes(vaddr, size)) {
+			if (!TryReadBacking(vaddr, data, size)) {
+				std::memset(data, 0, size);
+			}
+			return true;
+		}
 		std::memcpy(data, reinterpret_cast<const void*>(vaddr), size);
 		return true;
 	}
