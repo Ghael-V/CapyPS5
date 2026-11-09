@@ -262,6 +262,9 @@ void Gfx7BufferSharpToGfx10(uint32_t* fields) {
 	const uint32_t nfmt = (fields[3] >> 12u) & 0x7u;
 	const uint32_t dfmt = (fields[3] >> 15u) & 0xfu;
 	fields[3] = (fields[3] & ~(0x7fu << 12u)) | (Gfx7UnifiedBufferFormat(dfmt, nfmt) << 12u);
+	// gfx10's OOB_SELECT has no gfx7 counterpart, and its value 0 makes a stride-0 buffer read as
+	// zeros. On gfx7 that is an ordinary byte buffer bounded by its size: mode 3, the raw one.
+	fields[3] = (fields[3] & ~(3u << 28u)) | (3u << 28u);
 }
 
 void Gfx7TextureSharpToGfx10(uint32_t* fields) {

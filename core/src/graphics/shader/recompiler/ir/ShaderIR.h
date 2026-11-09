@@ -666,6 +666,9 @@ struct ResourcePlan {
 };
 
 struct Program: ResourcePlan {
+	// PS4 pixel and compute shaders: where the code lives in guest memory (see S_GETPC_B64).
+	uint64_t guest_code_base = 0;
+
 	Program() = default;
 	~Program();
 

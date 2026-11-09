@@ -1030,6 +1030,10 @@ IR::Program TranslateProgram(const Decoder::Program& decoded, const CFG::Graph& 
 	}
 
 	IR::Program result;
+	if (Decoder::GetGuestIsa() == Decoder::GuestIsa::Gfx7 &&
+	    (options.stage == ShaderType::Pixel || options.stage == ShaderType::Compute)) {
+		result.guest_code_base = reinterpret_cast<uint64_t>(decoded.code.data());
+	}
 	result.stage               = options.stage;
 	result.wave_size           = options.wave_size;
 	result.shader_hash         = options.shader_hash;

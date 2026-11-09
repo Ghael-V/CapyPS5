@@ -211,7 +211,11 @@ void Translator::S_INST_PREFETCH() {
 }
 
 void Translator::S_GETPC_B64(const Decoder::Instruction& inst) {
-	const auto base    = IR::U64(ir.Emit(IR::ValueOpcode::GetShaderBase));
+	// PS4 shaders build descriptors for tables inside their own code from this address. It must
+	// be the real one: inside SPIR-V GetShaderBase is 0, which pointed them at unrelated memory.
+	const auto base = program.guest_code_base != 0u
+	                      ? IR::U64(IR::Value(program.guest_code_base))
+	                      : IR::U64(ir.Emit(IR::ValueOpcode::GetShaderBase));
 	const auto address = IR::U64(
 	    ir.Emit(IR::ValueOpcode::IAdd64, {base, IR::Value(static_cast<uint64_t>(inst.pc) + 4u)}));
 	if (inst.dst.kind == Decoder::OperandKind::Null) {
