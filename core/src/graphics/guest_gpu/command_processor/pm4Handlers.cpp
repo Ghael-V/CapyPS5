@@ -3885,6 +3885,7 @@ void GraphicsInitJmpTablesShIndirect() {
 		base &= 0xFFFF00FFFFFFFFFFull;
 		base |= (static_cast<uint64_t>(value) & 0xffu) << 40u;
 		cp.GetShCtx().SetEsShaderBase(base);
+		ShaderDebugDisassembleGfx7(base, "es");
 	};
 
 	// The gfx7 hardware vertex shader (PS4 games).
@@ -3928,6 +3929,7 @@ void GraphicsInitJmpTablesShIndirect() {
 		base &= 0xFFFF00FFFFFFFFFFull;
 		base |= (static_cast<uint64_t>(value) & 0xffu) << 40u;
 		cp.GetShCtx().SetGsShaderBase(base);
+		ShaderDebugDisassembleGfx7(base, "gs");
 	};
 
 	g_hw_sh_indirect_func[Pm4::SPI_SHADER_PGM_RSRC1_GS] = [](KYTY_HW_SH_INDIRECT_ARGS) {
