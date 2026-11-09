@@ -16,6 +16,7 @@
 
 #include "graphics/shader/recompiler/frontend/decode/Gfx7Ops.h"
 
+#include "common/debugFlags.h"
 #include "graphics/shader/recompiler/frontend/decode/ImageOps.h"
 #include "graphics/shader/recompiler/frontend/decode/MemoryOps.h"
 #include "graphics/shader/recompiler/frontend/decode/VectorAluOps.h"
@@ -262,6 +263,9 @@ void Gfx7BufferSharpToGfx10(uint32_t* fields) {
 }
 
 void Gfx7TextureSharpToGfx10(uint32_t* fields) {
+	if (fields[0] == 0u && (fields[1] & 0x3fu) == 0u) {
+		return; // a null T#
+	}
 	const uint32_t base_low  = fields[0];
 	const uint32_t base_high = fields[1] & 0x3fu;
 	const uint32_t dfmt      = (fields[1] >> 20u) & 0x3fu;
@@ -275,9 +279,13 @@ void Gfx7TextureSharpToGfx10(uint32_t* fields) {
 	const bool     array     = type == 12u || type == 13u || type == 15u;
 	const uint32_t depth     = array ? (fields[5] >> 13u) & 0x1fffu : fields[4] & 0x1fffu;
 	const uint32_t base_array = fields[5] & 0x1fffu;
+	const uint32_t pitch      = (fields[4] >> 13u) & 0x3fffu;
 	// gfx7 tiling is not decoded yet. Indices 0..7 are depth surfaces and 9..12 the displayable
 	// thin modes render targets use, so sampling a target finds its image; the rest read as linear.
-	const uint32_t mode = tile <= 7u ? 0x18u : (tile >= 9u && tile <= 12u) ? 0x1bu : 0x00u;
+	const uint32_t mode = tile <= 7u ? 0x18u : ((tile >= 9u && tile <= 12u) || tile == 14u) ? 0x1bu : 0x00u;
+	Common::DebugFlags::NoteOnce("CapyPS5-Gfx7Tex", (uint64_t {tile} << 16u) | (uint64_t {dfmt} << 8u) | type,
+	                             "T# tile=%u dfmt=%u nfmt=%u type=%u %ux%u pitch=%u", tile, dfmt, nfmt, type,
+	                             width + 1u, height + 1u, ((fields[4] >> 13u) & 0x3fffu) + 1u);
 	fields[0] = base_low;
 	fields[1] = base_high | (Gfx7ImageFormat(dfmt, nfmt) << 20u) | ((width & 3u) << 30u);
 	fields[2] = ((width >> 2u) & 0xfffu) | (height << 14u);
@@ -285,7 +293,8 @@ void Gfx7TextureSharpToGfx10(uint32_t* fields) {
 	fields[4] = depth | (base_array << 16u);
 	fields[5] = last_mip << 4u;
 	fields[6] = 0u;
-	fields[7] = 0u;
+	// For the texture binding: the gfx7 tile index, padded pitch and POW2_PAD.
+	fields[7] = 0x80000000u | (((word3 >> 25u) & 1u) << 30u) | (pitch << 5u) | tile;
 }
 
 bool DecodeGfx7Instruction(std::span<const uint32_t> code, uint32_t word_index, Instruction& inst) {

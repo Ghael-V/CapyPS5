@@ -96,6 +96,18 @@ struct ImageInfo {
 	// Nonzero for guest-linear and depth-plane transfers; tiled colors are mip-major.
 	uint64_t linear_slice_stride = 0;
 	uint32_t first_tail_level    = 16;
+	// PS4 (gfx7) 1D-thin micro-tiled texture: its padded pitch, nonzero when guest memory is laid
+	// out that way, and whether its mips are padded to powers of two.
+	uint32_t gfx7_micro_pitch = 0;
+	bool     gfx7_micro_pow2  = false;
+
+	struct Gfx7MicroLevel {
+		uint32_t pitch  = 0; // blocks
+		uint32_t height = 0; // blocks
+		uint64_t size   = 0; // one slice, bytes
+	};
+	[[nodiscard]] Gfx7MicroLevel Gfx7MicroLevelLayout(uint32_t level) const;
+	[[nodiscard]] uint64_t       Gfx7MicroSize() const;
 
 	void                                           UpdateSize();
 	[[nodiscard]] uint64_t                         LinearSize(uint32_t levels = 0) const;

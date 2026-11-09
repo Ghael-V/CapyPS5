@@ -33,6 +33,40 @@ vk::Extent3D ImageInfo::MipExtent(uint32_t level) const {
 	        IsVolume() ? std::max(extent.depth >> level, 1u) : resources.layers};
 }
 
+ImageInfo::Gfx7MicroLevel ImageInfo::Gfx7MicroLevelLayout(uint32_t level) const {
+	const bool block = tiling.texel_width > 1u;
+	uint32_t   w     = gfx7_micro_pitch >> level;
+	uint32_t   h     = extent.height >> level;
+	if (block) {
+		w = (w + 3u) / 4u;
+		h = (h + 3u) / 4u;
+	}
+	w = std::max(w, 1u);
+	h = std::max(h, 1u);
+	if (gfx7_micro_pow2) {
+		w = std::bit_ceil(w);
+		h = std::bit_ceil(h);
+	}
+	// Micro tiles are 8x8 blocks, and each level is a whole number of 256-byte groups.
+	Gfx7MicroLevel layout;
+	layout.pitch  = Common::AlignUp(w, 8u);
+	layout.height = Common::AlignUp(h, 8u);
+	layout.size   = uint64_t {layout.pitch} * layout.height * bytes_per_block;
+	while (layout.size % 256u != 0u) {
+		layout.pitch += 8u;
+		layout.size = uint64_t {layout.pitch} * layout.height * bytes_per_block;
+	}
+	return layout;
+}
+
+uint64_t ImageInfo::Gfx7MicroSize() const {
+	uint64_t total = 0;
+	for (uint32_t level = 0; level < resources.levels; level++) {
+		total += Gfx7MicroLevelLayout(level).size * resources.layers;
+	}
+	return total;
+}
+
 void ImageInfo::UpdateSize() {
 	EXIT_IF(guest_format == Prospero::BufferFormat::kInvalid || extent.width == 0 ||
 	        extent.height == 0 || extent.depth == 0 || resources.levels == 0 ||
