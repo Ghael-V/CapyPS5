@@ -10,6 +10,7 @@
 #include "graphics/host_gpu/renderer/cache/textureCache.h"
 #include "graphics/host_gpu/renderer/image/image.h"
 #include "graphics/host_gpu/vulkanCommon.h"
+#include "graphics/shader/recompiler/frontend/decode/Gfx7Ops.h"
 #include "graphics/shader/recompiler/ir/ShaderIR.h"
 #include "graphics/shader/shaderBindings.h"
 
@@ -64,6 +65,13 @@ template <typename T>
 	T result {};
 	EXIT_IF(value.dword_count < sizeof(result) / sizeof(uint32_t));
 	std::memcpy(&result, value.dwords.data(), sizeof(result));
+	if (ShaderRecompiler::Decoder::GetGuestIsa() == ShaderRecompiler::Decoder::GuestIsa::Gfx7) {
+		if constexpr (std::is_same_v<T, ShaderTextureResource>) {
+			ShaderRecompiler::Decoder::Gfx7TextureSharpToGfx10(result.fields);
+		} else if constexpr (std::is_same_v<T, ShaderBufferResource>) {
+			ShaderRecompiler::Decoder::Gfx7BufferSharpToGfx10(result.fields);
+		}
+	}
 	return result;
 }
 

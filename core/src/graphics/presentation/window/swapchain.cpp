@@ -7,6 +7,12 @@
 #include "common/emulatorConfig.h"
 #include "common/logging/log.h"
 #include "common/debugFlags.h"
+#include "common/file.h"
+#if defined(__ANDROID__)
+#include "android/capyps5_jni.h"
+#include <android/log.h>
+#endif
+#include <atomic>
 #include "common/profiler.h"
 #include "common/telemetry.h"
 #include "common/threads.h"
@@ -375,6 +381,26 @@ struct Presenter::Impl {
 		auto&      image      = cache.GetImage(image_id);
 		image.usage.video_out = true;
 		cache.UpdateImage(image_id);
+#if defined(__ANDROID__)
+		// `setprop debug.capy.dump_vo N`: save the displayed image of the N-th flip to
+		// <files>/watch/vo.img and log which image it is (tag CapyPS5-VoDump).
+		static Common::DebugFlags::CachedValue dump_vo("debug.capy.dump_vo", 0);
+		static std::atomic<int64_t>            flips {0};
+		if (dump_vo.Get() != 0 && flips.fetch_add(1) + 1 == dump_vo.Get()) {
+			const auto dir = AndroidGetFilesDir() + "/watch";
+			Common::File::CreateDirectories(dir);
+			const bool saved = cache.DebugSaveImageLinear(image_id, dir + "/vo.img");
+			__android_log_print(ANDROID_LOG_WARN, "CapyPS5-VoDump",
+			                    "addr=0x%llx asked %ux%u tile=%u fmt=%d; image %ux%u tile=%u fmt=%d "
+			                    "backing %ux%u scale=%.3f saved=%d",
+			                    static_cast<unsigned long long>(info.data.address), info.extent.width,
+			                    info.extent.height, static_cast<uint32_t>(info.tile_mode),
+			                    static_cast<int>(info.pixel_format), image.info.extent.width,
+			                    image.info.extent.height, static_cast<uint32_t>(image.info.tile_mode),
+			                    static_cast<int>(image.info.pixel_format), image.backing.extent.width,
+			                    image.backing.extent.height, static_cast<double>(image.scale), saved ? 1 : 0);
+		}
+#endif
 		return image;
 	}
 	// Work recorded before the presentation blit when frame generation is on.
