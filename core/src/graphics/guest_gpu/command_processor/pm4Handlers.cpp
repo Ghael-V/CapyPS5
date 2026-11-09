@@ -67,28 +67,34 @@ static void RefreshGfx7TargetSizes(CommandProcessor& cp) {
 		return visible > 0 && static_cast<uint32_t>(visible) < padded ? static_cast<uint32_t>(visible)
 		                                                              : padded;
 	};
-	// The scissor only reveals a surface's visible size when the difference is tiling padding. A
-	// much narrower scissor is a draw into part of a larger surface (a console's emulated VRAM).
-	const auto partial = [&vp](uint32_t padded) {
-		constexpr uint32_t MaxPitchPadding = 256u;
-		return vp.screen_scissor_right > 0 && static_cast<uint32_t>(vp.screen_scissor_right) < padded &&
-		       padded - static_cast<uint32_t>(vp.screen_scissor_right) > MaxPitchPadding;
+	// The scissor only reveals a surface's visible size when tiling alignment explains the
+	// difference. Otherwise the draw covers part of a larger surface: a console's emulated VRAM,
+	// or a picture centered between side bars.
+	const auto not_padding = [](int visible, uint32_t padded, uint32_t alignment) {
+		return visible > 0 && static_cast<uint32_t>(visible) < padded &&
+		       ((static_cast<uint32_t>(visible) + alignment - 1u) & ~(alignment - 1u)) < padded;
 	};
+	constexpr uint32_t MaxPitchAlignment  = 256u;
+	constexpr uint32_t MaxHeightAlignment = 64u;
 	for (uint32_t slot = 0; slot < 8u; slot++) {
 		auto attrib2 = cp.GetCtx().GetRenderTarget(slot).attrib2;
 		if (attrib2.gfx7_pitch == 0u || attrib2.gfx7_height == 0u) {
 			continue;
 		}
-		const bool keep = partial(attrib2.gfx7_pitch);
+		const bool keep = not_padding(vp.screen_scissor_right, attrib2.gfx7_pitch, MaxPitchAlignment);
+		const bool keep_height =
+		    keep && not_padding(vp.screen_scissor_bottom, attrib2.gfx7_height, MaxHeightAlignment);
 		attrib2.width   = (keep ? attrib2.gfx7_pitch : clamp(attrib2.gfx7_pitch, vp.screen_scissor_right)) - 1u;
-		attrib2.height  = (keep ? attrib2.gfx7_height : clamp(attrib2.gfx7_height, vp.screen_scissor_bottom)) - 1u;
+		attrib2.height  = (keep_height ? attrib2.gfx7_height : clamp(attrib2.gfx7_height, vp.screen_scissor_bottom)) - 1u;
 		cp.GetCtx().SetColorAttrib2(slot, attrib2);
 	}
 	auto size = cp.GetCtx().GetDepthRenderTarget().size;
 	if (size.gfx7_pitch != 0u && size.gfx7_height != 0u) {
-		const bool keep = partial(size.gfx7_pitch);
+		const bool keep = not_padding(vp.screen_scissor_right, size.gfx7_pitch, MaxPitchAlignment);
+		const bool keep_height =
+		    keep && not_padding(vp.screen_scissor_bottom, size.gfx7_height, MaxHeightAlignment);
 		size.x_max = static_cast<uint16_t>((keep ? size.gfx7_pitch : clamp(size.gfx7_pitch, vp.screen_scissor_right)) - 1u);
-		size.y_max = static_cast<uint16_t>((keep ? size.gfx7_height : clamp(size.gfx7_height, vp.screen_scissor_bottom)) - 1u);
+		size.y_max = static_cast<uint16_t>((keep_height ? size.gfx7_height : clamp(size.gfx7_height, vp.screen_scissor_bottom)) - 1u);
 		cp.GetCtx().SetDepthDepthSizeXY(size);
 	}
 }
