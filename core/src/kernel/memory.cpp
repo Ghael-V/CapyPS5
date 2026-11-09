@@ -4,6 +4,7 @@
 
 #include "kernel/memory.h"
 #include "common/debugFlags.h"
+#include "graphics/shader/recompiler/frontend/decode/ShaderDecoder.h"
 
 #include "common/assert.h"
 #include "common/logging/log.h"
@@ -4382,6 +4383,13 @@ int KYTY_SYSV_ABI KernelAvailableFlexibleMemorySize(size_t* size) {
 	}
 
 	*size = g_flexible_memory->Available();
+	if (Graphics::ShaderRecompiler::Decoder::GetGuestIsa() == Graphics::ShaderRecompiler::Decoder::GuestIsa::Gfx7) {
+		// A PS4 game budgets for the console's 448 MiB of flexible memory; a larger figure makes
+		// its "used = 448 MiB - available" go negative. The extra space stays allocatable.
+		constexpr uint64_t Ps4FlexibleSize = 448ull * 1024ull * 1024ull;
+		const uint64_t     allocated       = FlexibleMemory::Size() - *size;
+		*size                              = allocated < Ps4FlexibleSize ? Ps4FlexibleSize - allocated : 0u;
+	}
 
 	LOGF("\t *size = 0x%016" PRIx64 "\n", *size);
 
