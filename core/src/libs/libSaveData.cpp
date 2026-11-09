@@ -1033,6 +1033,12 @@ int KYTY_SYSV_ABI SaveDataMount2(const SaveDataMount2Ps4* mount, SaveDataMountRe
 	return MountPs4(mount->user_id, mount->dir_name, mount->blocks, mount->mount_mode, mount_result);
 }
 
+// Backups are not emulated: a plain unmount, with nothing to report asynchronously.
+int KYTY_SYSV_ABI SaveDataUmountWithBackup(const SaveDataMountPoint* mount_point) {
+	PRINT_NAME();
+	return SaveDataUmount2(0, mount_point);
+}
+
 int KYTY_SYSV_ABI SaveDataUmount(const SaveDataMountPoint* mount_point) {
 	PRINT_NAME();
 	return SaveDataUmount2(0, mount_point);
@@ -1374,6 +1380,7 @@ LIB_DEFINE(InitSaveDataNative_1) {
 	LIB_FUNC("32HQAQdwM2o", ::Libs::SaveData::SaveDataMount);
 	LIB_FUNC("0z45PIH+SNI", ::Libs::SaveData::SaveDataMount2);
 	LIB_FUNC("BMR4F-Uek3E", ::Libs::SaveData::SaveDataUmount);
+	LIB_FUNC("VwadwBBBJ80", ::Libs::SaveData::SaveDataUmountWithBackup);
 	LIB_FUNC("dyIhnXq-0SM", ::Libs::SaveData::SaveDataDirNameSearch);
 	LIB_FUNC("PHnuI4LhuRk", ::Libs::SaveData::SaveDataDirNameSearch);
 	LIB_FUNC("ZP4e7rlzOUk", ::Libs::SaveData::SaveDataMount3);
@@ -1409,6 +1416,7 @@ LIB_DEFINE(InitSaveData_1) {
 	LIB_FUNC("32HQAQdwM2o", SaveData::SaveDataMount);
 	LIB_FUNC("0z45PIH+SNI", SaveData::SaveDataMount2);
 	LIB_FUNC("BMR4F-Uek3E", SaveData::SaveDataUmount);
+	LIB_FUNC("VwadwBBBJ80", SaveData::SaveDataUmountWithBackup);
 	LIB_FUNC("dyIhnXq-0SM", SaveData::SaveDataDirNameSearch);
 	LIB_FUNC("ZP4e7rlzOUk", SaveData::SaveDataMount3);
 	LIB_FUNC("gjRZNnw0JPE", SaveData::SaveDataCreateTransactionResource);
