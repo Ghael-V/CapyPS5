@@ -121,6 +121,60 @@ constexpr std::array<uint32_t, 115> DefaultHardwareState {
     0xc0017900u, 0x200u, 0xe0000000u,
 };
 
+// The same state for games built with later SDKs.
+constexpr std::array<uint32_t, 115> DefaultHardwareState175 {
+    0xc0017600u, 0x216u, 0xffffffffu, 0xc0017600u, 0x217u, 0xffffffffu, 0xc0017600u, 0x215u,
+    0u, 0xc0016900u, 0x2f9u, 0x2du, 0xc0016900u, 0x282u, 8u, 0xc0016900u,
+    0x280u, 0x80008u, 0xc0016900u, 0x281u, 0xffff0000u, 0xc0016900u, 0x204u, 0u,
+    0xc0016900u, 0x206u, 0x43fu, 0xc0016900u, 0x83u, 0xffffu, 0xc0016900u, 0x317u,
+    0x10u, 0xc0016900u, 0x2fau, 0x3f800000u, 0xc0016900u, 0x2fcu, 0x3f800000u, 0xc0016900u,
+    0x2fbu, 0x3f800000u, 0xc0016900u, 0x2fdu, 0x3f800000u, 0xc0016900u, 0x202u, 0xcc0010u,
+    0xc0016900u, 0x30eu, 0xffffffffu, 0xc0016900u, 0x30fu, 0xffffffffu, 0xc0002f00u, 1u,
+    0xc0017600u, 7u, 0x1ffu, 0xc0017600u, 0x46u, 0x1ffu, 0xc0017600u, 0x87u,
+    0x1ffu, 0xc0017600u, 0xc7u, 0x1ffu, 0xc0017600u, 0x107u, 0u, 0xc0017600u,
+    0x147u, 0x1ffu, 0xc0016900u, 0x1b1u, 2u, 0xc0016900u, 0x101u, 0u,
+    0xc0016900u, 0x100u, 0xffffffffu, 0xc0016900u, 0x103u, 0u, 0xc0016900u, 0x284u,
+    0u, 0xc0016900u, 0x290u, 0u, 0xc0016900u, 0x2aeu, 0u, 0xc0016900u,
+    0x292u, 0u, 0xc0016900u, 0x293u, 0x6020000u, 0xc0016900u, 0x2f8u, 0u,
+    0xc0016900u, 0x2deu, 0x1e9u, 0xc0036900u, 0x295u, 0x100u, 0x100u, 4u,
+    0xc0017900u, 0x200u, 0xe0000000u,
+};
+constexpr std::array<uint32_t, 118> DefaultHardwareState200 {
+    0xc0017600u, 0x216u, 0xffffffffu, 0xc0017600u, 0x217u, 0xffffffffu, 0xc0017600u, 0x215u,
+    0u, 0xc0016900u, 0x2f9u, 0x2du, 0xc0016900u, 0x282u, 8u, 0xc0016900u,
+    0x280u, 0x80008u, 0xc0016900u, 0x281u, 0xffff0000u, 0xc0016900u, 0x204u, 0u,
+    0xc0016900u, 0x206u, 0x43fu, 0xc0016900u, 0x83u, 0xffffu, 0xc0016900u, 0x317u,
+    0x10u, 0xc0016900u, 0x2fau, 0x3f800000u, 0xc0016900u, 0x2fcu, 0x3f800000u, 0xc0016900u,
+    0x2fbu, 0x3f800000u, 0xc0016900u, 0x2fdu, 0x3f800000u, 0xc0016900u, 0x202u, 0xcc0010u,
+    0xc0016900u, 0x30eu, 0xffffffffu, 0xc0016900u, 0x30fu, 0xffffffffu, 0xc0002f00u, 1u,
+    0xc0017600u, 7u, 0x1701ffu, 0xc0017600u, 0x46u, 0x1701fdu, 0xc0017600u, 0x87u,
+    0x1701ffu, 0xc0017600u, 0xc7u, 0x1701fdu, 0xc0017600u, 0x107u, 0x17u, 0xc0017600u,
+    0x147u, 0x1701fdu, 0xc0017600u, 0x47u, 0x1cu, 0xc0016900u, 0x1b1u, 2u,
+    0xc0016900u, 0x101u, 0u, 0xc0016900u, 0x100u, 0xffffffffu, 0xc0016900u, 0x103u,
+    0u, 0xc0016900u, 0x284u, 0u, 0xc0016900u, 0x290u, 0u, 0xc0016900u,
+    0x2aeu, 0u, 0xc0016900u, 0x292u, 0u, 0xc0016900u, 0x293u, 0x6020000u,
+    0xc0016900u, 0x2f8u, 0u, 0xc0016900u, 0x2deu, 0x1e9u, 0xc0036900u, 0x295u,
+    0x100u, 0x100u, 4u, 0xc0017900u, 0x200u, 0xe0000000u,
+};
+constexpr std::array<uint32_t, 124> DefaultHardwareState350 {
+    0xc0017600u, 0x216u, 0xffffffffu, 0xc0017600u, 0x217u, 0xffffffffu, 0xc0017600u, 0x215u,
+    0u, 0xc0016900u, 0x2f9u, 0x2du, 0xc0016900u, 0x282u, 8u, 0xc0016900u,
+    0x280u, 0x80008u, 0xc0016900u, 0x281u, 0xffff0000u, 0xc0016900u, 0x204u, 0u,
+    0xc0016900u, 0x206u, 0x43fu, 0xc0016900u, 0x83u, 0xffffu, 0xc0016900u, 0x317u,
+    0x10u, 0xc0016900u, 0x2fau, 0x3f800000u, 0xc0016900u, 0x2fcu, 0x3f800000u, 0xc0016900u,
+    0x2fbu, 0x3f800000u, 0xc0016900u, 0x2fdu, 0x3f800000u, 0xc0016900u, 0x202u, 0xcc0010u,
+    0xc0016900u, 0x30eu, 0xffffffffu, 0xc0016900u, 0x30fu, 0xffffffffu, 0xc0002f00u, 1u,
+    0xc0017600u, 7u, 0x1701ffu, 0xc0017600u, 0x46u, 0x1701fdu, 0xc0017600u, 0x87u,
+    0x1701ffu, 0xc0017600u, 0xc7u, 0x1701fdu, 0xc0017600u, 0x107u, 0x17u, 0xc0017600u,
+    0x147u, 0x1701fdu, 0xc0017600u, 0x47u, 0x1cu, 0xc0016900u, 0x1b1u, 2u,
+    0xc0016900u, 0x101u, 0u, 0xc0016900u, 0x100u, 0xffffffffu, 0xc0016900u, 0x103u,
+    0u, 0xc0016900u, 0x284u, 0u, 0xc0016900u, 0x290u, 0u, 0xc0016900u,
+    0x2aeu, 0u, 0xc0016900u, 0x102u, 0u, 0xc0016900u, 0x292u, 0u,
+    0xc0016900u, 0x293u, 0x6020000u, 0xc0016900u, 0x2f8u, 0u, 0xc0016900u, 0x2deu,
+    0x1e9u, 0xc0036900u, 0x295u, 0x100u, 0x100u, 4u, 0xc0017900u, 0x200u,
+    0xe0000000u, 0xc0016900u, 0x2aau, 0xffu,
+};
+
 struct ComputeQueue {
 	uint32_t* ring      = nullptr;
 	uint32_t  ring_dw   = 0;
@@ -370,6 +424,144 @@ uint32_t KYTY_SYSV_ABI GnmDrawInitDefaultHardwareState(uint32_t* cmd, uint32_t s
 	return HwInitPacketSize;
 }
 
+template <size_t N>
+uint32_t WriteDefaultHardwareState(uint32_t* cmd, uint32_t size, const std::array<uint32_t, N>& state) {
+	if (cmd == nullptr || size < HwInitPacketSize) {
+		return 0;
+	}
+	auto* out = cmd;
+	*out++    = Type3(PacketClearState, 1);
+	*out++    = 0;
+	std::memcpy(out, state.data(), state.size() * sizeof(uint32_t));
+	out += state.size();
+	WriteNop(out, static_cast<uint32_t>(cmd + HwInitPacketSize - out));
+	return HwInitPacketSize;
+}
+
+uint32_t KYTY_SYSV_ABI GnmDrawInitDefaultHardwareState175(uint32_t* cmd, uint32_t size) {
+	PRINT_NAME();
+	return WriteDefaultHardwareState(cmd, size, DefaultHardwareState175);
+}
+
+uint32_t KYTY_SYSV_ABI GnmDrawInitDefaultHardwareState200(uint32_t* cmd, uint32_t size) {
+	PRINT_NAME();
+	return WriteDefaultHardwareState(cmd, size, DefaultHardwareState200);
+}
+
+uint32_t KYTY_SYSV_ABI GnmDrawInitDefaultHardwareState350(uint32_t* cmd, uint32_t size) {
+	PRINT_NAME();
+	return WriteDefaultHardwareState(cmd, size, DefaultHardwareState350);
+}
+
+// ---- Draws, for games that call the driver instead of writing the packets themselves. ----
+
+int KYTY_SYSV_ABI GnmDrawIndex(uint32_t* cmd, uint32_t size, uint32_t index_count, uint64_t index_addr,
+                               uint32_t flags, uint32_t type) {
+	PRINT_NAME();
+	(void)type;
+	if (cmd == nullptr || size != 10 || index_addr == 0 || (index_addr & 1u) != 0 ||
+	    (flags & 0x1ffffffeu) != 0) {
+		return -1;
+	}
+	*cmd++ = Type3(0x27, 5); // DRAW_INDEX_2
+	*cmd++ = index_count;
+	*cmd++ = static_cast<uint32_t>(index_addr);
+	*cmd++ = static_cast<uint32_t>(index_addr >> 32u);
+	*cmd++ = index_count;
+	*cmd++ = 0;
+	WriteNop(cmd, 4);
+	return OK;
+}
+
+int KYTY_SYSV_ABI GnmDrawIndexAuto(uint32_t* cmd, uint32_t size, uint32_t index_count, uint32_t flags) {
+	PRINT_NAME();
+	if (cmd == nullptr || size != 7 || (flags & 0x1ffffffeu) != 0) {
+		return -1;
+	}
+	*cmd++ = Type3(0x2d, 2); // DRAW_INDEX_AUTO
+	*cmd++ = index_count;
+	*cmd++ = 2; // auto-generated indices
+	WriteNop(cmd, 4);
+	return OK;
+}
+
+// PS4 PS setter of SDK 3.50 and later: the null shader also resets CB_SHADER_MASK.
+int KYTY_SYSV_ABI GnmSetPsShader350(uint32_t* cmd, uint32_t size, const uint32_t* regs) {
+	PRINT_NAME();
+	if (regs != nullptr) {
+		return GnmSetPsShader(cmd, size, regs);
+	}
+	uint32_t* const start = cmd;
+	if (cmd == nullptr || size <= 0x27) {
+		return -1;
+	}
+	cmd = SetShReg(cmd, 0x08, {0, 0});      // SPI_SHADER_PGM_LO/HI_PS
+	cmd = SetContextReg(cmd, 0x203, {0});   // DB_SHADER_CONTROL
+	cmd = SetContextReg(cmd, 0x08f, {0xf}); // CB_SHADER_MASK
+	TrailingNop(cmd, start, size, 0x1d);
+	return OK;
+}
+
+// IA_MULTI_VGT_PARAM only tunes how the PS4 hardware splits primitive groups: nothing to do on a
+// host GPU, so the region is filler.
+int KYTY_SYSV_ABI GnmSetVgtControl(uint32_t* cmd, uint32_t size, uint32_t prim_group_minus_one,
+                                   uint32_t partial_vs_wave, uint32_t wd_switch_only_on_eop) {
+	PRINT_NAME();
+	if (cmd == nullptr || size != 3 || prim_group_minus_one >= 0x100u ||
+	    (partial_vs_wave | wd_switch_only_on_eop) >= 2u) {
+		return -1;
+	}
+	WriteNop(cmd, 3);
+	return OK;
+}
+
+// Debug markers are only filler for the GPU, of the size the game reserved.
+int KYTY_SYSV_ABI GnmInsertMarker(uint32_t* cmd, uint32_t size, const char* marker) {
+	PRINT_NAME();
+	(void)marker;
+	if (cmd == nullptr || size < 2) {
+		return -1;
+	}
+	WriteNop(cmd, size);
+	return OK;
+}
+
+int KYTY_SYSV_ABI GnmInsertPopMarker(uint32_t* cmd, uint32_t size) {
+	PRINT_NAME();
+	if (cmd == nullptr || size != 6) {
+		return -1;
+	}
+	WriteNop(cmd, size);
+	return OK;
+}
+
+// Workloads only group submissions for profiling tools.
+int KYTY_SYSV_ABI GnmCreateWorkloadStream(uint64_t name, uint32_t* stream) {
+	PRINT_NAME();
+	if (name == 0 || stream == nullptr) {
+		return 3;
+	}
+	*stream = 1;
+	return OK;
+}
+
+int KYTY_SYSV_ABI GnmBeginWorkload(uint32_t stream, uint64_t* workload) {
+	PRINT_NAME();
+	if (workload == nullptr) {
+		return 3;
+	}
+	*workload = stream < 0x10u ? 1u : 0u;
+	return stream < 0x10u ? 0 : 1;
+}
+
+int KYTY_SYSV_ABI GnmEndWorkload(uint64_t workload) {
+	PRINT_NAME();
+	if (workload == 0) {
+		return 2;
+	}
+	return ((workload >> 0x38u) & 0xffu) > 0xfu ? 2 : 0;
+}
+
 uint32_t KYTY_SYSV_ABI GnmDispatchInitDefaultHardwareState(uint32_t* cmd, uint32_t size) {
 	PRINT_NAME();
 	if (cmd == nullptr || size < HwInitPacketSize) {
@@ -402,9 +594,19 @@ int KYTY_SYSV_ABI GnmInsertWaitFlipDone(uint32_t* cmd, uint32_t size, int handle
 
 // ---- Submission ----
 
+static void NoteSubmission(uint32_t count, uint32_t* const* dcbs, const uint32_t* dcb_bytes) {
+	for (uint32_t i = 0; dcbs != nullptr && dcb_bytes != nullptr && i < count; i++) {
+		Common::DebugFlags::NoteOnce("CapyPS5-GnmSubmit",
+		                             reinterpret_cast<uint64_t>(dcbs[i]) ^ (static_cast<uint64_t>(dcb_bytes[i]) << 48u),
+		                             "submit %u/%u dcb=%p bytes=0x%x", i, count, static_cast<void*>(dcbs[i]),
+		                             dcb_bytes[i]);
+	}
+}
+
 int KYTY_SYSV_ABI GnmSubmitCommandBuffers(uint32_t count, uint32_t* const* dcbs, const uint32_t* dcb_bytes,
                                           uint32_t* const* ccbs, const uint32_t* ccb_bytes) {
 	PRINT_NAME();
+	NoteSubmission(count, dcbs, dcb_bytes);
 	if (count != 0 && (dcbs == nullptr || dcb_bytes == nullptr || !ValidSizes(count, dcb_bytes, ccb_bytes))) {
 		return GnmErrorSubmissionFailed;
 	}
@@ -417,6 +619,7 @@ int KYTY_SYSV_ABI GnmSubmitAndFlipCommandBuffers(uint32_t count, uint32_t* const
                                                  const uint32_t* ccb_bytes, uint32_t handle,
                                                  uint32_t index, uint32_t flip_mode, int64_t flip_arg) {
 	PRINT_NAME();
+	NoteSubmission(count, dcbs, dcb_bytes);
 	if (count == 0 || dcbs == nullptr || dcb_bytes == nullptr || !ValidSizes(count, dcb_bytes, ccb_bytes)) {
 		return GnmErrorSubmissionFailed;
 	}
@@ -427,6 +630,26 @@ int KYTY_SYSV_ABI GnmSubmitAndFlipCommandBuffers(uint32_t count, uint32_t* const
 		return result;
 	}
 	return SubmitBuffers(count, dcbs, dcb_bytes, ccbs, ccb_bytes);
+}
+
+// The workload variants take the workload id first; it is only a profiling tag.
+int KYTY_SYSV_ABI GnmSubmitCommandBuffersForWorkload(uint64_t workload, uint32_t count, uint32_t* const* dcbs,
+                                                     const uint32_t* dcb_bytes, uint32_t* const* ccbs,
+                                                     const uint32_t* ccb_bytes) {
+	PRINT_NAME();
+	(void)workload;
+	return GnmSubmitCommandBuffers(count, dcbs, dcb_bytes, ccbs, ccb_bytes);
+}
+
+int KYTY_SYSV_ABI GnmSubmitAndFlipCommandBuffersForWorkload(uint64_t workload, uint32_t count,
+                                                            uint32_t* const* dcbs, const uint32_t* dcb_bytes,
+                                                            uint32_t* const* ccbs, const uint32_t* ccb_bytes,
+                                                            uint32_t handle, uint32_t index, uint32_t flip_mode,
+                                                            int64_t flip_arg) {
+	PRINT_NAME();
+	(void)workload;
+	return GnmSubmitAndFlipCommandBuffers(count, dcbs, dcb_bytes, ccbs, ccb_bytes, handle, index, flip_mode,
+	                                      flip_arg);
 }
 
 int KYTY_SYSV_ABI GnmSubmitDone() {
@@ -608,9 +831,24 @@ LIB_DEFINE(InitGnmDriver_1) {
 	LIB_FUNC("VJNjFtqiF5w", Gnm::GnmSetHsShader);
 	LIB_FUNC("vckdzbQ46SI", Gnm::GnmSetLsShader);
 	LIB_FUNC("Idffwf3yh8s", Gnm::GnmDrawInitDefaultHardwareState);
+	LIB_FUNC("QhnyReteJ1M", Gnm::GnmDrawInitDefaultHardwareState175);
+	LIB_FUNC("0H2vBYbTLHI", Gnm::GnmDrawInitDefaultHardwareState200);
+	LIB_FUNC("yb2cRhagD1I", Gnm::GnmDrawInitDefaultHardwareState350);
+	LIB_FUNC("HlTPoZ-oY7Y", Gnm::GnmDrawIndex);
+	LIB_FUNC("GGsn7jMTxw4", Gnm::GnmDrawIndexAuto);
+	LIB_FUNC("5uFKckiJYRM", Gnm::GnmSetPsShader350);
+	LIB_FUNC("cFCp0NX8wf0", Gnm::GnmSetVgtControl);
+	LIB_FUNC("jiItzS6+22g", Gnm::GnmInsertMarker); // SetMarker
+	LIB_FUNC("W1Etj-jlW7Y", Gnm::GnmInsertMarker); // PushMarker
+	LIB_FUNC("7qZVNgEu+SY", Gnm::GnmInsertPopMarker);
+	LIB_FUNC("5udAm+6boVg", Gnm::GnmCreateWorkloadStream);
+	LIB_FUNC("ihxrbsoSKWc", Gnm::GnmBeginWorkload);
+	LIB_FUNC("Fa3x75OOLRA", Gnm::GnmEndWorkload);
 	LIB_FUNC("nF6bFRUBRAU", Gnm::GnmDispatchInitDefaultHardwareState);
 	LIB_FUNC("1qXLHIpROPE", Gnm::GnmInsertWaitFlipDone);
 	LIB_FUNC("zwY0YV91TTI", Gnm::GnmSubmitCommandBuffers);
+	LIB_FUNC("jRcI8VcgTz4", Gnm::GnmSubmitCommandBuffersForWorkload);
+	LIB_FUNC("Ga6r7H6Y0RI", Gnm::GnmSubmitAndFlipCommandBuffersForWorkload);
 	LIB_FUNC("xbxNatawohc", Gnm::GnmSubmitAndFlipCommandBuffers);
 	LIB_FUNC("yvZ73uQUqrk", Gnm::GnmSubmitDone);
 	LIB_FUNC("gObODli-OH8", Gnm::GnmRequestFlipAndSubmitDone);

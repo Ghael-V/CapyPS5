@@ -91,8 +91,23 @@
 #define PTHREAD_CANCEL_ASYNCHRONOUS 1
 #endif
 static inline int pthread_cancel(pthread_t) { return 0; }
-static inline int pthread_setcancelstate(int, int*) { return 0; }
-static inline int pthread_setcanceltype(int, int*) { return 0; }
+// Bionic has no thread cancellation; the state is only remembered, so a caller gets back what it set.
+static thread_local int g_cancel_state = PTHREAD_CANCEL_ENABLE;
+static thread_local int g_cancel_type  = PTHREAD_CANCEL_DEFERRED;
+static inline int pthread_setcancelstate(int state, int* old_state) {
+	if (old_state != nullptr) {
+		*old_state = g_cancel_state;
+	}
+	g_cancel_state = state;
+	return 0;
+}
+static inline int pthread_setcanceltype(int type, int* old_type) {
+	if (old_type != nullptr) {
+		*old_type = g_cancel_type;
+	}
+	g_cancel_type = type;
+	return 0;
+}
 static inline void pthread_testcancel(void) {}
 #endif
 
@@ -3880,6 +3895,35 @@ int KYTY_SYSV_ABI KernelGettimezone(KernelTimezone* tz) {
 	return OK;
 }
 
+namespace {
+
+// The host time zone at one moment. DST has to follow the date asked about: libc on PS4 looks for
+// the transitions by walking back through time until the DST offset changes.
+struct ZoneOffset {
+	int64_t standard_sec; // east of UTC, without DST
+	int64_t dst_sec;
+};
+
+ZoneOffset ZoneOffsetAt(int64_t utc_time) {
+	const auto host_time = static_cast<time_t>(utc_time);
+	struct tm  local {};
+#if KYTY_PLATFORM == KYTY_PLATFORM_WINDOWS
+	if (localtime_s(&local, &host_time) != 0) {
+		return {0, 0};
+	}
+	const int64_t utc_offset = static_cast<int64_t>(_mkgmtime(&local)) - utc_time;
+#else
+	if (localtime_r(&host_time, &local) == nullptr) {
+		return {0, 0};
+	}
+	const int64_t utc_offset = local.tm_gmtoff;
+#endif
+	const int64_t dst = local.tm_isdst > 0 ? 3600 : 0;
+	return {utc_offset - dst, dst};
+}
+
+} // namespace
+
 int KYTY_SYSV_ABI KernelConvertLocaltimeToUtc(int64_t  local_time, int64_t /*reserved*/,
                                               int64_t* utc_time, KernelTimezone* timezone,
                                               int32_t* dst_seconds) {
@@ -3889,20 +3933,18 @@ int KYTY_SYSV_ABI KernelConvertLocaltimeToUtc(int64_t  local_time, int64_t /*res
 		return KERNEL_ERROR_EINVAL;
 	}
 
-	KernelTimezone local_timezone {};
-	auto           ret = KernelGettimezone(&local_timezone);
-	if (ret != OK) {
-		return ret;
-	}
+	// The offset depends on the UTC time being computed: estimate it, then refine once.
+	auto zone = ZoneOffsetAt(local_time);
+	zone      = ZoneOffsetAt(local_time - zone.standard_sec - zone.dst_sec);
 
-	const auto dst_sec = GetDstSeconds();
-	*timezone          = local_timezone;
+	timezone->tz_minuteswest = static_cast<int32_t>(-zone.standard_sec / 60);
+	timezone->tz_dsttime     = zone.dst_sec != 0 ? 1 : 0;
 
 	if (utc_time != nullptr) {
-		*utc_time = local_time + static_cast<int64_t>(local_timezone.tz_minuteswest) * 60 - dst_sec;
+		*utc_time = local_time - zone.standard_sec - zone.dst_sec;
 	}
 	if (dst_seconds != nullptr) {
-		*dst_seconds = dst_sec;
+		*dst_seconds = static_cast<int32_t>(zone.dst_sec);
 	}
 
 	return OK;
@@ -3912,24 +3954,17 @@ int KYTY_SYSV_ABI KernelConvertUtcToLocaltime(int64_t utc_time, int64_t* local_t
                                               KernelTimesec* st, uint64_t* dst_sec) {
 	// Hot path in Unity's time/date code.
 
-	KernelTimezone tz {};
-	auto           ret = KernelGettimezone(&tz);
-	if (ret != OK) {
-		return ret;
-	}
-
-	const auto dst  = static_cast<int64_t>(GetDstSeconds());
-	const auto west = static_cast<int64_t>(tz.tz_minuteswest) * 60;
+	const auto zone = ZoneOffsetAt(utc_time);
 	if (local_time != nullptr) {
-		*local_time = utc_time - west + dst;
+		*local_time = utc_time + zone.standard_sec + zone.dst_sec;
 	}
 	if (st != nullptr) {
 		st->t        = utc_time;
-		st->west_sec = static_cast<uint32_t>(-west);
-		st->dst_sec  = static_cast<uint32_t>(dst);
+		st->west_sec = static_cast<uint32_t>(zone.standard_sec);
+		st->dst_sec  = static_cast<uint32_t>(zone.dst_sec);
 	}
 	if (dst_sec != nullptr) {
-		*dst_sec = static_cast<uint64_t>(dst);
+		*dst_sec = static_cast<uint64_t>(zone.dst_sec);
 	}
 
 	return OK;
