@@ -454,6 +454,30 @@ uint32_t KYTY_SYSV_ABI GnmDrawInitToDefaultContextState400(uint32_t* cmd, uint32
 	return WriteDefaultContextState(cmd, size, DefaultContextState400);
 }
 
+int KYTY_SYSV_ABI GnmComputeWaitOnAddress(uint32_t* cmd, uint32_t size, uint64_t addr, uint32_t mask,
+                                          uint32_t func, uint32_t ref) {
+	PRINT_NAME();
+	if (cmd == nullptr || size != 0xeu) {
+		return -1;
+	}
+	WriteNop(cmd, 3u);
+	const uint32_t is_mem = addr > 0xffffu ? 1u : 0u;
+	cmd[3]  = Type3(0x3cu, 6u); // WAIT_REG_MEM
+	cmd[4]  = (is_mem << 4u) | (func & 7u);
+	cmd[5]  = static_cast<uint32_t>(addr) & (is_mem != 0u ? 0xfffffffcu : 0xffffu);
+	cmd[6]  = static_cast<uint32_t>(addr >> 32u);
+	cmd[7]  = ref;
+	cmd[8]  = mask;
+	cmd[9]  = 10u;
+	WriteNop(cmd + 10, 4u);
+	return OK;
+}
+
+uint32_t KYTY_SYSV_ABI GnmGetGpuCoreClockFrequency() {
+	PRINT_NAME();
+	return 800000000u;
+}
+
 uint32_t KYTY_SYSV_ABI GnmDrawInitDefaultHardwareState(uint32_t* cmd, uint32_t size) {
 	PRINT_NAME();
 	if (cmd == nullptr || size < HwInitPacketSize) {
@@ -904,6 +928,8 @@ LIB_DEFINE(InitGnmDriver_1) {
 	LIB_FUNC("VJNjFtqiF5w", Gnm::GnmSetHsShader);
 	LIB_FUNC("vckdzbQ46SI", Gnm::GnmSetLsShader);
 	LIB_FUNC("Idffwf3yh8s", Gnm::GnmDrawInitDefaultHardwareState);
+	LIB_FUNC("ffrNQOshows", Gnm::GnmComputeWaitOnAddress);
+	LIB_FUNC("Fwvh++m9IQI", Gnm::GnmGetGpuCoreClockFrequency);
 	LIB_FUNC("8lH54sfjfmU", Gnm::GnmDrawInitToDefaultContextState);
 	LIB_FUNC("im2ZuItabu4", Gnm::GnmDrawInitToDefaultContextState400);
 	LIB_FUNC("QhnyReteJ1M", Gnm::GnmDrawInitDefaultHardwareState175);

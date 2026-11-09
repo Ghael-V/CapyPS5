@@ -15,6 +15,7 @@
 #include "graphics/host_gpu/graphicContext.h"
 #include "graphics/host_gpu/renderer/cache/bufferCache.h"
 #include "graphics/host_gpu/renderer/commandScheduler.h"
+#include "graphics/shader/recompiler/frontend/decode/ShaderDecoder.h"
 #include "graphics/host_gpu/renderer/image/imageView.h"
 #include "graphics/host_gpu/renderer/image/textureCommon.h"
 #include "graphics/host_gpu/renderer/image/tiler.h"
@@ -849,6 +850,18 @@ TextureCache::OverlapResult TextureCache::ResolveOverlap(const ImageInfo& reques
 
 	const uint32_t requested_block = requested.bytes_per_block * requested.samples;
 	const uint32_t cached_block    = cached.info.bytes_per_block * cached.info.samples;
+	// A PS4 color target has no 3D mode: a volume is drawn slice by slice into layers and then
+	// sampled as 3D (Unreal's color grading LUT). Vulkan cannot view one as the other, so the
+	// image changes shape, keeping its contents, each time the use changes. Tiling and pitch differ
+	// too: the T# of a thick surface is read as linear, the target is displayable.
+	if (ShaderRecompiler::Decoder::GetGuestIsa() == ShaderRecompiler::Decoder::GuestIsa::Gfx7 &&
+	    requested.data.address == cached.info.data.address && requested_block == cached_block &&
+	    requested.IsVolume() != cached.info.IsVolume() &&
+	    requested.extent.width == cached.info.extent.width &&
+	    requested.extent.height == cached.info.extent.height &&
+	    requested.TransferLayers() == cached.info.TransferLayers()) {
+		return {ExpandImage(requested, cached_id)};
+	}
 	if (requested.data.address == cached.info.data.address &&
 	    requested.BlockExtent() == cached.info.BlockExtent() && requested_block == cached_block) {
 		if (const auto depth_id = ResolveDepthOverlap(requested, binding, cached_id)) {
