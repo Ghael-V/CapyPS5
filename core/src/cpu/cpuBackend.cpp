@@ -1196,7 +1196,9 @@ private:
 		initial_state.cs_idx = FEXCore::Core::CPUState::DEFAULT_USER_CS << 3;
 		initial_state.cs_cached = 0;
 		initial_state.pf_raw = 1;
-		initial_state.mxcsr = 0x1f80;
+		// The console FP environment: MXCSR with FTZ and DAZ set, all exceptions masked (the x87
+		// control word keeps its 0x37f default). With FEAT_AFP FEX turns DAZ into FPCR.FIZ.
+		initial_state.mxcsr = 0x9fc0;
 		initial_state.callret_sp = callret_sp;
 		initial_state.rip = entry_addr;
 		initial_state.gregs[FEXCore::X86State::REG_RSP] = rsp;
