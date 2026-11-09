@@ -205,4 +205,37 @@
         <item>Audio and network fixes from KytyPS5: NGS2 channel matrices and waveform blocks, Http2 and resolver calls, and functions for Palworld, Gran Turismo 7 and NHL 27.</item>
         <item>Many more KytyPS5 graphics fixes: depth textures, mip aliasing, render targets, video-out formats and fonts.</item>
     </string-array>
+    <string name="option_language">Console language</string>
+    <string name="option_language_desc">The language games are told the console uses. Games without it fall back to their own default.</string>
+    <string name="language_auto">Same as device</string>
+    <string name="language_ja" translatable="false">日本語</string>
+    <string name="language_en_us" translatable="false">English (US)</string>
+    <string name="language_en_gb" translatable="false">English (UK)</string>
+    <string name="language_fr" translatable="false">Français</string>
+    <string name="language_fr_ca" translatable="false">Français (Canada)</string>
+    <string name="language_es" translatable="false">Español (España)</string>
+    <string name="language_es_la" translatable="false">Español (Latinoamérica)</string>
+    <string name="language_de" translatable="false">Deutsch</string>
+    <string name="language_it" translatable="false">Italiano</string>
+    <string name="language_nl" translatable="false">Nederlands</string>
+    <string name="language_pt" translatable="false">Português (Portugal)</string>
+    <string name="language_pt_br" translatable="false">Português (Brasil)</string>
+    <string name="language_ru" translatable="false">Русский</string>
+    <string name="language_ko" translatable="false">한국어</string>
+    <string name="language_zh_t" translatable="false">繁體中文</string>
+    <string name="language_zh_s" translatable="false">简体中文</string>
+    <string name="language_fi" translatable="false">Suomi</string>
+    <string name="language_sv" translatable="false">Svenska</string>
+    <string name="language_da" translatable="false">Dansk</string>
+    <string name="language_no" translatable="false">Norsk</string>
+    <string name="language_pl" translatable="false">Polski</string>
+    <string name="language_tr" translatable="false">Türkçe</string>
+    <string name="language_ar" translatable="false">العربية</string>
+    <string name="language_cs" translatable="false">Čeština</string>
+    <string name="language_hu" translatable="false">Magyar</string>
+    <string name="language_el" translatable="false">Ελληνικά</string>
+    <string name="language_ro" translatable="false">Română</string>
+    <string name="language_th" translatable="false">ไทย</string>
+    <string name="language_vi" translatable="false">Tiếng Việt</string>
+    <string name="language_id" translatable="false">Bahasa Indonesia</string>
 </resources>

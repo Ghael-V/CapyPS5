@@ -200,4 +200,7 @@
         <item>Correcciones de audio y red de KytyPS5: matrices de canales y bloques de onda de NGS2, llamadas Http2 y de resolución, y funciones para Palworld, Gran Turismo 7 y NHL 27.</item>
         <item>Muchas más correcciones gráficas de KytyPS5: texturas de profundidad, mips, render targets, formatos de salida de vídeo y fuentes.</item>
     </string-array>
+    <string name="option_language">Idioma de la consola</string>
+    <string name="option_language_desc">El idioma que el juego cree que usa la consola. Si el juego no lo incluye, usará el suyo por defecto.</string>
+    <string name="language_auto">Igual que el dispositivo</string>
 </resources>

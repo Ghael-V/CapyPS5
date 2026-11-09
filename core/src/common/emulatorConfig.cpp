@@ -5,6 +5,7 @@
 #include "common/emulatorConfig.h"
 
 #include "common/assert.h"
+#include "common/debugFlags.h"
 
 #include <algorithm>
 #include <memory>
@@ -93,7 +94,10 @@ uint32_t GetVblankFrequency() {
 }
 
 uint32_t GetConsoleLanguage() {
-	return g_config->console_language;
+	// The Android frontend chooses it (debug.capy.language); negative leaves the configured one.
+	static Common::DebugFlags::CachedValue language("debug.capy.language", -1);
+	const auto value = language.Get();
+	return value >= 0 ? static_cast<uint32_t>(value) : g_config->console_language;
 }
 
 bool VulkanValidationEnabled() {
