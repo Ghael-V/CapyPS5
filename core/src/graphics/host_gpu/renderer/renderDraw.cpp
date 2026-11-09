@@ -1735,7 +1735,8 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 		Common::DebugFlags::FrameTrace(
 		    "draw %s n=%u inst=%u vs=0x%llx ps=0x%llx targets=%u rt0=0x%llx %ux%u fmt=%u tile=0x%x",
 		    draw.Name(), draw.index_count, draw.instance_count,
-		    static_cast<unsigned long long>(shaders.GetVs().gs_regs.data_addr),
+		    static_cast<unsigned long long>(shaders.GetVs().vs_regs.data_addr != 0 ? shaders.GetVs().vs_regs.data_addr
+		                                                                        : shaders.GetVs().gs_regs.data_addr),
 		    static_cast<unsigned long long>(shaders.GetPs().ps_regs.data_addr), state.color_count,
 		    static_cast<unsigned long long>(rt0 ? rt0->desc.info.data.address : 0),
 		    rt0 ? rt0->desc.info.extent.width : 0, rt0 ? rt0->desc.info.extent.height : 0,

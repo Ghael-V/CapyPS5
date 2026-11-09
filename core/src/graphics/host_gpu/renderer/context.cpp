@@ -191,8 +191,8 @@ void CommandBuffer::BeginRendering(const RenderState& state) const {
 	rendering.pDepthAttachment     = depth_stencil.has_depth ? &depth : nullptr;
 	rendering.pStencilAttachment   = depth_stencil.has_stencil ? &stencil : nullptr;
 	if (Common::DebugFlags::FrameTracing()) {
-		Common::DebugFlags::FrameTrace("  rp begin %ux%u colors=%u depth=%d dclear=%d", state.width,
-		                               state.height, state.num_color_attachments,
+		Common::DebugFlags::FrameTrace("  rp begin %ux%u layers=%u colors=%u depth=%d dclear=%d", state.width,
+		                               state.height, state.num_layers, state.num_color_attachments,
 		                               state.depth_stencil_attachment.has_depth ? 1 : 0,
 		                               state.depth_stencil_attachment.depth_clear ? 1 : 0);
 	}
