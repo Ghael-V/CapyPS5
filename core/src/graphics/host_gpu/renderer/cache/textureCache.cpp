@@ -909,6 +909,13 @@ TextureCache::OverlapResult TextureCache::ResolveOverlap(const ImageInfo& reques
 		      requested.resources.layers == cached.info.resources.layers))) {
 			return {ExpandImage(requested, cached_id)};
 		}
+		// A PS4 linear texture of another size at this address is new data the game loaded where
+		// an old texture was: the old image is simply stale.
+		if (requested.gfx7_linear && cached.info.gfx7_linear && !cached.IsGpuModified() &&
+		    (requested.extent != cached.info.extent || requested.data.size != cached.info.data.size)) {
+			FreeImage(cached_id);
+			return {merged_id};
+		}
 		if (requested.type != cached.info.type) {
 			return {merged_id};
 		}
@@ -1040,6 +1047,16 @@ void TextureCache::UploadGfx7MicroTiled(Image& image) {
 			copy.imageSubresource  = {vk::ImageAspectFlagBits::eColor, level, layer, 1};
 			copy.imageExtent       = vk::Extent3D {active.width, active.height, 1};
 			copies.push_back(copy);
+			if (info.gfx7_linear) {
+				for (uint32_t y = 0; y < rows; y++) {
+					const uint64_t source = slice + uint64_t {y} * layout.pitch * bytes;
+					if (source + uint64_t {columns} * bytes <= guest.size()) {
+						std::memcpy(out + out_offset, guest.data() + source, uint64_t {columns} * bytes);
+					}
+					out_offset += uint64_t {columns} * bytes;
+				}
+				continue;
+			}
 			for (uint32_t y = 0; y < rows; y++) {
 				for (uint32_t x = 0; x < columns; x++) {
 					const uint32_t element = (x & 1u) | ((y & 1u) << 1u) | ((x & 2u) << 1u) |
