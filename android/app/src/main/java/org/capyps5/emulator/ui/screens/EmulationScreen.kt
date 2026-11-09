@@ -72,6 +72,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.withContext
+import org.capyps5.emulator.CoreOption
 import org.capyps5.emulator.InputRouter
 import org.capyps5.emulator.NativeBridge
 import org.capyps5.emulator.OverlayMode
@@ -362,6 +363,7 @@ fun EmulationScreen(
         AnimatedVisibility(visible = showPauseMenu && !showSettings && !showLayers, enter = fadeIn(), exit = fadeOut()) {
             PauseMenu(
                 game = game,
+                settings = settings,
                 onResume = { showPauseMenu = false },
                 onSettings = { showSettings = true },
                 onLayers = {
@@ -394,15 +396,30 @@ fun EmulationScreen(
 @Composable
 private fun PauseMenu(
     game: GameItem,
+    settings: Settings,
     onResume: () -> Unit,
     onSettings: () -> Unit,
     onLayers: () -> Unit,
     onExit: () -> Unit,
 ) {
+    val context = LocalContext.current
+    // The core reads this option while the game runs, so it applies without a restart.
+    var frameGen by remember {
+        mutableStateOf(settings.effectiveOption(game.titleId, CoreOption.FrameGen, game.isUnreal))
+    }
+    val cycleFrameGen = {
+        val modes = CoreOption.FrameGen.choices.map { it.first }
+        val next = modes[(modes.indexOf(frameGen) + 1).mod(modes.size)]
+        frameGen = next
+        settings.updateGameOption(game.titleId, CoreOption.FrameGen, next)
+        NativeBridge.nativeSetOption(CoreOption.FrameGen.property, next)
+    }
+    val frameGenLabel = "FG: " + CoreOption.FrameGen.label(context, frameGen)
     val entries = listOf(
         Triple(stringResource(R.string.resume), Icons.Filled.PlayArrow, onResume),
         Triple(stringResource(R.string.settings), Icons.Outlined.Tune, onSettings),
         Triple(stringResource(R.string.layers), Icons.Outlined.Layers, onLayers),
+        Triple(frameGenLabel, Icons.Outlined.Tune, cycleFrameGen),
         Triple(stringResource(R.string.exit), Icons.AutoMirrored.Outlined.Logout, onExit),
     )
     var focused by remember { mutableIntStateOf(0) }
