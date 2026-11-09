@@ -103,6 +103,26 @@ void TrailingNop(uint32_t* cmd, const uint32_t* start, uint32_t size, uint32_t f
 }
 
 // PS4 default hardware state after CLEAR_STATE (SDK 1.x), as the firmware sets it.
+// Default context state packets of Gnm (ported from shadPS4, GPL-2.0-or-later).
+constexpr std::array<uint32_t, 0x0f> DefaultContextState {
+    0xc0012800u, 0x80000000u, 0x80000000u, 0xc0001200u, 0u, 0xc0002f00u, 1u, 0xc0016900u,
+    0x102u, 0u, 0xc0016900u, 0x202u, 0xcc0010u, 0xc0111000u, 0u};
+
+constexpr std::array<uint32_t, 0x62> DefaultContextState400 {
+    0xc0012800u, 0x80000000u, 0x80000000u, 0xc0001200u, 0u, 0xc0016900u, 0x2f9u, 0x2du,
+    0xc0016900u, 0x282u, 8u, 0xc0016900u, 0x280u, 0x80008u, 0xc0016900u, 0x281u,
+    0xffff0000u, 0xc0016900u, 0x204u, 0u, 0xc0016900u, 0x206u, 0x43fu, 0xc0016900u,
+    0x83u, 0xffffu, 0xc0016900u, 0x317u, 0x10u, 0xc0016900u, 0x2fau, 0x3f800000u,
+    0xc0016900u, 0x2fcu, 0x3f800000u, 0xc0016900u, 0x2fbu, 0x3f800000u, 0xc0016900u, 0x2fdu,
+    0x3f800000u, 0xc0016900u, 0x202u, 0xcc0010u, 0xc0016900u, 0x30eu, 0xffffffffu, 0xc0016900u,
+    0x30fu, 0xffffffffu, 0xc0002f00u, 1u, 0xc0016900u, 0x1b1u, 2u, 0xc0016900u,
+    0x101u, 0u, 0xc0016900u, 0x100u, 0xffffffffu, 0xc0016900u, 0x103u, 0u,
+    0xc0016900u, 0x284u, 0u, 0xc0016900u, 0x290u, 0u, 0xc0016900u, 0x2aeu,
+    0u, 0xc0016900u, 0x102u, 0u, 0xc0016900u, 0x292u, 0u, 0xc0016900u,
+    0x293u, 0x6020000u, 0xc0016900u, 0x2f8u, 0u, 0xc0016900u, 0x2deu, 0x1e9u,
+    0xc0036900u, 0x295u, 0x100u, 0x100u, 4u, 0xc0016900u, 0x2aau, 0xffu,
+    0xc09e1000u, 0u};
+
 constexpr std::array<uint32_t, 115> DefaultHardwareState {
     0xc0017600u, 0x216u, 0xffffffffu, 0xc0017600u, 0x217u, 0xffffffffu, 0xc0017600u, 0x215u,
     0u, 0xc0016900u, 0x2f9u, 0x2du, 0xc0016900u, 0x282u, 8u, 0xc0016900u,
@@ -408,6 +428,30 @@ int KYTY_SYSV_ABI GnmSetLsShader(uint32_t* cmd, uint32_t size, const uint32_t* r
 	cmd = SetShReg(cmd, 0x14a, {rsrc1, regs[3]});  // SPI_SHADER_PGM_RSRC1/2_LS
 	TrailingNop(cmd, start, size, 11);
 	return OK;
+}
+
+// The caller reserved `size` dwords and resumes after them: pad the rest with one NOP packet.
+template <size_t N>
+static uint32_t WriteDefaultContextState(uint32_t* cmd, uint32_t size, const std::array<uint32_t, N>& state) {
+	std::memcpy(cmd, state.data(), sizeof(state));
+	cmd[N] = 0xC0001000u | ((size - static_cast<uint32_t>(N) - 2u) << 16u);
+	return size;
+}
+
+uint32_t KYTY_SYSV_ABI GnmDrawInitToDefaultContextState(uint32_t* cmd, uint32_t size) {
+	PRINT_NAME();
+	if (size != 0x20u) {
+		return 0;
+	}
+	return WriteDefaultContextState(cmd, size, DefaultContextState);
+}
+
+uint32_t KYTY_SYSV_ABI GnmDrawInitToDefaultContextState400(uint32_t* cmd, uint32_t size) {
+	PRINT_NAME();
+	if (size != 0x100u) {
+		return 0;
+	}
+	return WriteDefaultContextState(cmd, size, DefaultContextState400);
 }
 
 uint32_t KYTY_SYSV_ABI GnmDrawInitDefaultHardwareState(uint32_t* cmd, uint32_t size) {
@@ -860,6 +904,8 @@ LIB_DEFINE(InitGnmDriver_1) {
 	LIB_FUNC("VJNjFtqiF5w", Gnm::GnmSetHsShader);
 	LIB_FUNC("vckdzbQ46SI", Gnm::GnmSetLsShader);
 	LIB_FUNC("Idffwf3yh8s", Gnm::GnmDrawInitDefaultHardwareState);
+	LIB_FUNC("8lH54sfjfmU", Gnm::GnmDrawInitToDefaultContextState);
+	LIB_FUNC("im2ZuItabu4", Gnm::GnmDrawInitToDefaultContextState400);
 	LIB_FUNC("QhnyReteJ1M", Gnm::GnmDrawInitDefaultHardwareState175);
 	LIB_FUNC("0H2vBYbTLHI", Gnm::GnmDrawInitDefaultHardwareState200);
 	LIB_FUNC("yb2cRhagD1I", Gnm::GnmDrawInitDefaultHardwareState350);

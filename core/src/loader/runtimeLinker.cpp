@@ -40,6 +40,7 @@
 #include <fmt/format.h>
 #include <magic_enum.hpp>
 #include <memory>
+#include <set>
 #include <vector>
 
 #if defined(__ANDROID__)
@@ -1419,14 +1420,29 @@ void RuntimeLinker::Execute(const std::filesystem::path& game_patch) {
 	if (auto* main_program = m_programs.empty() ? nullptr : m_programs.front();
 	    main_program != nullptr && main_program->elf != nullptr && !main_program->elf->IsNextGen() &&
 	    main_program->dynamic_info != nullptr) {
-		for (const auto& module: main_program->dynamic_info->import_modules) {
-			if (module.name.empty() || module.name == "libc") {
+		// Modules import modules too: libc.prx is what needs libSceFios2 in some games.
+		std::vector<Program*> pending {main_program};
+		if (libc != nullptr) {
+			pending.push_back(libc);
+		}
+		std::set<std::string> requested {"libc"};
+		while (!pending.empty()) {
+			const auto* importer = pending.back();
+			pending.pop_back();
+			if (importer->dynamic_info == nullptr) {
 				continue;
 			}
-			const auto path = Libs::LibKernel::FileSystem::GetRealFilename("/app0/sce_module/" +
-			                                                               module.name + ".prx");
-			if (Common::File::IsFileExisting(path)) {
-				shipped_modules.push_back(LoadProgram(path));
+			for (const auto& module: importer->dynamic_info->import_modules) {
+				if (module.name.empty() || !requested.insert(module.name).second) {
+					continue;
+				}
+				const auto path = Libs::LibKernel::FileSystem::GetRealFilename("/app0/sce_module/" +
+				                                                               module.name + ".prx");
+				if (Common::File::IsFileExisting(path)) {
+					auto* loaded = LoadProgram(path);
+					shipped_modules.push_back(loaded);
+					pending.push_back(loaded);
+				}
 			}
 		}
 	}
@@ -1460,13 +1476,19 @@ void RuntimeLinker::Execute(const std::filesystem::path& game_patch) {
 #endif
 		}
 	};
+	// A PS4 module may start at address 0 of its text: libc.prx's DT_INIT is 0, and that routine
+	// runs its static constructors (the classic locale C++ streams read, among others).
+	const auto has_init = [](const Program* program) {
+		return program != nullptr && (program->dynamic_info->init_vaddr != 0 ||
+		                              (program->dynamic_info->has_init && !program->elf->IsNextGen()));
+	};
 	run_preinit(libc);
-	if (libc != nullptr && libc->dynamic_info->init_vaddr != 0) {
+	if (has_init(libc)) {
 		StartModule(libc, 0, nullptr, nullptr);
 	}
 	for (auto* module: shipped_modules) {
 		run_preinit(module);
-		if (module != nullptr && module->dynamic_info->init_vaddr != 0) {
+		if (has_init(module)) {
 			StartModule(module, 0, nullptr, nullptr);
 		}
 	}
@@ -1639,6 +1661,29 @@ void RuntimeLinker::Resolve(const std::string& name, SymbolType type, Program* p
 				out_info->vaddr    = 0;
 				out_info->name     = SymbolDatabase::GenerateName(sr);
 				out_info->dbg_name = "";
+#if defined(__ANDROID__)
+				// `setprop debug.capy.link_trace 1`: why an import found no export (tag CapyPS5-Link).
+				static Common::DebugFlags::CachedValue link_trace("debug.capy.link_trace", 0);
+				if (link_trace.Get() != 0) {
+					__android_log_print(ANDROID_LOG_WARN, "CapyPS5-Link",
+					                    "unresolved %s lib=%s v%d mod=%s %d.%d type=%d in %s", name.c_str(),
+					                    sr.library.c_str(), sr.library_version, sr.module.c_str(),
+					                    sr.module_version_major, sr.module_version_minor,
+					                    static_cast<int>(type), Common::PathToString(program->file_name).c_str());
+					for (auto* p: m_programs) {
+						std::string exports;
+						for (const auto& lib: p->dynamic_info->export_libs) {
+							exports += " " + lib.name + ":v" + std::to_string(lib.version);
+						}
+						for (const auto& mod: p->dynamic_info->export_modules) {
+							exports += " [" + mod.name + " " + std::to_string(mod.version_major) + "." +
+							           std::to_string(mod.version_minor) + "]";
+						}
+						__android_log_print(ANDROID_LOG_WARN, "CapyPS5-Link", "  loaded %s:%s",
+						                    Common::PathToString(p->file_name).c_str(), exports.c_str());
+					}
+				}
+#endif
 			}
 		} else {
 			if (resolve_by_nid(ids.at(0), out_info)) {
@@ -2210,6 +2255,11 @@ void RuntimeLinker::ParseProgramDynamicInfo(Program* program) {
 
 	GetDynPtr(elf, &program->dynamic_info->init_vaddr, DT_INIT);
 	GetDynPtr(elf, &program->dynamic_info->fini_vaddr, DT_FINI);
+	{
+		std::vector<uint64_t> init_values;
+		GetDynValues(elf, &init_values, DT_INIT);
+		program->dynamic_info->has_init = !init_values.empty();
+	}
 	GetDynPtr(elf, &program->dynamic_info->init_array_vaddr, DT_INIT_ARRAY);
 	GetDynPtr(elf, &program->dynamic_info->fini_array_vaddr, DT_FINI_ARRAY);
 	GetDynPtr(elf, &program->dynamic_info->preinit_array_vaddr, DT_PREINIT_ARRAY);
