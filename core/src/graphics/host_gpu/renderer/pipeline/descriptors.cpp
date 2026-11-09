@@ -686,6 +686,13 @@ TextureBinding RenderExecutor::ResolveTexture(const ShaderRecompiler::IR::ImageR
 		desc.info.metadata.range         = {descriptor.MetaAddr() << 8u, metadata_size.size};
 		desc.info.metadata.dcc_alpha_msb = descriptor.DccAlphaPos();
 	}
+	if ((descriptor.fields[7] & 0x80000000u) != 0u && (descriptor.fields[7] & 0x1fu) == 8u) {
+		// A PS4 linear texture: its rows are as long as the T# says, not as gfx10 would pad them.
+		desc.info.gfx7_micro_pitch = ((descriptor.fields[7] >> 5u) & 0x3fffu) + 1u;
+		desc.info.gfx7_micro_pow2  = (descriptor.fields[7] & 0x40000000u) != 0u;
+		desc.info.gfx7_linear      = true;
+		desc.info.data.size        = desc.info.Gfx7MicroSize();
+	}
 	if ((descriptor.fields[7] & 0x80000000u) != 0u && (descriptor.fields[7] & 0x1fu) == 13u) {
 		// A PS4 1D-thin texture (see Gfx7TextureSharpToGfx10).
 		desc.info.gfx7_micro_pitch = ((descriptor.fields[7] >> 5u) & 0x3fffu) + 1u;

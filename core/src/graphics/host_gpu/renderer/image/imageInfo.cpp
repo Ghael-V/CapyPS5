@@ -47,8 +47,16 @@ ImageInfo::Gfx7MicroLevel ImageInfo::Gfx7MicroLevelLayout(uint32_t level) const 
 		w = std::bit_ceil(w);
 		h = std::bit_ceil(h);
 	}
-	// Micro tiles are 8x8 blocks, and each level is a whole number of 256-byte groups.
 	Gfx7MicroLevel layout;
+	if (gfx7_linear) {
+		// Rows align to 64 bytes (at least 8 texels); each slice starts on a 256-byte boundary.
+		const uint32_t row_align = std::max(8u, 64u / bytes_per_block);
+		layout.pitch  = level == 0u ? w : Common::AlignUp(w, row_align);
+		layout.height = h;
+		layout.size   = Common::AlignUp(uint64_t {layout.pitch} * layout.height * bytes_per_block, uint64_t {256u});
+		return layout;
+	}
+	// Micro tiles are 8x8 blocks, and each level is a whole number of 256-byte groups.
 	layout.pitch  = Common::AlignUp(w, 8u);
 	layout.height = Common::AlignUp(h, 8u);
 	layout.size   = uint64_t {layout.pitch} * layout.height * bytes_per_block;
