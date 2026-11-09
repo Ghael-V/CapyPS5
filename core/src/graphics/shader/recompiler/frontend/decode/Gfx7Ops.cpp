@@ -257,6 +257,8 @@ static uint32_t Gfx7ImageFormat(uint32_t dfmt, uint32_t nfmt) {
 }
 
 void Gfx7BufferSharpToGfx10(uint32_t* fields) {
+	// The base address has 44 bits; the top four of gfx10's 48 hold the gfx7 memory type.
+	fields[1] &= ~0xf000u;
 	const uint32_t nfmt = (fields[3] >> 12u) & 0x7u;
 	const uint32_t dfmt = (fields[3] >> 15u) & 0xfu;
 	fields[3] = (fields[3] & ~(0x7fu << 12u)) | (Gfx7UnifiedBufferFormat(dfmt, nfmt) << 12u);

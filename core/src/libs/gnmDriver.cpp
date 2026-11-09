@@ -485,6 +485,35 @@ int KYTY_SYSV_ABI GnmDrawIndexAuto(uint32_t* cmd, uint32_t size, uint32_t index_
 	return OK;
 }
 
+// COMPUTE_PGM_RSRC1 with the caller's modifier bits, otherwise GnmSetCsShader.
+int KYTY_SYSV_ABI GnmSetCsShaderWithModifier(uint32_t* cmd, uint32_t size, const uint32_t* regs, uint32_t modifier) {
+	PRINT_NAME();
+	uint32_t* const start = cmd;
+	if (cmd == nullptr || size <= 0x18 || regs == nullptr || (modifier & 0xfffffc3fu) != 0 || regs[1] != 0) {
+		return -1;
+	}
+	const uint32_t rsrc1 = modifier == 0 ? regs[2] : (regs[2] & 0xfffffc3fu) | modifier;
+	cmd = SetShReg(cmd, 0x20c, {regs[0], 0});                 // COMPUTE_PGM_LO/HI
+	cmd = SetShReg(cmd, 0x212, {rsrc1, regs[3]});             // COMPUTE_PGM_RSRC1/2
+	cmd = SetShReg(cmd, 0x207, {regs[4], regs[5], regs[6]});  // COMPUTE_NUM_THREAD_X/Y/Z
+	TrailingNop(cmd, start, size, 11);
+	return OK;
+}
+
+int KYTY_SYSV_ABI GnmDispatchDirect(uint32_t* cmd, uint32_t size, uint32_t x, uint32_t y, uint32_t z, uint32_t flags) {
+	PRINT_NAME();
+	if (cmd == nullptr || size != 9 || static_cast<int32_t>(x | y | z) < 0) {
+		return -1;
+	}
+	*cmd++ = Type3(0x15, 4) | 2u | (flags & 1u); // DISPATCH_DIRECT, compute shader type, predicate
+	*cmd++ = x;
+	*cmd++ = y;
+	*cmd++ = z;
+	*cmd++ = (flags & 0x18u) + 1u; // COMPUTE_SHADER_EN and the ordered-append mode
+	WriteNop(cmd, 4);
+	return OK;
+}
+
 // PS4 PS setter of SDK 3.50 and later: the null shader also resets CB_SHADER_MASK.
 int KYTY_SYSV_ABI GnmSetPsShader350(uint32_t* cmd, uint32_t size, const uint32_t* regs) {
 	PRINT_NAME();
@@ -837,6 +866,12 @@ LIB_DEFINE(InitGnmDriver_1) {
 	LIB_FUNC("HlTPoZ-oY7Y", Gnm::GnmDrawIndex);
 	LIB_FUNC("GGsn7jMTxw4", Gnm::GnmDrawIndexAuto);
 	LIB_FUNC("5uFKckiJYRM", Gnm::GnmSetPsShader350);
+	// The Update setters rewrite a region reserved by the matching setter, with the same layout.
+	LIB_FUNC("V31V01UiScY", Gnm::GnmSetVsShader);     // UpdateVsShader
+	LIB_FUNC("4MgRw-bVNQU", Gnm::GnmSetPsShader);     // UpdatePsShader
+	LIB_FUNC("mLVL7N7BVBg", Gnm::GnmSetPsShader350);  // UpdatePsShader350
+	LIB_FUNC("Kx-h-nWQJ8A", Gnm::GnmSetCsShaderWithModifier);
+	LIB_FUNC("0BzLGljcwBo", Gnm::GnmDispatchDirect);
 	LIB_FUNC("cFCp0NX8wf0", Gnm::GnmSetVgtControl);
 	LIB_FUNC("jiItzS6+22g", Gnm::GnmInsertMarker); // SetMarker
 	LIB_FUNC("W1Etj-jlW7Y", Gnm::GnmInsertMarker); // PushMarker
