@@ -7,6 +7,7 @@
 #include "common/assert.h"
 #include "graphics/guest_gpu/gpu_format.h"
 #include "graphics/shader/recompiler/BufferFormat.h"
+#include "graphics/shader/recompiler/frontend/decode/Gfx7Ops.h"
 #include "graphics/shader/recompiler/ir/ShaderIR.h"
 #include "graphics/shader/shaderBindings.h"
 
@@ -1156,6 +1157,9 @@ bool MaterializeResources(const ResourcePlan& program, const SrtRuntime& runtime
 			}
 		}
 		auto&                descriptor_value = snapshot.buffers[i];
+		if (Decoder::GetGuestIsa() == Decoder::GuestIsa::Gfx7) {
+			Decoder::Gfx7BufferSharpToGfx10(descriptor_value.dwords.data());
+		}
 		ShaderBufferResource descriptor;
 		if (!DecodeBufferDescriptor(descriptor_value, descriptor)) {
 			return SpecializationFail(fmt::format("buffer descriptor {} has invalid width", i));
@@ -1219,6 +1223,9 @@ bool MaterializeResources(const ResourcePlan& program, const SrtRuntime& runtime
 		} else {
 			if (!evaluate(image.source, snapshot.images[i], image.written)) {
 				return MaterializeFail("image descriptor could not be evaluated");
+			}
+			if (Decoder::GetGuestIsa() == Decoder::GuestIsa::Gfx7) {
+				Decoder::Gfx7TextureSharpToGfx10(snapshot.images[i].dwords.data());
 			}
 			if (!ValidImageDescriptor(snapshot.images[i], image.r128)) {
 				snapshot.images[i].dwords.fill(0);

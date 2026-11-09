@@ -982,7 +982,70 @@ bool TextureCache::CanDownload(const Image& image) const {
 	       info.LinearSize() != 0;
 }
 
+// Decodes a PS4 1D-thin texture on the CPU: 8x8 micro tiles in raster order, blocks inside a tile in
+// the thin order (x0, y0, x1, y1, x2, y2), each level after the previous one.
+void TextureCache::UploadGfx7MicroTiled(Image& image) {
+	const auto&    info   = image.info;
+	const uint32_t bytes  = info.bytes_per_block;
+	const uint32_t tw     = info.tiling.texel_width;
+	const uint32_t th     = info.tiling.texel_height;
+	std::vector<uint8_t> guest(info.data.size);
+	if (!LibKernel::Memory::ReadGuestMemory(info.data.address, guest.data(), guest.size())) {
+		return;
+	}
+	uint64_t linear_size = 0;
+	for (uint32_t level = 0; level < info.resources.levels; level++) {
+		const auto active = info.MipExtent(level);
+		linear_size += uint64_t {(active.width + tw - 1u) / tw} * ((active.height + th - 1u) / th) * bytes *
+		               info.resources.layers;
+	}
+	auto staging = std::make_unique<Buffer>(m_graphics, m_scheduler, MemoryUsage::Upload, 0,
+	                                        vk::BufferUsageFlagBits::eTransferSrc, linear_size);
+	auto*    out        = staging->Mapped().data();
+	uint64_t out_offset = 0;
+	uint64_t in_offset  = 0;
+	std::vector<vk::BufferImageCopy> copies;
+	for (uint32_t level = 0; level < info.resources.levels; level++) {
+		const auto active   = info.MipExtent(level);
+		const auto layout   = info.Gfx7MicroLevelLayout(level);
+		const auto columns  = (active.width + tw - 1u) / tw;
+		const auto rows     = (active.height + th - 1u) / th;
+		const auto per_row  = layout.pitch / 8u;
+		const auto tile_size = uint64_t {64u} * bytes;
+		for (uint32_t layer = 0; layer < info.resources.layers; layer++) {
+			const uint64_t slice = in_offset + layer * layout.size;
+			vk::BufferImageCopy copy {};
+			copy.bufferOffset      = out_offset;
+			copy.bufferRowLength   = columns * tw;
+			copy.bufferImageHeight = rows * th;
+			copy.imageSubresource  = {vk::ImageAspectFlagBits::eColor, level, layer, 1};
+			copy.imageExtent       = vk::Extent3D {active.width, active.height, 1};
+			copies.push_back(copy);
+			for (uint32_t y = 0; y < rows; y++) {
+				for (uint32_t x = 0; x < columns; x++) {
+					const uint32_t element = (x & 1u) | ((y & 1u) << 1u) | ((x & 2u) << 1u) |
+					                         ((y & 2u) << 2u) | ((x & 4u) << 2u) | ((y & 4u) << 3u);
+					const uint64_t source = slice + ((y / 8u) * uint64_t {per_row} + x / 8u) * tile_size +
+					                        uint64_t {element} * bytes;
+					if (source + bytes <= guest.size()) {
+						std::memcpy(out + out_offset, guest.data() + source, bytes);
+					}
+					out_offset += bytes;
+				}
+			}
+		}
+		in_offset += layout.size * info.resources.layers;
+	}
+	staging->Flush(0, linear_size);
+	image.Upload(copies, staging->Handle(), 0, linear_size);
+	m_scheduler.DeferOperation([old = std::move(staging)]() mutable { old.reset(); });
+}
+
 void TextureCache::UploadImage(Image& image, Buffer& source, uint64_t source_offset) {
+	if (image.info.gfx7_micro_pitch != 0u) {
+		UploadGfx7MicroTiled(image);
+		return;
+	}
 	Common::DebugFlags::FrameTrace("  tc %s id=%u addr=0x%llx", "upload", static_cast<uint32_t>(0),
 	                               static_cast<unsigned long long>(image.info.data.address));
 	auto& destination = image.depth_id ? m_slot_images[image.depth_id] : image;

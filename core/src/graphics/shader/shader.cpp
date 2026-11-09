@@ -979,6 +979,39 @@ static void PrepareGfx7FetchCall(const HW::VertexShaderInfo& regs, uint32_t user
 	}
 }
 
+// `debug.capy.gfx7_disasm 2`: log a PS's user SGPRs and the first table they point at, once.
+static void DebugGfx7PixelResources(const HW::PixelShaderInfo& regs) {
+#if defined(__ANDROID__)
+	static Common::DebugFlags::CachedValue enabled("debug.capy.gfx7_disasm", 0);
+	if (enabled.Get() != 2) {
+		return;
+	}
+	static std::mutex                   mutex;
+	static std::unordered_set<uint64_t> seen;
+	{
+		std::scoped_lock lock(mutex);
+		if (seen.size() >= 32 || !seen.insert(regs.ps_regs.data_addr).second) {
+			return;
+		}
+	}
+	const auto& v = regs.ps_user_sgpr.value;
+	__android_log_print(ANDROID_LOG_WARN, "CapyPS5-Gfx7Ps",
+	                    "ps 0x%llx sgprs(%u): %08x %08x %08x %08x %08x %08x %08x %08x",
+	                    static_cast<unsigned long long>(regs.ps_regs.data_addr),
+	                    static_cast<uint32_t>(regs.ps_regs.rsrc2.user_sgpr), v[0], v[1], v[2], v[3], v[4], v[5], v[6], v[7]);
+	const uint64_t table = v[2] | (static_cast<uint64_t>(v[3]) << 32u);
+	std::array<uint32_t, 24> words {};
+	const bool ok = LibKernel::Memory::ReadGuestMemory(table, words.data(), sizeof(words));
+	__android_log_print(ANDROID_LOG_WARN, "CapyPS5-Gfx7Ps",
+	                    "  table 0x%llx ok=%d: %08x %08x %08x %08x %08x %08x %08x %08x | %08x %08x %08x %08x %08x %08x %08x %08x",
+	                    static_cast<unsigned long long>(table), ok ? 1 : 0, words[0], words[1], words[2], words[3], words[4],
+	                    words[5], words[6], words[7], words[8], words[9], words[10], words[11], words[12], words[13], words[14],
+	                    words[15]);
+#else
+	(void)regs;
+#endif
+}
+
 static ShaderParams PrepareGfx7VertexProgram(const HW::VertexShaderInfo& regs,
                                              const HW::Context& context,
                                              ShaderVertexInputInfo& info) {
@@ -1163,6 +1196,7 @@ ShaderParams PrepareProgram(
     const HW::PixelShaderInfo& regs, const HW::ShaderRegisters& sh,
     std::span<const Prospero::ColorComponentMapping, 8> target_export_mapping,
     ShaderPixelInputInfo&                               ps_info) {
+	DebugGfx7PixelResources(regs);
 	const auto [data, hash] = ShaderGetMappedData(regs.ps_regs.data_addr, "ShaderGetInputInfoPS():");
 	ShaderGetStaticInputInfoPS(regs, sh, target_export_mapping, data, ps_info);
 
