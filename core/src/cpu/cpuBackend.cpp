@@ -643,7 +643,8 @@ public:
 			{
 				// `setprop debug.capy.hle_trace N` (before launching a game): log the first N HLE
 				// calls with their first arguments and result (tag CapyPS5-HleTrace), to see what a
-				// game did before it failed.
+				// game did before it failed. `debug.capy.hle_trace_name S` keeps only the functions
+				// whose name contains S, so a loop can be traced without the startup filling the log.
 				static Common::DebugFlags::CachedValue hle_trace("debug.capy.hle_trace", 0);
 				static std::atomic<int64_t>             traced {0};
 				if (hle_trace.Get() > 0 && traced.load(std::memory_order_relaxed) < hle_trace.Get()) {
@@ -654,8 +655,14 @@ public:
 							name = it->second;
 						}
 					}
+					static const std::string name_filter = [] {
+						char value[PROP_VALUE_MAX] = {};
+						__system_property_get("debug.capy.hle_trace_name", value);
+						return std::string(value);
+					}();
 					// Mutex calls drown everything else; open/stat-like calls show their path.
 					if (name.find("Mutex") == std::string::npos && name.find("mutex") == std::string::npos &&
+					    (name_filter.empty() || name.find(name_filter) != std::string::npos) &&
 					    traced.fetch_add(1, std::memory_order_relaxed) < hle_trace.Get()) {
 						char path[96] = {};
 						if (name.find("open") != std::string::npos || name.find("Open") != std::string::npos ||
@@ -669,7 +676,8 @@ public:
 							}
 						}
 						__android_log_print(ANDROID_LOG_WARN, "CapyPS5-HleTrace",
-						                    "tid %d %s(0x%llx, 0x%llx, 0x%llx) = 0x%llx %s", static_cast<int>(gettid()),
+						                    "tid %d from 0x%llx %s(0x%llx, 0x%llx, 0x%llx) = 0x%llx %s", static_cast<int>(gettid()),
+						                    guest_stack ? static_cast<unsigned long long>(guest_stack[0]) : 0ull,
 						                    name.c_str(), static_cast<unsigned long long>(a0),
 						                    static_cast<unsigned long long>(a1), static_cast<unsigned long long>(a2),
 						                    static_cast<unsigned long long>(ret), path);

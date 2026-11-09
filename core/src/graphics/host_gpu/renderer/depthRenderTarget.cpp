@@ -22,10 +22,12 @@
 #include "graphics/host_gpu/renderer/render.h"
 #include "graphics/host_gpu/renderer/renderContext.h"
 #include "graphics/host_gpu/vulkanCommon.h"
+#include "graphics/shader/recompiler/frontend/decode/ShaderDecoder.h"
 
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <cinttypes>
 #include <cmath>
 #include <cstdarg>
 #include <cstdio>
@@ -173,13 +175,18 @@ static TextureCache::ImageDesc MakeDepthTargetDesc(const CommandBuffer& buffer,
 			           z.depth_view.slice_max);
 	}
 	// EXPCLEAR permits an HTile acceleration state; the host attachment is already expanded.
+	// PS5 depth buffers are 64 KiB aligned; PS4 ones only to the 256-byte register granularity.
+	const uint64_t base_align_mask =
+	    ShaderRecompiler::Decoder::GetGuestIsa() == ShaderRecompiler::Decoder::GuestIsa::Gfx7 ? 0xffu : 0xffffu;
 	if (z.z_info.max_mip_level != 0 || unsupported_shading_rate_encoding || depth_address == 0 ||
-	    (depth_address & 0xffffu) != 0) {
-		DepthFatal("unsupported depth register state");
+	    (depth_address & base_align_mask) != 0) {
+		DepthFatal("unsupported depth target: mips=%u, shading rate=%u, htile=%d, address=0x%" PRIx64,
+		           static_cast<unsigned>(z.z_info.max_mip_level), static_cast<unsigned>(z.shading_rate_encoding),
+		           has_htile ? 1 : 0, depth_address);
 	}
 	if (has_stencil) {
 		if (z.stencil_info.format != Prospero::StencilFormat::k8UInt || !htile_stencil_compat ||
-		    stencil_address == 0 || (stencil_address & 0xffffu) != 0) {
+		    stencil_address == 0 || (stencil_address & base_align_mask) != 0) {
 			DepthFatal("unsupported stencil attachment state");
 		}
 	} else if (z.stencil_read_base_addr != 0 || z.stencil_write_base_addr != 0) {
@@ -326,7 +333,10 @@ void RenderExecutor::ResolveRenderDepthTarget(CommandBuffer& buffer, RenderDepth
 	    (!z.depth_view.depth_write_disable && z.z_write_base_addr != z.z_read_base_addr) ||
 	    (has_stencil && !z.depth_view.stencil_write_disable &&
 	     z.stencil_write_base_addr != z.stencil_read_base_addr)) {
-		DepthFatal("unsupported depth register state");
+		DepthFatal("unsupported depth state: stencil-to-color=%d, zfunc=%u, read=0x%" PRIx64 ", write=0x%" PRIx64
+		           ", depth write disabled=%d",
+		           rc.copy_stencil_to_color ? 1 : 0, static_cast<unsigned>(dc.zfunc), z.z_read_base_addr,
+		           z.z_write_base_addr, z.depth_view.depth_write_disable ? 1 : 0);
 	}
 	if (rc.copy_depth_to_color &&
 	    (z.z_info.num_samples != 0 || rc.copy_sample != 0 ||

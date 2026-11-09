@@ -2,6 +2,7 @@
 // SPDX-FileCopyrightText: Copyright KytyPS5 contributors; based on Kyty, Copyright (c) 2021 InoriRus (MIT)
 // SPDX-License-Identifier: GPL-2.0-only
 
+#include "graphics/shader/recompiler/frontend/decode/ShaderDecoder.h"
 #include "graphics/host_gpu/renderer/pipeline/descriptors.h"
 
 #include "common/alignment.h"
@@ -1116,6 +1117,18 @@ void RenderExecutor::CommitBindings(CommandBuffer&                     buffer,
 				                          image->info.metadata.range}) {
 					if (written.size != 0 && ImageRangeOverlaps(address, size,
 					                                          written.address, written.size)) {
+						// PS4 target sizes are estimated with PS5 layouts and can run past the real
+						// surface into the buffer placed right after it.
+						if (ShaderRecompiler::Decoder::GetGuestIsa() ==
+						    ShaderRecompiler::Decoder::GuestIsa::Gfx7) {
+							Common::DebugFlags::NoteOnce(
+							    "CapyPS5-Gfx7Tex", 0x4f56000000000000ull | (address & 0xffffffffffffull),
+							    "scalar read 0x%llx+0x%llx overlaps image 0x%llx+0x%llx",
+							    static_cast<unsigned long long>(address), static_cast<unsigned long long>(size),
+							    static_cast<unsigned long long>(written.address),
+							    static_cast<unsigned long long>(written.size));
+							continue;
+						}
 						EXIT("scalar resource reads overlap an image or attachment write\n");
 					}
 				}

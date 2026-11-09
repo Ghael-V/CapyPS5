@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: GPL-2.0-only
 
 #include "graphics/host_gpu/renderer/renderContext.h"
+#include "graphics/shader/recompiler/frontend/decode/ShaderDecoder.h"
 
 #include "common/debugFlags.h"
 #include "common/assert.h"
@@ -261,6 +262,10 @@ void RenderContext::DeleteInterruptEq(LibKernel::EventQueue::KernelEqueue eq, in
 }
 
 void RenderContext::TriggerInterrupt(int event_id, uint32_t context_id) {
+	// The graphics queue's end-of-pipe interrupt is event 0 on PS5 and 0x40 on PS4.
+	if (event_id == 0 && ShaderRecompiler::Decoder::GetGuestIsa() == ShaderRecompiler::Decoder::GuestIsa::Gfx7) {
+		event_id = 0x40;
+	}
 	std::vector<InterruptEqRegistration> registrations;
 	{
 		Common::LockGuard lock(m_interrupt_mutex);
