@@ -980,6 +980,64 @@ int KYTY_SYSV_ABI SaveDataUmount2(uint32_t mode, const SaveDataMountPoint* mount
 	return OK;
 }
 
+// The PS4 API (backward compatibility): the same operations with older parameter blocks.
+struct SaveDataMountPs4 {
+	int                       user_id;
+	int                       pad;
+	const void*               title_id;
+	const SceSaveDataDirName* dir_name;
+	const void*               fingerprint;
+	uint64_t                  blocks;
+	uint32_t                  mount_mode;
+	uint8_t                   reserved[32];
+};
+
+struct SaveDataMount2Ps4 {
+	int                       user_id;
+	int                       pad;
+	const SceSaveDataDirName* dir_name;
+	uint64_t                  blocks;
+	uint32_t                  mount_mode;
+	uint8_t                   reserved[32];
+	int                       pad2;
+};
+
+static int MountPs4(int user_id, const SceSaveDataDirName* dir_name, uint64_t blocks, uint32_t mount_mode,
+                    SaveDataMountResult* mount_result) {
+	struct SaveDataMount3 mount {};
+	mount.user_id    = user_id;
+	mount.dir_name   = dir_name;
+	mount.blocks     = blocks;
+	mount.mount_mode = mount_mode;
+	return SaveDataMount3(&mount, mount_result);
+}
+
+int KYTY_SYSV_ABI SaveDataInitialize(const void* init) {
+	PRINT_NAME();
+	return SaveDataInitialize3(init);
+}
+
+int KYTY_SYSV_ABI SaveDataMount(const SaveDataMountPs4* mount, SaveDataMountResult* mount_result) {
+	PRINT_NAME();
+	if (mount == nullptr) {
+		return SAVE_DATA_ERROR_PARAMETER;
+	}
+	return MountPs4(mount->user_id, mount->dir_name, mount->blocks, mount->mount_mode, mount_result);
+}
+
+int KYTY_SYSV_ABI SaveDataMount2(const SaveDataMount2Ps4* mount, SaveDataMountResult* mount_result) {
+	PRINT_NAME();
+	if (mount == nullptr) {
+		return SAVE_DATA_ERROR_PARAMETER;
+	}
+	return MountPs4(mount->user_id, mount->dir_name, mount->blocks, mount->mount_mode, mount_result);
+}
+
+int KYTY_SYSV_ABI SaveDataUmount(const SaveDataMountPoint* mount_point) {
+	PRINT_NAME();
+	return SaveDataUmount2(0, mount_point);
+}
+
 int KYTY_SYSV_ABI SaveDataPrepare(const SaveDataMountPoint*   mount_point,
                                   const SaveDataPrepareParam* param) {
 	PRINT_NAME();
@@ -1312,6 +1370,10 @@ LIB_VERSION("SaveData_native", 1, "SaveData_native", 1, 1);
 
 LIB_DEFINE(InitSaveDataNative_1) {
 	LIB_FUNC("TywrFKCoLGY", ::Libs::SaveData::SaveDataInitialize3);
+	LIB_FUNC("ZkZhskCPXFw", ::Libs::SaveData::SaveDataInitialize);
+	LIB_FUNC("32HQAQdwM2o", ::Libs::SaveData::SaveDataMount);
+	LIB_FUNC("0z45PIH+SNI", ::Libs::SaveData::SaveDataMount2);
+	LIB_FUNC("BMR4F-Uek3E", ::Libs::SaveData::SaveDataUmount);
 	LIB_FUNC("dyIhnXq-0SM", ::Libs::SaveData::SaveDataDirNameSearch);
 	LIB_FUNC("PHnuI4LhuRk", ::Libs::SaveData::SaveDataDirNameSearch);
 	LIB_FUNC("ZP4e7rlzOUk", ::Libs::SaveData::SaveDataMount3);
@@ -1343,6 +1405,10 @@ LIB_DEFINE(InitSaveDataNative_1) {
 
 LIB_DEFINE(InitSaveData_1) {
 	LIB_FUNC("TywrFKCoLGY", SaveData::SaveDataInitialize3);
+	LIB_FUNC("ZkZhskCPXFw", SaveData::SaveDataInitialize);
+	LIB_FUNC("32HQAQdwM2o", SaveData::SaveDataMount);
+	LIB_FUNC("0z45PIH+SNI", SaveData::SaveDataMount2);
+	LIB_FUNC("BMR4F-Uek3E", SaveData::SaveDataUmount);
 	LIB_FUNC("dyIhnXq-0SM", SaveData::SaveDataDirNameSearch);
 	LIB_FUNC("ZP4e7rlzOUk", SaveData::SaveDataMount3);
 	LIB_FUNC("gjRZNnw0JPE", SaveData::SaveDataCreateTransactionResource);
