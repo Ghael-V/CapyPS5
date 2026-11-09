@@ -1423,6 +1423,9 @@ static void PatchIndirectDrawOffsets(CommandProcessor& cp, IndirectDrawRegisters
 		}
 		EXIT_NOT_IMPLEMENTED(location >= Pm4::SH_NUM ||
 		                     g_hw_sh_indirect_func[location] == nullptr);
+		if (g_hw_sh_indirect_func[location] == nullptr) {
+			return; // a stage with no user-data handler (PS4 ES/LS): nothing reads it
+		}
 		g_hw_sh_indirect_func[location](cp, location, value);
 	};
 	write(registers.vertex_offset, vertex_offset);

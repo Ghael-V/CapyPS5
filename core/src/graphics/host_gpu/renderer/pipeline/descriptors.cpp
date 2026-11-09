@@ -702,7 +702,8 @@ TextureBinding RenderExecutor::ResolveTexture(const ShaderRecompiler::IR::ImageR
 		ImageInfo target {};
 		// Only a surface of the same kind: a volume drawn by layers is converted when it is found.
 		if (texture_cache.FindTargetInfoAt(address, width, height, &target) &&
-		    target.type == desc.info.type) {
+		    target.type == desc.info.type && target.resources.layers >= desc.info.resources.layers &&
+		    target.resources.levels >= desc.info.resources.levels) {
 			desc.info = target;
 		}
 	}
