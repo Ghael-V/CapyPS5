@@ -7,6 +7,7 @@
 
 #include "graphics/shader/recompiler/ir/ShaderIR.h"
 
+#include <string_view>
 #include <span>
 
 namespace Libs::Graphics::ShaderRecompiler::IR {
@@ -52,6 +53,11 @@ bool ValidateRuntimeValue(const ResourcePlan& program, Value value,
 void CompileSrtWalker(ResourcePlan& program);
 // Uses the strict reader for values that affect shader specialization.
 SrtRuntime CleanRuntime(SrtRuntime runtime);
+
+// The instruction that failed the last SRT refresh on this thread (diagnostics).
+[[nodiscard]] std::string_view LastSrtFailedOpcode();
+[[nodiscard]] uint64_t         LastSrtFailedAddress();
+[[nodiscard]] bool             LastSrtFailedSpecialization();
 
 // One memoized evaluation session shared by the entire shader resource refresh.
 class SrtWalker {

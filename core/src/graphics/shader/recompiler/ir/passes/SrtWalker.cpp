@@ -531,6 +531,23 @@ float SrtWalker::Float32(uint64_t bits) {
 	return std::bit_cast<float>(static_cast<uint32_t>(bits));
 }
 
+// The instruction whose evaluation failed first (diagnostics).
+static thread_local ValueOpcode t_srt_failed_opcode = ValueOpcode::Void;
+static thread_local uint64_t    t_srt_failed_address = 0;
+static thread_local bool        t_srt_failed_specialization = false;
+
+uint64_t LastSrtFailedAddress() {
+	return t_srt_failed_address;
+}
+
+bool LastSrtFailedSpecialization() {
+	return t_srt_failed_specialization;
+}
+
+std::string_view LastSrtFailedOpcode() {
+	return ValueOpcodeName(t_srt_failed_opcode);
+}
+
 bool SrtWalker::EvaluateWide(Value value, uint64_t& result) {
 	value = value.Resolve();
 	if (value.IsImmediate()) {
@@ -575,6 +592,9 @@ bool SrtWalker::EvaluateWide(Value value, uint64_t& result) {
 	auto& memo = m_context.values[index];
 	if (!evaluated) {
 		memo.generation = 0;
+		if (t_srt_failed_opcode == ValueOpcode::Void) {
+			t_srt_failed_opcode = inst->GetOpcode(); // the deepest failure comes back first
+		}
 		return false;
 	}
 	memo.value      = out;
@@ -701,6 +721,8 @@ bool SrtWalker::EvaluateRawRead(const Inst& inst, uint64_t& result) {
 	                                                              : m_runtime.read_specialization_memory);
 	if (reader != nullptr) {
 		if (!reader(m_runtime.userdata, address, {&word, 1})) {
+			t_srt_failed_address = address;
+			t_srt_failed_specialization = reader == m_runtime.read_specialization_memory;
 			return false;
 		}
 	} else {
@@ -1096,6 +1118,8 @@ bool SrtWalker::EvaluateDescriptor(uint32_t source, DescriptorValue& result) {
 }
 
 bool SrtWalker::RefreshFlatBuffer(std::vector<uint32_t>& flat) {
+	t_srt_failed_opcode  = ValueOpcode::Void;
+	t_srt_failed_address = 0;
 	if (!m_program.srt_plan_complete) return false;
 #if defined(__x86_64__) || defined(_M_X64)
 	if (m_program.srt_code && m_runtime.read_memory == nullptr) {

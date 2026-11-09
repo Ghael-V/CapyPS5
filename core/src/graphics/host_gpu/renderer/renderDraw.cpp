@@ -531,6 +531,9 @@ static void UpdateGraphicsDynamicState(const CommandBuffer& buffer, DynamicState
 static bool DrawHasValidVertexShader(const HW::Shader& sh_ctx) {
 
 	const auto& vs = sh_ctx.GetVs();
+	if (ShaderRecompiler::Decoder::GetGuestIsa() == ShaderRecompiler::Decoder::GuestIsa::Gfx7) {
+		return vs.vs_regs.data_addr != 0; // PS4 hardware VS
+	}
 	return vs.es_regs.data_addr != 0;
 }
 
