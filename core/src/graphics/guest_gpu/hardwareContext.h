@@ -48,6 +48,9 @@ struct ColorAttrib2 {
 	uint32_t height         = 0;
 	uint32_t width          = 0;
 	uint32_t num_mip_levels = 0;
+	// gfx7: the pitch and height the tiling padded the surface to, in pixels.
+	uint32_t gfx7_pitch     = 0;
+	uint32_t gfx7_height    = 0;
 };
 
 struct ColorAttrib3 {
@@ -180,6 +183,9 @@ struct DepthDepthSizeXY {
 	uint16_t x_max = 0;
 	uint16_t y_max = 0;
 	bool     valid = false;
+	// gfx7: the padded size, in pixels.
+	uint16_t gfx7_pitch  = 0;
+	uint16_t gfx7_height = 0;
 };
 
 struct DepthRenderTarget {

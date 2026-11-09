@@ -58,6 +58,32 @@
 
 namespace Libs::Graphics {
 
+// PS4 surfaces are padded to their tiling (1920x1080 is stored as 1920x1088), and no register gives
+// the real size. The screen scissor is the area the game draws, so that is the size of the target;
+// the video-out buffer and textures that alias it name that same size. Stored as gfx10's minus one.
+static void RefreshGfx7TargetSizes(CommandProcessor& cp) {
+	const auto& vp     = cp.GetCtx().GetScreenViewport();
+	const auto  clamp  = [](uint32_t padded, int visible) {
+		return visible > 0 && static_cast<uint32_t>(visible) < padded ? static_cast<uint32_t>(visible)
+		                                                              : padded;
+	};
+	for (uint32_t slot = 0; slot < 8u; slot++) {
+		auto attrib2 = cp.GetCtx().GetRenderTarget(slot).attrib2;
+		if (attrib2.gfx7_pitch == 0u || attrib2.gfx7_height == 0u) {
+			continue;
+		}
+		attrib2.width  = clamp(attrib2.gfx7_pitch, vp.screen_scissor_right) - 1u;
+		attrib2.height = clamp(attrib2.gfx7_height, vp.screen_scissor_bottom) - 1u;
+		cp.GetCtx().SetColorAttrib2(slot, attrib2);
+	}
+	auto size = cp.GetCtx().GetDepthRenderTarget().size;
+	if (size.gfx7_pitch != 0u && size.gfx7_height != 0u) {
+		size.x_max = static_cast<uint16_t>(clamp(size.gfx7_pitch, vp.screen_scissor_right) - 1u);
+		size.y_max = static_cast<uint16_t>(clamp(size.gfx7_height, vp.screen_scissor_bottom) - 1u);
+		cp.GetCtx().SetDepthDepthSizeXY(size);
+	}
+}
+
 // The running game is a PS4 one: some registers have gfx7 layouts.
 [[nodiscard]] static bool IsGfx7() {
 	return ShaderRecompiler::Decoder::GetGuestIsa() == ShaderRecompiler::Decoder::GuestIsa::Gfx7;
@@ -2884,7 +2910,7 @@ void GraphicsInitJmpTablesCxIndirect() {
 			}
 			const uint32_t slot = (cmd_offset - Pm4::CB_COLOR0_PITCH_GFX7) / 15u;
 			auto attrib2        = cp.GetCtx().GetRenderTarget(slot).attrib2;
-			attrib2.width       = ((value & 0x7ffu) + 1u) * 8u;
+			attrib2.gfx7_pitch  = ((value & 0x7ffu) + 1u) * 8u;
 			cp.GetCtx().SetColorAttrib2(slot, attrib2);
 			HW::ColorAttrib3 attrib3;
 			attrib3.tile_mode = Prospero::TileMode::kRenderTarget;
@@ -2898,8 +2924,9 @@ void GraphicsInitJmpTablesCxIndirect() {
 			const uint32_t slot = (cmd_offset - Pm4::CB_COLOR0_SLICE_GFX7) / 15u;
 			auto attrib2        = cp.GetCtx().GetRenderTarget(slot).attrib2;
 			const uint64_t pixels = (uint64_t {value & 0x3fffffu} + 1u) * 64u;
-			attrib2.height = attrib2.width != 0u ? static_cast<uint32_t>(pixels / attrib2.width) : 0u;
+			attrib2.gfx7_height = attrib2.gfx7_pitch != 0u ? static_cast<uint32_t>(pixels / attrib2.gfx7_pitch) : 0u;
 			cp.GetCtx().SetColorAttrib2(slot, attrib2);
+			RefreshGfx7TargetSizes(cp);
 		};
 	}
 
@@ -3263,6 +3290,7 @@ void GraphicsInitJmpTablesCxIndirect() {
 		int bottom = static_cast<int16_t>(
 		    static_cast<uint16_t>(KYTY_PM4_GET(value, PA_SC_SCREEN_SCISSOR_BR, BR_Y)));
 		cp.GetCtx().SetScreenScissor(vp.screen_scissor_left, vp.screen_scissor_top, right, bottom);
+		RefreshGfx7TargetSizes(cp);
 	};
 
 	g_hw_ctx_indirect_func[Pm4::PA_SC_GENERIC_SCISSOR_TL] = [](KYTY_HW_CTX_INDIRECT_ARGS) {
@@ -3465,10 +3493,11 @@ void GraphicsInitJmpTablesCxIndirect() {
 			return;
 		}
 		HW::DepthDepthSizeXY r;
-		r.x_max = static_cast<uint16_t>(((value & 0x7ffu) + 1u) * 8u - 1u);
-		r.y_max = static_cast<uint16_t>((((value >> 11u) & 0x7ffu) + 1u) * 8u - 1u);
-		r.valid = true;
+		r.gfx7_pitch  = static_cast<uint16_t>(((value & 0x7ffu) + 1u) * 8u);
+		r.gfx7_height = static_cast<uint16_t>((((value >> 11u) & 0x7ffu) + 1u) * 8u);
+		r.valid       = true;
 		cp.GetCtx().SetDepthDepthSizeXY(r);
+		RefreshGfx7TargetSizes(cp);
 	};
 
 	g_hw_ctx_indirect_func[Pm4::DB_DEPTH_SIZE_XY] = [](KYTY_HW_CTX_INDIRECT_ARGS) {

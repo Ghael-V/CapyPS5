@@ -190,6 +190,104 @@ void DecodeMimgGfx7(uint32_t pc, std::span<const uint32_t> code, uint32_t word_i
 
 } // namespace
 
+// A gfx7 DFMT/NFMT pair as the gfx10 unified buffer format number, 0 when it has none. Formats run
+// UNORM, SNORM, USCALED, SSCALED, UINT, SINT and, where it exists, FLOAT.
+uint32_t Gfx7UnifiedBufferFormat(uint32_t dfmt, uint32_t nfmt) {
+	constexpr uint32_t Float = 7u;
+	if (nfmt > 5u && nfmt != Float) {
+		return 0u;
+	}
+	struct Group {
+		uint32_t base;
+		bool     has_float;
+	};
+	constexpr std::array<Group, 15> Small {{
+	    {0u, false},  {1u, false},  {7u, true},   {14u, false}, {0u, false},
+	    {23u, true},  {30u, true},  {37u, true},  {44u, false}, {50u, false},
+	    {56u, false}, {0u, false},  {65u, true},  {0u, false},  {0u, false},
+	}};
+	// 32-bit channels only have UINT, SINT and FLOAT.
+	uint32_t wide = 0u;
+	switch (dfmt) {
+		case 4u: wide = 20u; break;
+		case 11u: wide = 62u; break;
+		case 13u: wide = 72u; break;
+		case 14u: wide = 75u; break;
+		default: break;
+	}
+	if (wide != 0u) {
+		return nfmt == 4u ? wide : nfmt == 5u ? wide + 1u : nfmt == Float ? wide + 2u : 0u;
+	}
+	if (dfmt >= Small.size() || Small[dfmt].base == 0u || (nfmt == Float && !Small[dfmt].has_float)) {
+		return 0u;
+	}
+	return Small[dfmt].base + (nfmt == Float ? 6u : nfmt);
+}
+
+// The gfx10 image format number of a gfx7 T#'s DFMT/NFMT.
+static uint32_t Gfx7ImageFormat(uint32_t dfmt, uint32_t nfmt) {
+	constexpr uint32_t Snorm = 1u, Float = 7u, Srgb = 9u;
+	switch (dfmt) {
+		case 1u:
+			if (nfmt == Srgb) return 128u;
+			break;
+		case 3u:
+			if (nfmt == Srgb) return 129u;
+			break;
+		case 10u:
+			if (nfmt == Srgb) return 130u;
+			break;
+		case 16u: return 133u; // 5_6_5
+		case 17u: return 134u; // 1_5_5_5
+		case 18u: return 135u; // 5_5_5_1
+		case 19u: return 136u; // 4_4_4_4
+		case 34u: return 132u; // 5_9_9_9
+		case 35u: return nfmt == Srgb ? 170u : 169u; // BC1
+		case 36u: return nfmt == Srgb ? 172u : 171u; // BC2
+		case 37u: return nfmt == Srgb ? 174u : 173u; // BC3
+		case 38u: return nfmt == Snorm ? 176u : 175u; // BC4
+		case 39u: return nfmt == Snorm ? 178u : 177u; // BC5
+		case 40u: return nfmt == Snorm ? 180u : 179u; // BC6
+		case 41u: return nfmt == Srgb ? 182u : 181u; // BC7
+		default: break;
+	}
+	(void)Float;
+	return Gfx7UnifiedBufferFormat(dfmt, nfmt);
+}
+
+void Gfx7BufferSharpToGfx10(uint32_t* fields) {
+	const uint32_t nfmt = (fields[3] >> 12u) & 0x7u;
+	const uint32_t dfmt = (fields[3] >> 15u) & 0xfu;
+	fields[3] = (fields[3] & ~(0x7fu << 12u)) | (Gfx7UnifiedBufferFormat(dfmt, nfmt) << 12u);
+}
+
+void Gfx7TextureSharpToGfx10(uint32_t* fields) {
+	const uint32_t base_low  = fields[0];
+	const uint32_t base_high = fields[1] & 0x3fu;
+	const uint32_t dfmt      = (fields[1] >> 20u) & 0x3fu;
+	const uint32_t nfmt      = (fields[1] >> 26u) & 0xfu;
+	const uint32_t width     = fields[2] & 0x3fffu;
+	const uint32_t height    = (fields[2] >> 14u) & 0x3fffu;
+	const uint32_t word3     = fields[3];
+	const uint32_t tile      = (word3 >> 20u) & 0x1fu;
+	const uint32_t type      = word3 >> 28u;
+	const uint32_t last_mip  = (word3 >> 16u) & 0xfu;
+	const bool     array     = type == 12u || type == 13u || type == 15u;
+	const uint32_t depth     = array ? (fields[5] >> 13u) & 0x1fffu : fields[4] & 0x1fffu;
+	const uint32_t base_array = fields[5] & 0x1fffu;
+	// gfx7 tiling is not decoded yet. Indices 0..7 are depth surfaces and 9..12 the displayable
+	// thin modes render targets use, so sampling a target finds its image; the rest read as linear.
+	const uint32_t mode = tile <= 7u ? 0x18u : (tile >= 9u && tile <= 12u) ? 0x1bu : 0x00u;
+	fields[0] = base_low;
+	fields[1] = base_high | (Gfx7ImageFormat(dfmt, nfmt) << 20u) | ((width & 3u) << 30u);
+	fields[2] = ((width >> 2u) & 0xfffu) | (height << 14u);
+	fields[3] = (word3 & 0xfffffu) | (mode << 20u) | (type << 28u);
+	fields[4] = depth | (base_array << 16u);
+	fields[5] = last_mip << 4u;
+	fields[6] = 0u;
+	fields[7] = 0u;
+}
+
 bool DecodeGfx7Instruction(std::span<const uint32_t> code, uint32_t word_index, Instruction& inst) {
 	const uint32_t word = code[word_index];
 	const uint32_t pc   = word_index * sizeof(uint32_t);
@@ -217,6 +315,14 @@ bool DecodeGfx7Instruction(std::span<const uint32_t> code, uint32_t word_index, 
 				SetRawWords(inst, code, word_index, 2);
 				SetUnsupported(inst, (word >> 26u) == 0x38u ? Family::MUBUF : Family::MTBUF,
 				               (word >> 16u) & 0xffu, "gfx7 ADDR64 buffer access is not implemented");
+				return true;
+			}
+			if ((word >> 26u) == 0x3au) {
+				// The decoded fields carry the gfx10 unified format split in two.
+				DecodeMtbuf(pc, code, word_index, inst);
+				const auto format  = Gfx7UnifiedBufferFormat(inst.data_format, inst.number_format);
+				inst.data_format   = format & 0xfu;
+				inst.number_format = (format >> 4u) & 0x7u;
 				return true;
 			}
 			return false;

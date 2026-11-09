@@ -619,9 +619,8 @@ Graphics::ImageInfo BufferAttributeGroup::Ps4ImageInfo(const VideoOutBuffer& buf
 	info.pixel_format    = pixel_format.format;
 	info.guest_format    = pixel_format.guest_format;
 	info.type            = Graphics::Prospero::ImageType::kColor2D;
-	// Tiled surfaces align their height to 8 rows, as the render target drawn into it does.
 	const bool tiled     = ps4_tiling != VIDEO_OUT_PS4_TILING_MODE_LINEAR;
-	info.extent          = {attribute.width, tiled ? (attribute.height + 7u) & ~7u : attribute.height, 1};
+	info.extent          = {attribute.width, attribute.height, 1};
 	info.resources       = {1, 1};
 	info.bytes_per_block = pixel_format.bytes_per_element;
 	info.samples         = 1;
