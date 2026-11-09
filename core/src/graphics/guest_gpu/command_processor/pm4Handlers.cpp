@@ -67,19 +67,28 @@ static void RefreshGfx7TargetSizes(CommandProcessor& cp) {
 		return visible > 0 && static_cast<uint32_t>(visible) < padded ? static_cast<uint32_t>(visible)
 		                                                              : padded;
 	};
+	// The scissor only reveals a surface's visible size when the difference is tiling padding. A
+	// much narrower scissor is a draw into part of a larger surface (a console's emulated VRAM).
+	const auto partial = [&vp](uint32_t padded) {
+		constexpr uint32_t MaxPitchPadding = 256u;
+		return vp.screen_scissor_right > 0 && static_cast<uint32_t>(vp.screen_scissor_right) < padded &&
+		       padded - static_cast<uint32_t>(vp.screen_scissor_right) > MaxPitchPadding;
+	};
 	for (uint32_t slot = 0; slot < 8u; slot++) {
 		auto attrib2 = cp.GetCtx().GetRenderTarget(slot).attrib2;
 		if (attrib2.gfx7_pitch == 0u || attrib2.gfx7_height == 0u) {
 			continue;
 		}
-		attrib2.width  = clamp(attrib2.gfx7_pitch, vp.screen_scissor_right) - 1u;
-		attrib2.height = clamp(attrib2.gfx7_height, vp.screen_scissor_bottom) - 1u;
+		const bool keep = partial(attrib2.gfx7_pitch);
+		attrib2.width   = (keep ? attrib2.gfx7_pitch : clamp(attrib2.gfx7_pitch, vp.screen_scissor_right)) - 1u;
+		attrib2.height  = (keep ? attrib2.gfx7_height : clamp(attrib2.gfx7_height, vp.screen_scissor_bottom)) - 1u;
 		cp.GetCtx().SetColorAttrib2(slot, attrib2);
 	}
 	auto size = cp.GetCtx().GetDepthRenderTarget().size;
 	if (size.gfx7_pitch != 0u && size.gfx7_height != 0u) {
-		size.x_max = static_cast<uint16_t>(clamp(size.gfx7_pitch, vp.screen_scissor_right) - 1u);
-		size.y_max = static_cast<uint16_t>(clamp(size.gfx7_height, vp.screen_scissor_bottom) - 1u);
+		const bool keep = partial(size.gfx7_pitch);
+		size.x_max = static_cast<uint16_t>((keep ? size.gfx7_pitch : clamp(size.gfx7_pitch, vp.screen_scissor_right)) - 1u);
+		size.y_max = static_cast<uint16_t>((keep ? size.gfx7_height : clamp(size.gfx7_height, vp.screen_scissor_bottom)) - 1u);
 		cp.GetCtx().SetDepthDepthSizeXY(size);
 	}
 }
