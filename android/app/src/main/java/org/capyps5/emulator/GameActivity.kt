@@ -73,7 +73,12 @@ class GameActivity : CapyActivity() {
         swapFaceButtons = settings.buttonLayout == ButtonLayout.Nintendo
         // Global settings with this game's overrides, applied before the core reads them.
         CoreOption.entries.forEach { option ->
-            NativeBridge.nativeSetOption(option.property, settings.effectiveOption(game.titleId, option, game.isUnreal))
+            val value = settings.effectiveOption(game.titleId, option, game.isUnreal)
+            // "Same as device" is resolved here: only Android knows the locale.
+            NativeBridge.nativeSetOption(
+                option.property,
+                if (option == CoreOption.Language && value == AUTO_LANGUAGE) deviceConsoleLanguage() else value,
+            )
         }
         val driver = GpuDrivers.find(this, settings.effectiveGpuDriver(game.titleId))
         NativeBridge.nativeSetGpuDriver(

@@ -32,6 +32,43 @@ enum class ButtonLayout(@StringRes val labelRes: Int) {
     fun label(context: Context) = context.getString(labelRes)
 }
 
+/** Language option value meaning "follow the device". */
+const val AUTO_LANGUAGE = -1L
+
+/** The console language id closest to the device's locale. */
+fun deviceConsoleLanguage(): Long {
+    val locale = java.util.Locale.getDefault()
+    val country = locale.country
+    return when (locale.language) {
+        "ja" -> 0L
+        "en" -> if (country in setOf("GB", "IE", "AU", "NZ", "ZA", "IN")) 18L else 1L
+        "fr" -> if (country == "CA") 22L else 2L
+        "es" -> if (country == "ES" || country.isEmpty()) 3L else 20L
+        "de" -> 4L
+        "it" -> 5L
+        "nl" -> 6L
+        "pt" -> if (country == "BR") 17L else 7L
+        "ru" -> 8L
+        "ko" -> 9L
+        "zh" -> if (locale.script == "Hant" || country in setOf("TW", "HK", "MO")) 10L else 11L
+        "fi" -> 12L
+        "sv" -> 13L
+        "da" -> 14L
+        "nb", "nn", "no" -> 15L
+        "pl" -> 16L
+        "tr" -> 19L
+        "ar" -> 21L
+        "cs" -> 23L
+        "hu" -> 24L
+        "el" -> 25L
+        "ro" -> 26L
+        "th" -> 27L
+        "vi" -> 28L
+        "id", "in" -> 29L
+        else -> 1L
+    }
+}
+
 /**
  * Emulator core option, passed to the core as its debug.capy.* property before a game starts.
  * Each has a global value and an optional per-game override.
@@ -103,6 +140,45 @@ enum class CoreOption(
             3L to R.string.frame_gen_x4,
         ),
         0L,
+    ),
+    Language(
+        R.string.option_language,
+        R.string.option_language_desc,
+        "debug.capy.language",
+        listOf(
+            AUTO_LANGUAGE to R.string.language_auto,
+            0L to R.string.language_ja,
+            1L to R.string.language_en_us,
+            18L to R.string.language_en_gb,
+            2L to R.string.language_fr,
+            22L to R.string.language_fr_ca,
+            3L to R.string.language_es,
+            20L to R.string.language_es_la,
+            4L to R.string.language_de,
+            5L to R.string.language_it,
+            6L to R.string.language_nl,
+            7L to R.string.language_pt,
+            17L to R.string.language_pt_br,
+            8L to R.string.language_ru,
+            9L to R.string.language_ko,
+            10L to R.string.language_zh_t,
+            11L to R.string.language_zh_s,
+            12L to R.string.language_fi,
+            13L to R.string.language_sv,
+            14L to R.string.language_da,
+            15L to R.string.language_no,
+            16L to R.string.language_pl,
+            19L to R.string.language_tr,
+            21L to R.string.language_ar,
+            23L to R.string.language_cs,
+            24L to R.string.language_hu,
+            25L to R.string.language_el,
+            26L to R.string.language_ro,
+            27L to R.string.language_th,
+            28L to R.string.language_vi,
+            29L to R.string.language_id,
+        ),
+        AUTO_LANGUAGE,
     ),
     ;
 
