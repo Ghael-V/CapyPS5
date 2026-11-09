@@ -490,6 +490,20 @@ void TextureCache::TrackImageDownload(ImageId id, Image& image) {
 	}
 }
 
+bool TextureCache::FindTargetInfoAt(uint64_t address, uint32_t width, uint32_t height, ImageInfo* info) {
+	std::scoped_lock lock(m_lock);
+	for (const auto id: FindImagesInRegion(address, 1, false)) {
+		const auto* image = m_slot_images.try_get(id);
+		if (image != nullptr && image->info.data.address == address && image->info.extent.width == width &&
+		    image->info.extent.height == height && image->info.IsTiled() &&
+		    (image->binding.is_target || image->IsGpuModified())) {
+			*info = image->info;
+			return true;
+		}
+	}
+	return false;
+}
+
 TextureCache::ImageIds TextureCache::FindImagesInRegion(uint64_t address, uint64_t size,
                                                         bool page_overlap) const {
 	ImagePageTable::PageRange pages {};
