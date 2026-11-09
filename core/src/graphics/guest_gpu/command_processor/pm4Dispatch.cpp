@@ -207,6 +207,7 @@ constexpr auto MakeOpcodeDispatchTable() {
 	g_cp_op_func[Pm4::IT_EVENT_WRITE]               = CpOpEventWrite;
 	g_cp_op_func[Pm4::IT_EVENT_WRITE_EOP]           = CpOpEventWriteEop;
 	g_cp_op_func[Pm4::IT_EVENT_WRITE_EOS]           = CpOpEventWriteEos;
+	g_cp_op_func[Pm4::IT_SET_CONFIG_REG]            = CpOpSetConfigReg;
 	g_cp_op_func[Pm4::IT_RELEASE_MEM]               = CpOpReleaseMem;
 	g_cp_op_func[Pm4::IT_MEM_SEMAPHORE]             = CpOpMemSemaphore;
 	g_cp_op_func[Pm4::IT_DMA_DATA]                  = CpOpDmaData;
