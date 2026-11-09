@@ -700,7 +700,9 @@ TextureBinding RenderExecutor::ResolveTexture(const ShaderRecompiler::IR::ImageR
 		desc.info.data.size        = std::max(desc.info.data.size, desc.info.Gfx7MicroSize());
 		// A render target in that mode is sampled as what the GPU drew, not from guest memory.
 		ImageInfo target {};
-		if (texture_cache.FindTargetInfoAt(address, width, height, &target)) {
+		// Only a surface of the same kind: a volume drawn by layers is converted when it is found.
+		if (texture_cache.FindTargetInfoAt(address, width, height, &target) &&
+		    target.type == desc.info.type) {
 			desc.info = target;
 		}
 	}

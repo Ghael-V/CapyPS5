@@ -2298,14 +2298,16 @@ KYTY_CP_OP_PARSER(CpOpReleaseMem) {
 	KYTY_PROFILER_FUNCTION();
 
 	auto payload_len = KYTY_PM4_LEN(cmd_id) - 1u;
-	if (payload_len < 7) {
+	// gfx7 has six payload dwords: no interrupt context, and other cache bits in the first one.
+	const bool gfx7 = IsGfx7();
+	if (payload_len < (gfx7 ? 6u : 7u)) {
 		return payload_len;
 	}
 
 	uint32_t cache_policy       = (buffer[0] >> 25u) & 0x3u;
 	uint32_t eop_event_type     = buffer[0] & 0x3fu;
 	uint32_t event_index        = (buffer[0] >> 8u) & 0x7u;
-	uint32_t gcr_cntl           = (buffer[0] >> 12u) & 0xfffu;
+	uint32_t gcr_cntl           = gfx7 ? 0u : (buffer[0] >> 12u) & 0xfffu;
 	uint32_t release_dst        = (buffer[1] >> 16u) & 0x3u;
 	uint32_t event_write_dest   = 0;
 	uint32_t data_sel           = (buffer[1] >> 29u) & 0x7u;
@@ -2313,11 +2315,11 @@ KYTY_CP_OP_PARSER(CpOpReleaseMem) {
 	auto*    dst_gpu_addr =
 	    reinterpret_cast<void*>(buffer[2] | (static_cast<uint64_t>(buffer[3]) << 32u));
 	uint64_t value                = buffer[4] | (static_cast<uint64_t>(buffer[5]) << 32u);
-	uint32_t interrupt_context_id = buffer[6] & 0x07ffffffu;
+	uint32_t interrupt_context_id = gfx7 ? 0u : buffer[6] & 0x07ffffffu;
 	Common::DebugFlags::NoteOnce("CapyPS5-Eop", 0x524d000000000000ull | (data_sel << 8u) | eop_event_type,
-	    "RELEASE_MEM data_sel=%u event=0x%x dst=%u int=%u dw: %08x %08x %08x %08x %08x %08x %08x",
+	    "RELEASE_MEM data_sel=%u event=0x%x dst=%u int=%u dw: %08x %08x %08x %08x %08x %08x",
 	    data_sel, eop_event_type, release_dst, interrupt_selector, buffer[0], buffer[1], buffer[2],
-	    buffer[3], buffer[4], buffer[5], buffer[6]);
+	    buffer[3], buffer[4], buffer[5]);
 
 
 
