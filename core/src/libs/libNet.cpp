@@ -26,6 +26,9 @@ namespace Libs {
 namespace LibNpTrophy2 {
 void InitNet_1_NpTrophy2(Loader::SymbolDatabase* s);
 }
+namespace LibNpTrophy {
+void InitNet_1_NpTrophy(Loader::SymbolDatabase* s);
+}
 namespace LibNpUniversalDataSystem {
 void InitNet_1_NpUniversalDataSystem(Loader::SymbolDatabase* s);
 }
@@ -3168,6 +3171,7 @@ LIB_DEFINE(InitNet_1) {
 	LibNpAuth::InitNet_1_NpAuth(s);
 	LibNpUtility::InitNet_1_NpUtility(s);
 	LibNpTrophy2::InitNet_1_NpTrophy2(s);
+	LibNpTrophy::InitNet_1_NpTrophy(s);
 	LibNpUniversalDataSystem::InitNet_1_NpUniversalDataSystem(s);
 	LibNpGameIntent::InitNet_1_NpGameIntent(s);
 	LibNpWebApi2::InitNet_1_NpWebApi2(s);
