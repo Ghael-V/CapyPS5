@@ -227,7 +227,10 @@ static ShaderMapEntry ShaderGetMappedData(uint64_t addr, const char* label) {
 
 	uint32_t words = 0;
 	uint32_t last_endpgm = 0;
-	for (uint32_t i = 0; i < max_scan_words; ++i) {
+	if (ShaderRecompiler::Decoder::GetGuestIsa() == ShaderRecompiler::Decoder::GuestIsa::Gfx7) {
+		words = Gfx7ShaderCodeWords(addr);
+	}
+	for (uint32_t i = 0; words == 0 && i < max_scan_words; ++i) {
 		if ((ptr[i] & 0xFFFF0000u) == 0xBF810000u) { // s_endpgm
 			last_endpgm = i + 1;
 			bool is_padding = true;
@@ -843,6 +846,7 @@ void BuildStageStaticKey(const ShaderVertexInputInfo& info, std::vector<uint32_t
 		                       static_cast<uint32_t>(mesh.fast_launch),
 		                       static_cast<uint32_t>(mesh.emulate)});
 	}
+	key.push_back(static_cast<uint32_t>(info.gfx7_vs));
 	key.push_back(info.tess.input_control_points);
 	if (info.tess.input_control_points != 0) {
 		const auto& tess = info.tess;
@@ -921,6 +925,9 @@ void BuildStageStaticKey(const ShaderComputeInputInfo& info, std::vector<uint32_
 
 bool VertexProgramUsesMesh(const HW::VertexShaderInfo& regs, const HW::Context& context,
                            bool mesh_shader_enabled) {
+	if (ShaderRecompiler::Decoder::GetGuestIsa() == ShaderRecompiler::Decoder::GuestIsa::Gfx7) {
+		return false; // PS4 hardware VS
+	}
 	if ((context.GetShaderStages() & 0x20u) != 0) {
 		return true;
 	}
@@ -930,9 +937,73 @@ bool VertexProgramUsesMesh(const HW::VertexShaderInfo& regs, const HW::Context& 
 	       regs.gs_regs.rsrc2.lds_size != 0;
 }
 
+// A PS4 vertex shader starts by calling its fetch shader, which loads the vertex attributes:
+// `s_swappc_b64 s[n:n+1], s[n:n+1]` with the fetch shader's address in that user-SGPR pair; the
+// fetch shader returns with `s_setpc_b64 s[n:n+1]`. The two compile as one program, the fetch
+// shader in front and the rest of the VS behind it. Only a scalar move to VCC_HI (Gnm's shader
+// tag) may precede the call.
+static void PrepareGfx7FetchCall(const HW::VertexShaderInfo& regs, uint32_t user_sgprs,
+                                 ShaderParams& params) {
+	namespace Decoder = ShaderRecompiler::Decoder;
+	const auto& code  = params.code;
+	for (uint32_t word = 0; word < code.size() && word < 16u;) {
+		Decoder::Instruction inst;
+		Decoder::DecodeInstruction(code, word, inst);
+		word += std::max<uint32_t>(inst.word_count, 1u);
+		if (inst.opcode == Decoder::Opcode::S_MOV_B32 && inst.dst.kind == Decoder::OperandKind::VccHi) {
+			continue;
+		}
+		if (inst.opcode != Decoder::Opcode::S_SWAPPC_B64) {
+			return; // no fetch shader
+		}
+		const auto pair = inst.src0.reg;
+		EXIT_NOT_IMPLEMENTED(inst.src0.kind != Decoder::OperandKind::Sgpr || pair + 1u >= user_sgprs);
+		const auto fetch = static_cast<uint64_t>(regs.vs_user_sgpr.value[pair]) |
+		                   (static_cast<uint64_t>(regs.vs_user_sgpr.value[pair + 1u]) << 32u);
+		EXIT_NOT_IMPLEMENTED(fetch == 0 || (fetch & 3u) != 0);
+		// The fetch shader ends at its S_SETPC_B64; give the decoder room up to 4 KiB.
+		std::array<uint32_t, 1024> probe {};
+		uint32_t fetch_words = 0;
+		while (fetch_words < probe.size() &&
+		       LibKernel::Memory::ReadGuestMemory(fetch + fetch_words * 4u, &probe[fetch_words], 4u)) {
+			fetch_words++;
+		}
+		EXIT_NOT_IMPLEMENTED(fetch_words == 0);
+		params.back_code = code.subspan(word);
+		params.code      = std::span {reinterpret_cast<const uint32_t*>(fetch), fetch_words};
+		const auto front = Decoder::DecodeFrontProgram(params.code);
+		params.code      = front.code;
+		const uint64_t hashes[] = {params.hash, XXH3_64bits(params.code.data(), params.code.size_bytes())};
+		params.hash = XXH3_64bits(hashes, sizeof(hashes));
+		return;
+	}
+}
+
+static ShaderParams PrepareGfx7VertexProgram(const HW::VertexShaderInfo& regs,
+                                             const HW::Context& context,
+                                             ShaderVertexInputInfo& info) {
+	const auto& vs = regs.vs_regs;
+	EXIT_NOT_IMPLEMENTED(vs.data_addr == 0);
+	const auto [data, hash] = ShaderGetMappedData(vs.data_addr, "Gfx7 VS:");
+	// SPI_SHADER_PGM_RSRC2_VS.USER_SGPR, bits 5:1.
+	const uint32_t user_sgprs = (vs.rsrc2 >> 1u) & 0x1fu;
+	auto params = GetShaderParams(vs.data_addr, hash,
+	                              std::span<const uint32_t>(regs.vs_user_sgpr.value, user_sgprs), data);
+	PrepareGfx7FetchCall(regs, user_sgprs, params);
+	info                     = {};
+	info.gfx7_vs             = true;
+	info.pa_cl_vs_out_cntl   = context.GetShaderRegisters().m_paClVsOutCntl;
+	info.scratch_size_dwords = data.scratch_size_dwords;
+	info.wave_size           = 64;
+	return params;
+}
+
 ShaderParams PrepareProgram(const HW::VertexShaderInfo& regs, const HW::Context& context,
                             const HW::UserConfig& user_config, ShaderVertexInputInfo& info,
                             bool mesh_shader_enabled, bool emulate_merged_gs) {
+	if (ShaderRecompiler::Decoder::GetGuestIsa() == ShaderRecompiler::Decoder::GuestIsa::Gfx7) {
+		return PrepareGfx7VertexProgram(regs, context, info);
+	}
 	const auto& sh     = context.GetShaderRegisters();
 	const auto [data, hash] = ShaderGetMappedData(regs.es_regs.data_addr, "ShaderGetInputInfoVS():");
 	const bool merged = (context.GetShaderStages() & 0x20u) != 0;

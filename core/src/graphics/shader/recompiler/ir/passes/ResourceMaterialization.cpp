@@ -15,6 +15,7 @@
 #include <bit>
 #include <cstdio>
 #include <fmt/format.h>
+#include <fmt/ranges.h>
 #include <functional>
 #include <numeric>
 #include <unordered_set>
@@ -1100,7 +1101,12 @@ bool MaterializeResources(const ResourcePlan& program, const SrtRuntime& runtime
 	SrtWalker walker(program, observed,
 	                 capture_reads || program.requires_specialization_memory ? &clean : nullptr);
 	if (!walker.RefreshFlatBuffer(snapshot.flattened_srt)) {
-		return MaterializeFail("SRT walk could not refresh the flattened table");
+		static thread_local std::string reason;
+		reason = fmt::format("SRT walk could not refresh the flattened table (plan_complete={}, "
+		                     "failed at {}, address {:#x}, backing-only reader {}, user SGPRs {:#x})",
+		                     program.srt_plan_complete, LastSrtFailedOpcode(), LastSrtFailedAddress(),
+		                     LastSrtFailedSpecialization(), fmt::join(runtime.user_data, " "));
+		return MaterializeFail(reason.c_str());
 	}
 	const auto active = std::span<const uint8_t>(program.active_sources);
 	snapshot.uniform_fill = {};

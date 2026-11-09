@@ -157,6 +157,9 @@ struct ShaderVertexInputInfo {
 	ShaderTessellationInputInfo tess;
 	bool                    fetch_external      = false;
 	bool                    fetch_embedded      = false;
+	// A PS4 (gfx7) hardware vertex shader: user SGPRs from s0, the vertex index in v0 and the
+	// instance index in v1..v3, instead of the NGG layout.
+	bool                    gfx7_vs             = false;
 	// GPU-side indirect draws: these user SGPRs take gl_BaseVertex/gl_BaseInstance instead of
 	// values patched from CPU-read arguments, and native fetches see indices without them.
 	// UINT32_MAX: not a GPU indirect draw; IndirectNoSgpr: one without that offset register.
