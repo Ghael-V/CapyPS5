@@ -1023,6 +1023,22 @@ static ShaderParams PrepareGfx7VertexProgram(const HW::VertexShaderInfo& regs,
 	auto params = GetShaderParams(vs.data_addr, hash,
 	                              std::span<const uint32_t>(regs.vs_user_sgpr.value, user_sgprs), data);
 	PrepareGfx7FetchCall(regs, user_sgprs, params);
+	// `setprop debug.capy.watch_vs <address>`: that PS4 vertex shader's user SGPRs and the first
+	// 48 dwords of the table its s[0:1] points at (tag CapyPS5-Gfx7).
+	static Common::DebugFlags::CachedValue watch_vs("debug.capy.watch_vs", 0);
+	if (watch_vs.Get() != 0 && vs.data_addr == static_cast<uint64_t>(watch_vs.Get())) {
+		const uint64_t table = uint64_t {regs.vs_user_sgpr.value[0]} | (uint64_t {regs.vs_user_sgpr.value[1]} << 32u);
+		std::array<uint32_t, 48> dwords {};
+		const bool ok = LibKernel::Memory::ReadGuestMemory(table, dwords.data(), sizeof(dwords));
+		std::string text = fmt::format("watch_vs sgprs={} table=0x{:x} ok={}:", user_sgprs, table, ok);
+		for (uint32_t i = 0; i < 16u && i < user_sgprs; i++) {
+			text += fmt::format(" s{}={:08x}", i, regs.vs_user_sgpr.value[i]);
+		}
+		for (size_t i = 0; i < dwords.size(); i++) {
+			text += fmt::format("{}{:08x}", i % 4u == 0u ? " | " : " ", dwords[i]);
+		}
+		Common::DebugFlags::NoteOnce("CapyPS5-Gfx7", table ^ 0x57565300ull ^ (uint64_t {dwords[33]} << 20u), "%s", text.c_str());
+	}
 	info                     = {};
 	info.gfx7_vs             = true;
 	info.pa_cl_vs_out_cntl   = context.GetShaderRegisters().m_paClVsOutCntl;
