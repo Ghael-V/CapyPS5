@@ -676,11 +676,11 @@ public:
 							}
 						}
 						__android_log_print(ANDROID_LOG_WARN, "CapyPS5-HleTrace",
-						                    "tid %d from 0x%llx %s(0x%llx, 0x%llx, 0x%llx) = 0x%llx %s", static_cast<int>(gettid()),
+						                    "tid %d from 0x%llx %s(0x%llx, 0x%llx, 0x%llx, 0x%llx) = 0x%llx %s", static_cast<int>(gettid()),
 						                    guest_stack ? static_cast<unsigned long long>(guest_stack[0]) : 0ull,
 						                    name.c_str(), static_cast<unsigned long long>(a0),
 						                    static_cast<unsigned long long>(a1), static_cast<unsigned long long>(a2),
-						                    static_cast<unsigned long long>(ret), path);
+						                    static_cast<unsigned long long>(a3), static_cast<unsigned long long>(ret), path);
 					}
 				}
 			}
