@@ -237,6 +237,10 @@ void RenderExecutor::ResolveRenderColorTarget(CommandBuffer& buffer, RenderColor
 		EXIT("unsupported render-target mip count\n");
 	}
 	desc.info.UpdateSize();
+	if (rt.attrib2.gfx7_pitch != 0u && rt.attrib2.gfx7_height != 0u && levels == 1u && samples == 1u) {
+		desc.info.gfx7_guest_size = uint64_t {rt.attrib2.gfx7_pitch} * rt.attrib2.gfx7_height *
+		                            bytes_per_element * desc.info.resources.layers;
+	}
 	if (!desc.info.data.Valid()) {
 		EXIT("render-target backing range is invalid\n");
 	}
@@ -288,6 +292,10 @@ void RenderExecutor::ResolveRenderColorTarget(CommandBuffer& buffer, RenderColor
 	r.guest_mip_level          = mip;
 	r.guest_array_layer        = view.base_layer;
 	r.image_id                 = texture_cache.FindImage(r.desc, exact_format);
+	if (r.desc.info.gfx7_guest_size != 0) {
+		// The image may have been created earlier from a texture descriptor.
+		texture_cache.GetImage(r.image_id).info.gfx7_guest_size = r.desc.info.gfx7_guest_size;
+	}
 	r.export_mapping           = target_format.export_mapping;
 	BindRenderTarget(r.image_id);
 }

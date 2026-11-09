@@ -1248,6 +1248,17 @@ private:
 				    static_cast<unsigned long long>(entry_addr), static_cast<unsigned long long>(end_rip),
 				    static_cast<unsigned long long>(end_rsp), static_cast<unsigned long long>(rsp),
 				    static_cast<unsigned long long>(ret));
+				const auto& g = thread->CurrentFrame->State.gregs;
+				const auto  r = [&g](unsigned id) { return static_cast<unsigned long long>(g[id]); };
+				__android_log_print(ANDROID_LOG_WARN, "CapyPS5-Cpu",
+				    "  rbx=0x%llx rcx=0x%llx rdx=0x%llx rsi=0x%llx rdi=0x%llx rbp=0x%llx r8=0x%llx r9=0x%llx",
+				    r(FEXCore::X86State::REG_RBX), r(FEXCore::X86State::REG_RCX), r(FEXCore::X86State::REG_RDX),
+				    r(FEXCore::X86State::REG_RSI), r(FEXCore::X86State::REG_RDI), r(FEXCore::X86State::REG_RBP),
+				    r(FEXCore::X86State::REG_R8), r(FEXCore::X86State::REG_R9));
+				__android_log_print(ANDROID_LOG_WARN, "CapyPS5-Cpu",
+				    "  r10=0x%llx r11=0x%llx r12=0x%llx r13=0x%llx r14=0x%llx r15=0x%llx",
+				    r(FEXCore::X86State::REG_R10), r(FEXCore::X86State::REG_R11), r(FEXCore::X86State::REG_R12),
+				    r(FEXCore::X86State::REG_R13), r(FEXCore::X86State::REG_R14), r(FEXCore::X86State::REG_R15));
 			}
 		}
 
