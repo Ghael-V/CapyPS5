@@ -100,6 +100,9 @@ struct ImageInfo {
 	// out that way, and whether its mips are padded to powers of two.
 	uint32_t gfx7_micro_pitch = 0;
 	bool     gfx7_micro_pow2  = false;
+	// PS4 (gfx7) render target: the bytes it really occupies in guest memory, 0 when unknown.
+	// data.size follows the gfx10 layout and can be larger, covering the game's next allocation.
+	uint64_t gfx7_guest_size  = 0;
 
 	struct Gfx7MicroLevel {
 		uint32_t pitch  = 0; // blocks

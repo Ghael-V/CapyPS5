@@ -189,6 +189,21 @@ bool BufferCache::DownloadBufferMemory(Buffer& buffer, uint64_t vaddr, uint64_t 
 	Common::DebugFlags::FrameTrace("    download %zu ranges, %llu bytes", copies.size(),
 	                               static_cast<unsigned long long>(total_size));
 
+	// An asynchronous download lands after the CPU has been let back onto these pages: remember
+	// what guest memory holds now, so that bytes the CPU changes in between are kept. Overwriting
+	// them erased the free-list links a PS4 game's allocator stored in a buffer it had released.
+	std::vector<std::vector<uint8_t>> snapshots;
+	if constexpr (async) {
+		snapshots.resize(copies.size());
+		for (size_t i = 0; i < copies.size(); i++) {
+			snapshots[i].resize(copies[i].size);
+			if (!Libs::LibKernel::Memory::TryReadBacking(buffer_address + copies[i].srcOffset,
+			                                             snapshots[i].data(), copies[i].size)) {
+				snapshots[i].clear();
+			}
+		}
+	}
+
 	auto [mapped, offset] = m_download_buffer.Map(total_size, 64);
 	std::unique_ptr<Buffer> temporary;
 	if (mapped == nullptr) {
@@ -230,12 +245,25 @@ bool BufferCache::DownloadBufferMemory(Buffer& buffer, uint64_t vaddr, uint64_t 
 	                       vk::PipelineStageFlagBits::eAllCommands |
 	                           vk::PipelineStageFlagBits::eHost,
 	                       {}, 0, nullptr, 1, &after, 0, nullptr);
-	auto publish = [this, mapped, offset, total_size, buffer_address,
-	                copies = std::move(copies), owner = std::move(temporary)] {
+	auto publish = [this, mapped, offset, total_size, buffer_address, copies = std::move(copies),
+	                snapshots = std::move(snapshots), owner = std::move(temporary)] {
 		(owner ? *owner : m_download_buffer).Invalidate(offset, total_size);
-		for (const auto& copy: copies) {
-			Libs::LibKernel::Memory::WriteBacking(buffer_address + copy.srcOffset,
-			                                      mapped + (copy.dstOffset - offset), copy.size);
+		for (size_t i = 0; i < copies.size(); i++) {
+			const auto& copy    = copies[i];
+			const auto  address = buffer_address + copy.srcOffset;
+			auto*       source  = mapped + (copy.dstOffset - offset);
+			if constexpr (async) {
+				std::vector<uint8_t> current(copy.size);
+				if (snapshots[i].size() == copy.size &&
+				    Libs::LibKernel::Memory::TryReadBacking(address, current.data(), copy.size)) {
+					for (uint64_t byte = 0; byte < copy.size; byte++) {
+						if (current[byte] != snapshots[i][byte]) {
+							source[byte] = current[byte];
+						}
+					}
+				}
+			}
+			Libs::LibKernel::Memory::WriteBacking(address, source, copy.size);
 		}
 		if constexpr (async) {
 			std::scoped_lock lock {m_async_download_lock};

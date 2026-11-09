@@ -979,6 +979,11 @@ ImageId TextureCache::ExpandImage(const ImageInfo& info, ImageId source_id) {
 
 bool TextureCache::CanDownload(const Image& image) const {
 	const auto& info = image.info;
+	// A PS4 target is laid out for gfx10 here and its data.size runs past the real surface:
+	// writing it back would overwrite the game's next allocation.
+	if (info.gfx7_guest_size != 0 && info.gfx7_guest_size < info.data.size) {
+		return false;
+	}
 	// Decoded BCn texels cannot be encoded back into the guest's blocks.
 	if (image.IsBcDecoded()) {
 		return false;
@@ -2043,6 +2048,23 @@ void TextureCache::InvalidateCpuAliases(uint64_t address, uint64_t size) {
 			continue;
 		}
 		if (owner->Overlaps(address, size)) {
+			const auto real_size = owner->info.gfx7_guest_size;
+			if (real_size != 0 && real_size < owner->info.data.size &&
+			    address >= owner->info.data.address + real_size) {
+				// Past the end of a PS4 target: the game's own next allocation, not the image.
+				// Stop watching those pages so the write can proceed.
+				const auto keep_end =
+				    Common::AlignDown(owner->info.data.address + real_size, TRACKER_PAGE_SIZE);
+				if (owner->IsTracked() && owner->track_addr_end > keep_end &&
+				    owner->track_addr < keep_end) {
+					const auto old_end    = owner->track_addr_end;
+					owner->track_addr_end = keep_end;
+					m_page_manager.UpdatePageWatchers<false>(keep_end, old_end - keep_end);
+				} else if (owner->IsTracked() && owner->track_addr >= keep_end) {
+					UntrackImage(id);
+				}
+				continue;
+			}
 			owner->InvalidateCpuWrite(address, size);
 			UntrackImage(id);
 			continue;
