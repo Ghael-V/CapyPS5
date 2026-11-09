@@ -55,6 +55,9 @@ public:
 	void                        UpdateImage(ImageId id);
 	[[nodiscard]] ImageId       FindImageFromRange(uint64_t address, uint64_t size,
 	                                               bool ensure_valid = true);
+	// The render target the GPU drew at `address` with these dimensions, if there is one.
+	[[nodiscard]] bool          FindTargetInfoAt(uint64_t address, uint32_t width, uint32_t height,
+	                                             ImageInfo* info);
 	[[nodiscard]] vk::ImageView FindTexture(ImageId id, const ImageDesc& desc);
 	[[nodiscard]] vk::ImageView FindRenderTarget(ImageId id, const ImageDesc& desc);
 	[[nodiscard]] vk::ImageView FindDepthTarget(ImageId id, const ImageDesc& desc);

@@ -691,6 +691,11 @@ TextureBinding RenderExecutor::ResolveTexture(const ShaderRecompiler::IR::ImageR
 		desc.info.gfx7_micro_pitch = ((descriptor.fields[7] >> 5u) & 0x3fffu) + 1u;
 		desc.info.gfx7_micro_pow2  = (descriptor.fields[7] & 0x40000000u) != 0u;
 		desc.info.data.size        = std::max(desc.info.data.size, desc.info.Gfx7MicroSize());
+		// A render target in that mode is sampled as what the GPU drew, not from guest memory.
+		ImageInfo target {};
+		if (texture_cache.FindTargetInfoAt(address, width, height, &target)) {
+			desc.info = target;
+		}
 	}
 	desc.view_info = TextureViewInfo(resource, descriptor, view_format, surface_format, storage,
 	                                 view_levels, desc.info.resources.layers);
