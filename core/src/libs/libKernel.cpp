@@ -1514,6 +1514,14 @@ static void KYTY_SYSV_ABI KernelRtldSetApplicationHeapAPI(void* api[]) {
 }
 
 static int64_t KYTY_SYSV_ABI write(int d, const void* buf, size_t nbytes) {
+#if defined(__ANDROID__)
+	// `setprop debug.capy.guest_stdout 1`: the game's own stdout/stderr text (tag CapyPS5-Stdout).
+	static Common::DebugFlags::CachedValue guest_stdout("debug.capy.guest_stdout", 0);
+	if ((d == 1 || d == 2) && buf != nullptr && guest_stdout.Get() != 0) {
+		__android_log_print(ANDROID_LOG_WARN, "CapyPS5-Stdout", "%.*s", static_cast<int>(std::min<size_t>(nbytes, 900u)),
+		                    static_cast<const char*>(buf));
+	}
+#endif
 	return POSIX_N_CALL(FileSystem::KernelWrite(d, buf, nbytes));
 }
 

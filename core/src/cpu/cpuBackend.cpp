@@ -662,7 +662,7 @@ public:
 					}();
 					// Mutex calls drown everything else; open/stat-like calls show their path.
 					// Calls made thousands of times a second would fill the trace in milliseconds.
-					static const std::array<const char*, 9> noisy {"Getspecific", "PthreadSelf", "wlock", "Rwlock", "Getthreadid", "PthreadEqual", "gettimeofday", "ReadTsc", "ClockGettime"};
+					static const std::array<const char*, 22> noisy {"Getspecific", "Setspecific", "PthreadSelf", "wlock", "Rwlock", "Getthreadid", "PthreadEqual", "gettimeofday", "ReadTsc", "ClockGettime", "tls_get_addr", "memset", "memcpy", "ond", "MemoryPool", "DiscMap", "Pread", "AudioOutOutputs", "GetPortState", "PadRead", "Usleep", "EventFlag"};
 					const bool is_noisy = std::any_of(noisy.begin(), noisy.end(), [&name](const char* item) { return name.find(item) != std::string::npos; });
 					if (!is_noisy && name.find("Mutex") == std::string::npos && name.find("mutex") == std::string::npos &&
 					    (name_filter.empty() || name.find(name_filter) != std::string::npos) &&
