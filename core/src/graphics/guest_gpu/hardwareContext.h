@@ -506,6 +506,9 @@ struct CsStageRegisters {
 
 struct EsStageRegisters {
 	uint64_t data_addr = 0;
+	// SPI_SHADER_PGM_RSRC1/2_ES, written by PS4 (gfx7) games only.
+	uint32_t rsrc1 = 0;
+	uint32_t rsrc2 = 0;
 };
 
 struct LsStageRegisters {
@@ -632,6 +635,8 @@ struct VertexShaderInfo {
 	UserSgprInfo     gs_user_sgpr;
 	VsStageRegisters vs_regs;
 	UserSgprInfo     vs_user_sgpr;
+	// The gfx7 ES stage's user SGPRs (PS4 legacy geometry pipelines).
+	UserSgprInfo     es_user_sgpr;
 };
 
 struct PixelShaderInfo {
@@ -1045,6 +1050,14 @@ public:
 	void Reset() { *this = Shader(); }
 
 	void SetEsShaderBase(uint64_t addr) { m_vs.es_regs.data_addr = addr; }
+	void SetEsShaderResource1(uint32_t value) { m_vs.es_regs.rsrc1 = value; }
+	void SetEsShaderResource2(uint32_t value) { m_vs.es_regs.rsrc2 = value; }
+	void SetEsUserSgpr(uint32_t id, uint32_t value, UserSgprType type) {
+		m_vs.es_user_sgpr.value[id] = value;
+		m_vs.es_user_sgpr.type[id]  = type;
+		m_vs.es_user_sgpr.count =
+		    ((id + 1) > m_vs.es_user_sgpr.count ? (id + 1) : m_vs.es_user_sgpr.count);
+	}
 	void SetLsShaderBase(uint64_t addr) { m_vs.ls_regs.data_addr = addr; }
 	void SetHsShaderBase(uint64_t addr) { m_vs.hs_regs.data_addr = addr; }
 	void SetHsUserDataAddress(uint32_t word, uint32_t value) {

@@ -34,6 +34,7 @@
 #include <cstring>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <span>
 #include <string>
 #include <unordered_map>
@@ -809,6 +810,21 @@ static void ShaderGetStaticInputInfoCS(const HW::ComputeShaderInfo& regs,
 	info.workgroup_register = regs.cs_regs.user_sgpr;
 }
 
+static void AppendGfx7GsFoldKey(const ShaderGfx7GsFold& fold, std::vector<uint32_t>& key) {
+	key.push_back(fold.exports_num);
+	if (fold.exports_num == 0) {
+		return;
+	}
+	key.push_back(fold.ring_offset_sgpr);
+	for (uint32_t i = 0; i < fold.exports_num; i++) {
+		const auto& e = fold.exports[i];
+		key.insert(key.end(), {e.target, e.en, static_cast<uint32_t>(e.done)});
+		for (uint32_t c = 0; c < 4u; c++) {
+			key.insert(key.end(), {static_cast<uint32_t>(e.kind[c]), e.value[c]});
+		}
+	}
+}
+
 void BuildStageStaticKey(const ShaderVertexInputInfo& info, std::vector<uint32_t>& key) {
 	EXIT_IF(info.resources_num < 0 || info.resources_num > ShaderVertexInputInfo::RES_MAX);
 	key.clear();
@@ -847,6 +863,7 @@ void BuildStageStaticKey(const ShaderVertexInputInfo& info, std::vector<uint32_t
 		                       static_cast<uint32_t>(mesh.emulate)});
 	}
 	key.push_back(static_cast<uint32_t>(info.gfx7_vs));
+	AppendGfx7GsFoldKey(info.gfx7_gs, key);
 	key.push_back(info.tess.input_control_points);
 	if (info.tess.input_control_points != 0) {
 		const auto& tess = info.tess;
@@ -942,7 +959,7 @@ bool VertexProgramUsesMesh(const HW::VertexShaderInfo& regs, const HW::Context& 
 // fetch shader returns with `s_setpc_b64 s[n:n+1]`. The two compile as one program, the fetch
 // shader in front and the rest of the VS behind it. Only a scalar move to VCC_HI (Gnm's shader
 // tag) may precede the call.
-static void PrepareGfx7FetchCall(const HW::VertexShaderInfo& regs, uint32_t user_sgprs,
+static void PrepareGfx7FetchCall(const HW::UserSgprInfo& sgprs, uint32_t user_sgprs,
                                  ShaderParams& params) {
 	namespace Decoder = ShaderRecompiler::Decoder;
 	const auto& code  = params.code;
@@ -958,8 +975,8 @@ static void PrepareGfx7FetchCall(const HW::VertexShaderInfo& regs, uint32_t user
 		}
 		const auto pair = inst.src0.reg;
 		EXIT_NOT_IMPLEMENTED(inst.src0.kind != Decoder::OperandKind::Sgpr || pair + 1u >= user_sgprs);
-		const auto fetch = static_cast<uint64_t>(regs.vs_user_sgpr.value[pair]) |
-		                   (static_cast<uint64_t>(regs.vs_user_sgpr.value[pair + 1u]) << 32u);
+		const auto fetch = static_cast<uint64_t>(sgprs.value[pair]) |
+		                   (static_cast<uint64_t>(sgprs.value[pair + 1u]) << 32u);
 		EXIT_NOT_IMPLEMENTED(fetch == 0 || (fetch & 3u) != 0);
 		// The fetch shader ends at its S_SETPC_B64; give the decoder room up to 4 KiB.
 		std::array<uint32_t, 1024> probe {};
@@ -1012,9 +1029,404 @@ static void DebugGfx7PixelResources(const HW::PixelShaderInfo& regs) {
 #endif
 }
 
+// PS4 legacy geometry pipelines: the ES writes each vertex to the ESGS ring, the GS reads the
+// primitive's vertices from it and writes the vertices it emits to the GSVS ring, and a copy VS
+// reads that ring and exports. There is no geometry stage here, so a GS that emits its input
+// triangle unchanged (Unreal Engine 4 uses one to choose the layer of a volume texture pass) is
+// folded away: the ES runs as the vertex shader and makes the copy shader's exports itself
+// (ShaderRecompiler FoldGfx7GsIntoEs). The GS and the copy VS are followed as straight-line code;
+// anything else is left to the copy VS as before.
+//
+// Ring layouts (gfx7): ES dword k of a vertex is at ES offset 4k, at GS soffset 256k past the
+// vertex offset (v0, v1, v3 for the triangle's vertices, times 4); GS slot s of emitted vertex e
+// at GSVS offset 4 (s * max_vert + e), read back by the copy VS at soffset s * max_vert * 64.
+namespace {
+
+namespace Gfx7Dec = ShaderRecompiler::Decoder;
+
+struct Gfx7GsValue {
+	enum class Kind : uint8_t { Unknown, Constant, VertexOffset, VertexAddress, EsDword };
+	Kind     kind   = Kind::Unknown;
+	uint32_t value  = 0; // the constant or the ES ring dword
+	uint32_t vertex = 0;
+	bool     operator==(const Gfx7GsValue&) const = default;
+};
+
+struct Gfx7GsState {
+	std::array<Gfx7GsValue, 256>             vgpr {};
+	std::array<std::optional<uint32_t>, 108> sgpr {}; // s0..s105, vcc_lo, vcc_hi
+
+	[[nodiscard]] std::optional<uint32_t> Scalar(const Gfx7Dec::Operand& op) const {
+		switch (op.kind) {
+			case Gfx7Dec::OperandKind::LiteralConstant:
+			case Gfx7Dec::OperandKind::IntegerInlineConstant:
+			case Gfx7Dec::OperandKind::FloatInlineConstant: return op.value;
+			case Gfx7Dec::OperandKind::Sgpr: return op.reg < 106u ? sgpr[op.reg] : std::nullopt;
+			case Gfx7Dec::OperandKind::VccLo: return sgpr[106];
+			case Gfx7Dec::OperandKind::VccHi: return sgpr[107];
+			default: return std::nullopt;
+		}
+	}
+	[[nodiscard]] Gfx7GsValue Vector(const Gfx7Dec::Operand& op) const {
+		if (op.negate || op.absolute) {
+			return {};
+		}
+		if (op.kind == Gfx7Dec::OperandKind::Vgpr) {
+			return op.reg < vgpr.size() ? vgpr[op.reg] : Gfx7GsValue {};
+		}
+		if (const auto value = Scalar(op); value.has_value()) {
+			return {.kind = Gfx7GsValue::Kind::Constant, .value = *value};
+		}
+		return {};
+	}
+	// Forgets `count` scalar registers from `op` on.
+	void SetScalar(const Gfx7Dec::Operand& op, std::optional<uint32_t> value, uint32_t count = 1) {
+		for (uint32_t i = 0; i < count; i++) {
+			const auto v = i == 0 ? value : std::nullopt;
+			if (op.kind == Gfx7Dec::OperandKind::Sgpr && op.reg + i < 106u) {
+				sgpr[op.reg + i] = v;
+			} else if (op.kind == Gfx7Dec::OperandKind::VccLo && i < 2u) {
+				sgpr[106 + i] = v;
+			} else if (op.kind == Gfx7Dec::OperandKind::VccHi && i == 0) {
+				sgpr[107] = v;
+			}
+		}
+	}
+};
+
+bool DecodeGfx7Straight(uint64_t addr, std::vector<Gfx7Dec::Instruction>& out) {
+	const auto words = Gfx7ShaderCodeWords(addr);
+	if (words == 0) {
+		return false;
+	}
+	const std::span<const uint32_t> code {reinterpret_cast<const uint32_t*>(addr), words};
+	for (uint32_t word = 0; word < words;) {
+		auto& inst = out.emplace_back();
+		Gfx7Dec::DecodeInstruction(code, word, inst);
+		if (inst.opcode == Gfx7Dec::Opcode::UNKNOWN || inst.opcode == Gfx7Dec::Opcode::UNSUPPORTED) {
+			return false;
+		}
+		word += std::max<uint32_t>(inst.word_count, 1u);
+		if (inst.opcode == Gfx7Dec::Opcode::S_ENDPGM) {
+			return true;
+		}
+	}
+	return false;
+}
+
+// The moves, shifts and scalar loads both stages use; false for anything else.
+bool StepGfx7GsCommon(const Gfx7Dec::Instruction& inst, Gfx7GsState& s) {
+	using O = Gfx7Dec::Opcode;
+	switch (inst.opcode) {
+		case O::S_NOP:
+		case O::S_WAITCNT: return true;
+		case O::S_MOV_B32:
+		case O::S_MOVK_I32: s.SetScalar(inst.dst, s.Scalar(inst.src0)); return true;
+		case O::V_MOV_B32:
+			if (inst.dst.kind != Gfx7Dec::OperandKind::Vgpr) {
+				return false;
+			}
+			s.vgpr[inst.dst.reg] = s.Vector(inst.src0);
+			return true;
+		case O::V_LSHLREV_B32: {
+			if (inst.dst.kind != Gfx7Dec::OperandKind::Vgpr) {
+				return false;
+			}
+			const auto  shift  = s.Scalar(inst.src0);
+			const auto  source = s.Vector(inst.src1);
+			Gfx7GsValue result;
+			if (shift == 2u && source.kind == Gfx7GsValue::Kind::VertexOffset) {
+				result = {.kind = Gfx7GsValue::Kind::VertexAddress, .vertex = source.vertex};
+			}
+			s.vgpr[inst.dst.reg] = result;
+			return true;
+		}
+		default: break;
+	}
+	if (inst.family == Gfx7Dec::Family::SMEM) {
+		s.SetScalar(inst.dst, std::nullopt, std::max<uint32_t>(inst.data_dwords, 1u));
+		return true;
+	}
+	return false;
+}
+
+struct Gfx7GsSlot {
+	Gfx7GsValue value;
+	uint32_t    emitted = 0; // bit per emitted vertex
+};
+
+// The GS: which ES ring dword (or constant) each GSVS slot carries.
+const char* AnalyzeGfx7Gs(uint64_t addr, uint32_t gsvs_sgpr, uint32_t max_vert, std::vector<Gfx7GsSlot>& slots) {
+	using O = Gfx7Dec::Opcode;
+	std::vector<Gfx7Dec::Instruction> code;
+	if (!DecodeGfx7Straight(addr, code)) {
+		return "GS decode";
+	}
+	Gfx7GsState s;
+	s.vgpr[0] = {.kind = Gfx7GsValue::Kind::VertexOffset, .vertex = 0};
+	s.vgpr[1] = {.kind = Gfx7GsValue::Kind::VertexOffset, .vertex = 1};
+	s.vgpr[3] = {.kind = Gfx7GsValue::Kind::VertexOffset, .vertex = 2};
+	uint32_t emits = 0;
+	for (const auto& inst: code) {
+		if (StepGfx7GsCommon(inst, s)) {
+			continue;
+		}
+		switch (inst.opcode) {
+			case O::S_ENDPGM: break;
+			case O::S_SENDMSG: {
+				const auto msg = inst.src0.value;
+				if ((msg & 0xfu) == 3u) {
+					break; // GS_DONE
+				}
+				// GS EMIT on stream 0 only: no cuts, no other streams.
+				if ((msg & 0xfu) != 2u || ((msg >> 4u) & 3u) != 2u || ((msg >> 8u) & 3u) != 0u) {
+					return "GS message";
+				}
+				emits++;
+				break;
+			}
+			case O::BUFFER_LOAD_DWORD: {
+				const auto address = s.Vector(inst.src0);
+				const auto soffset = s.Scalar(inst.src2);
+				if (!inst.offen || inst.idxen || address.kind != Gfx7GsValue::Kind::VertexAddress ||
+				    !soffset.has_value() || ((*soffset + inst.offset) % 256u) != 0 ||
+				    inst.dst.kind != Gfx7Dec::OperandKind::Vgpr) {
+					return "GS ring load";
+				}
+				s.vgpr[inst.dst.reg] = {.kind   = Gfx7GsValue::Kind::EsDword,
+				                        .value  = (*soffset + inst.offset) / 256u,
+				                        .vertex = address.vertex};
+				break;
+			}
+			case O::BUFFER_STORE_DWORD: {
+				if (inst.src2.kind != Gfx7Dec::OperandKind::Sgpr || inst.src2.reg != gsvs_sgpr || inst.offen ||
+				    inst.idxen || (inst.offset & 3u) != 0) {
+					return "GS ring store";
+				}
+				const auto word = inst.offset / 4u;
+				if (emits >= 3u || word < emits || (word - emits) % max_vert != 0) {
+					return "GS store layout";
+				}
+				const auto slot  = (word - emits) / max_vert;
+				auto       value = s.Vector(inst.dst);
+				if (value.kind == Gfx7GsValue::Kind::EsDword && value.vertex == emits) {
+					value.vertex = 0;
+				} else if (value.kind != Gfx7GsValue::Kind::Constant) {
+					return "GS store of a computed value";
+				}
+				if (slot >= 64u) {
+					return "GS slot";
+				}
+				if (slots.size() <= slot) {
+					slots.resize(slot + 1u);
+				}
+				auto& entry = slots[slot];
+				if ((entry.emitted >> emits) & 1u) {
+					return "GS slot stored twice";
+				}
+				if (entry.emitted != 0 && !(entry.value == value)) {
+					return "GS slot differs between vertices";
+				}
+				entry.value = value;
+				entry.emitted |= 1u << emits;
+				break;
+			}
+			default: return "GS instruction";
+		}
+	}
+	if (emits != 3u) {
+		return "GS vertex count";
+	}
+	for (const auto& slot: slots) {
+		if (slot.emitted != 0 && slot.emitted != 7u) {
+			return "GS slot missing for a vertex";
+		}
+	}
+	return nullptr;
+}
+
+// The copy VS: its exports, in terms of ES ring dwords.
+const char* AnalyzeGfx7CopyVs(uint64_t addr, uint32_t max_vert, const std::vector<Gfx7GsSlot>& slots,
+                              ShaderGfx7GsFold& fold) {
+	using O = Gfx7Dec::Opcode;
+	std::vector<Gfx7Dec::Instruction> code;
+	if (!DecodeGfx7Straight(addr, code)) {
+		return "copy VS decode";
+	}
+	Gfx7GsState s;
+	s.vgpr[0] = {.kind = Gfx7GsValue::Kind::VertexOffset, .vertex = 0};
+	for (const auto& inst: code) {
+		if (StepGfx7GsCommon(inst, s)) {
+			continue;
+		}
+		switch (inst.opcode) {
+			case O::S_ENDPGM: break;
+			case O::BUFFER_LOAD_DWORD: {
+				const auto address = s.Vector(inst.src0);
+				const auto soffset = s.Scalar(inst.src2);
+				const auto stride  = max_vert * 64u;
+				if (!inst.offen || inst.idxen || address.kind != Gfx7GsValue::Kind::VertexAddress ||
+				    !soffset.has_value() || ((*soffset + inst.offset) % stride) != 0 ||
+				    inst.dst.kind != Gfx7Dec::OperandKind::Vgpr) {
+					return "copy VS ring load";
+				}
+				const auto slot = (*soffset + inst.offset) / stride;
+				if (slot >= slots.size() || slots[slot].emitted == 0) {
+					return "copy VS reads a slot the GS does not write";
+				}
+				s.vgpr[inst.dst.reg] = slots[slot].value;
+				break;
+			}
+			case O::EXP: {
+				if (inst.exp.compr || fold.exports_num >= ShaderGfx7GsFold::MaxExports) {
+					return "copy VS export";
+				}
+				auto& e = fold.exports[fold.exports_num++];
+				e.target = inst.exp.target;
+				e.en     = inst.exp.en & 0xfu;
+				e.done   = inst.exp.done;
+				const Gfx7Dec::Operand* sources[] = {&inst.src0, &inst.src1, &inst.src2, &inst.src3};
+				for (uint32_t c = 0; c < 4u; c++) {
+					if (((e.en >> c) & 1u) == 0) {
+						continue;
+					}
+					const auto value = s.Vector(*sources[c]);
+					if (value.kind == Gfx7GsValue::Kind::EsDword && value.value < ShaderGfx7GsFold::RingDwordsMax) {
+						e.kind[c] = ShaderGfx7GsFold::Source::RingDword;
+					} else if (value.kind == Gfx7GsValue::Kind::Constant) {
+						e.kind[c] = ShaderGfx7GsFold::Source::Constant;
+					} else {
+						return "copy VS exports a computed value";
+					}
+					e.value[c] = value.value;
+				}
+				break;
+			}
+			default: return "copy VS instruction";
+		}
+	}
+	return fold.exports_num == 0 ? "copy VS without exports" : nullptr;
+}
+
+// The ES: single-dword ring stores at fixed offsets, one S_ENDPGM at the end, VGPRs below the
+// ones the fold adds.
+const char* CheckGfx7Es(uint64_t addr, uint32_t rsrc1, uint32_t ring_offset_sgpr) {
+	if (((rsrc1 & 0x3fu) + 1u) * 4u > ShaderGfx7GsFold::RingVgprBase) {
+		return "ES VGPR count";
+	}
+	const auto words = Gfx7ShaderCodeWords(addr);
+	if (words == 0) {
+		return "ES size";
+	}
+	Gfx7Dec::Program program;
+	Gfx7Dec::DecodeProgram(std::span {reinterpret_cast<const uint32_t*>(addr), words}, program);
+	uint32_t ends = 0;
+	for (const auto& inst: program.instructions) {
+		if (inst.opcode == Gfx7Dec::Opcode::S_ENDPGM) {
+			ends++;
+			continue;
+		}
+		if ((inst.family == Gfx7Dec::Family::MUBUF || inst.family == Gfx7Dec::Family::MTBUF) &&
+		    inst.src2.kind == Gfx7Dec::OperandKind::Sgpr && inst.src2.reg == ring_offset_sgpr &&
+		    (inst.opcode != Gfx7Dec::Opcode::BUFFER_STORE_DWORD || inst.offen || inst.idxen ||
+		     (inst.offset & 3u) != 0 || inst.offset / 4u >= ShaderGfx7GsFold::RingDwordsMax)) {
+			return "ES ring store";
+		}
+	}
+	if (ends != 1u || program.instructions.empty() ||
+	    program.instructions.back().opcode != Gfx7Dec::Opcode::S_ENDPGM) {
+		return "ES ends";
+	}
+	return nullptr;
+}
+
+} // namespace
+
+// The fold for the bound ES/GS/copy VS, worked out once per combination.
+static bool GetGfx7GsFold(const HW::VertexShaderInfo& regs, const HW::Context& context, ShaderGfx7GsFold& fold) {
+	const auto& sh = context.GetShaderRegisters();
+	const auto  es = regs.es_regs.data_addr;
+	const auto  gs = regs.gs_regs.data_addr;
+	const auto  vs = regs.vs_regs.data_addr;
+	if (es == 0 || gs == 0 || vs == 0) {
+		return false;
+	}
+	const uint32_t max_vert        = sh.m_vgtGsMaxVertOut & 0x7ffu;
+	const uint32_t gs_user_sgprs   = regs.gs_regs.rsrc2.user_sgpr & 0x1fu;
+	const uint32_t es_user_sgprs   = (regs.es_regs.rsrc2 >> 1u) & 0x1fu;
+	const uint64_t key_parts[] = {es, ShaderGetMappedData(es, "Gfx7 ES:").hash, gs,
+	                              ShaderGetMappedData(gs, "Gfx7 GS:").hash, vs,
+	                              ShaderGetMappedData(vs, "Gfx7 VS:").hash,
+	                              (uint64_t {max_vert} << 32u) | sh.m_vgtGsOutPrimType,
+	                              (uint64_t {gs_user_sgprs} << 32u) | es_user_sgprs, regs.es_regs.rsrc1};
+	const auto key = XXH3_64bits(key_parts, sizeof(key_parts));
+	static std::mutex                                                     mutex;
+	static std::unordered_map<uint64_t, std::optional<ShaderGfx7GsFold>> cache;
+	{
+		std::scoped_lock lock(mutex);
+		if (const auto it = cache.find(key); it != cache.end()) {
+			if (it->second.has_value()) {
+				fold = *it->second;
+			}
+			return it->second.has_value();
+		}
+	}
+	ShaderGfx7GsFold        result;
+	result.ring_offset_sgpr = es_user_sgprs;
+	std::vector<Gfx7GsSlot> slots;
+	const char*             failure = nullptr;
+	if (sh.m_vgtGsOutPrimType != 2u) {
+		failure = "GS output primitive is not a triangle strip";
+	} else if (max_vert < 3u) {
+		failure = "GS max vertices";
+	} else {
+		failure = AnalyzeGfx7Gs(gs, gs_user_sgprs, max_vert, slots);
+	}
+	if (failure == nullptr) {
+		failure = AnalyzeGfx7CopyVs(vs, max_vert, slots, result);
+	}
+	if (failure == nullptr) {
+		failure = CheckGfx7Es(es, regs.es_regs.rsrc1, es_user_sgprs);
+	}
+	if (failure != nullptr) {
+		Common::DebugFlags::NoteOnce("CapyPS5-Gfx7", key, "legacy GS 0x%llx (ES 0x%llx, copy VS 0x%llx) not folded: %s",
+		                             static_cast<unsigned long long>(gs), static_cast<unsigned long long>(es),
+		                             static_cast<unsigned long long>(vs), failure);
+	} else {
+		Common::DebugFlags::NoteOnce("CapyPS5-Gfx7", key, "legacy GS 0x%llx folded into ES 0x%llx (copy VS 0x%llx, %u exports)",
+		                             static_cast<unsigned long long>(gs), static_cast<unsigned long long>(es),
+		                             static_cast<unsigned long long>(vs), result.exports_num);
+	}
+	std::scoped_lock lock(mutex);
+	if (failure == nullptr) {
+		cache.emplace(key, result);
+		fold = result;
+		return true;
+	}
+	cache.emplace(key, std::nullopt);
+	return false;
+}
+
 static ShaderParams PrepareGfx7VertexProgram(const HW::VertexShaderInfo& regs,
                                              const HW::Context& context,
                                              ShaderVertexInputInfo& info) {
+	// GS_EN (VGT_SHADER_STAGES_EN bit 5): the VS is the copy shader of a legacy GS pipeline.
+	if (ShaderGfx7GsFold fold; (context.GetShaderStages() & 0x20u) != 0 && GetGfx7GsFold(regs, context, fold)) {
+		const auto& es = regs.es_regs;
+		const auto [data, hash] = ShaderGetMappedData(es.data_addr, "Gfx7 ES:");
+		// SPI_SHADER_PGM_RSRC2_ES.USER_SGPR, bits 5:1.
+		const uint32_t user_sgprs = (es.rsrc2 >> 1u) & 0x1fu;
+		auto params = GetShaderParams(es.data_addr, hash,
+		                              std::span<const uint32_t>(regs.es_user_sgpr.value, user_sgprs), data);
+		PrepareGfx7FetchCall(regs.es_user_sgpr, user_sgprs, params);
+		info                     = {};
+		info.gfx7_vs             = true;
+		info.gfx7_gs             = fold;
+		info.pa_cl_vs_out_cntl   = context.GetShaderRegisters().m_paClVsOutCntl;
+		info.scratch_size_dwords = data.scratch_size_dwords;
+		info.wave_size           = 64;
+		return params;
+	}
 	const auto& vs = regs.vs_regs;
 	EXIT_NOT_IMPLEMENTED(vs.data_addr == 0);
 	const auto [data, hash] = ShaderGetMappedData(vs.data_addr, "Gfx7 VS:");
@@ -1022,7 +1434,7 @@ static ShaderParams PrepareGfx7VertexProgram(const HW::VertexShaderInfo& regs,
 	const uint32_t user_sgprs = (vs.rsrc2 >> 1u) & 0x1fu;
 	auto params = GetShaderParams(vs.data_addr, hash,
 	                              std::span<const uint32_t>(regs.vs_user_sgpr.value, user_sgprs), data);
-	PrepareGfx7FetchCall(regs, user_sgprs, params);
+	PrepareGfx7FetchCall(regs.vs_user_sgpr, user_sgprs, params);
 	// `setprop debug.capy.watch_vs <address>`: that PS4 vertex shader's user SGPRs and the first
 	// 48 dwords of the table its s[0:1] points at (tag CapyPS5-Gfx7).
 	static Common::DebugFlags::CachedValue watch_vs("debug.capy.watch_vs", 0);
