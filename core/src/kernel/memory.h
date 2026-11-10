@@ -215,12 +215,12 @@ using AddressFoldHook = void (*)(uint64_t mask);
 void SetAddressFoldHook(AddressFoldHook hook);
 /** Enables folding up front (the JIT masks from its start). */
 void SetAddressFoldMask(uint64_t mask);
-/** Second fold level: a folded address with `bit` set also loses the bit below it. A PS4 guest
- * uses a 40-bit space (up to 0xfbffffffff); with the 39-bit mask alone its top half folds onto
- * the host's own libraries and heaps, with this it folds into the guest-owned window. Must be set
- * before guest code is translated; the hook tells the JIT. */
-void SetAddressFoldHighBit(uint64_t bit);
-void SetAddressFoldHighBitHook(AddressFoldHook hook);
+/** Guest window remap for a PS4 guest (40-bit user space, up to 0xfbffffffff): each 1 GiB window
+ * above the guest-owned space gets an emulator block on first use, and translated code adds the
+ * window's delta from a table to every guest address. Needs the 39-bit fold; call before guest
+ * code is translated. The hook receives the table address for the JIT. */
+bool EnableGuestRemap();
+void SetGuestRemapHook(AddressFoldHook hook);
 /** Caps the direct memory reported to the game (a PS4 has less than the PS5 sized backing).
  * Call before the memory subsystem starts. */
 void SetDirectMemoryLimit(uint64_t size);

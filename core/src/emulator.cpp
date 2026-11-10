@@ -199,9 +199,9 @@ static void LoadElf(const std::filesystem::path& elf, bool dbg_print_reloc = fal
 	if (rt->MainProgramIsPs4()) {
 		Libs::Graphics::ShaderRecompiler::Decoder::SetGuestIsa(
 		    Libs::Graphics::ShaderRecompiler::Decoder::GuestIsa::Gfx7);
-		// PS4 user space reaches 0xfbffffffff: fold its top half into the guest window (no guest
-		// code has been translated yet).
-		Libs::LibKernel::Memory::SetAddressFoldHighBit(1ull << 39u);
+		// PS4 user space reaches 0xfbffffffff: windows the host cannot back get emulator blocks
+		// (no guest code has been translated yet).
+		(void)Libs::LibKernel::Memory::EnableGuestRemap();
 	}
 
 	if (dbg_print_reloc) {
