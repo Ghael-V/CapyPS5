@@ -217,7 +217,7 @@ static TextureCache::ImageDesc MakeDepthTargetDesc(const CommandBuffer& buffer,
 	}
 	const auto* policy = FindDepthFormatPolicy(z.z_info.format);
 	if (policy == nullptr) {
-		DepthFatal("unsupported depth/stencil format pair");
+		DepthFatal("unsupported depth/stencil format pair (z format %u, stencil %d)", static_cast<unsigned>(z.z_info.format), has_stencil ? 1 : 0);
 	}
 	const auto ideal_format = DepthAttachmentFormat(*policy, has_stencil);
 	const auto format = ResolveHostDepthAttachmentFormat(buffer, *policy, has_stencil, &samples);
@@ -326,7 +326,11 @@ void RenderExecutor::ResolveRenderDepthTarget(CommandBuffer& buffer, RenderDepth
 	    // presence alone must not manufacture a depth attachment.
 	    !z.z_info.htile_acceleration && z.shading_rate_encoding == 0 && z.size.x_max == 0 &&
 	    z.size.y_max == 0;
-	if (attachment_unbound) {
+	// Both formats INVALID disable the DB surfaces whatever else stays programmed (a PS4 title
+	// leaves sizes and addresses of an earlier target behind).
+	const bool formats_invalid = z.z_info.format == Prospero::DepthFormat::kInvalid &&
+	                             z.stencil_info.format == Prospero::StencilFormat::kInvalid;
+	if (attachment_unbound || formats_invalid) {
 		static std::atomic_bool logged = false;
 		if (!logged.exchange(true, std::memory_order_relaxed)) {
 			LOGF("DepthTarget: ignoring enabled depth/stencil state without a bound attachment\n");

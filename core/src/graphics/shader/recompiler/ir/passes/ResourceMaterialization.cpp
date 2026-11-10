@@ -243,8 +243,21 @@ bool MaterializeIndirectDescriptor(const ResourcePlan&                         p
 	auto& keys = program.material_keys;
 	const auto children_begin = descriptors.size();
 	const auto root_resource = specializations[resource_index];
+	// A PS4 table enumerated by key range keeps one slot per key: deduplicating its contents made
+	// the specialization (and so the compiled permutation) change whenever the lights did.
+	bool one_slot_per_key = Decoder::GetGuestIsa() == Decoder::GuestIsa::Gfx7 && sources.empty() &&
+	                              !indirect.selector && indirect.workgroup_axis == UINT32_MAX;
 	const auto intern_candidate = [&](const DescriptorValue& candidate, uint32_t& ordinal) {
 		ordinal = 0u;
+		if (one_slot_per_key) {
+			if (descriptors.size() >= maximum_resources) return false;
+			ordinal = static_cast<uint32_t>(descriptors.size() - children_begin + 1u);
+			descriptors.push_back(candidate);
+			auto child = root_resource;
+			child.indirect_root = resource_index;
+			specializations.push_back(child);
+			return true;
+		}
 		if (candidate == descriptors[resource_index]) return true;
 		const auto found = std::find(descriptors.begin() + children_begin, descriptors.end(), candidate);
 		ordinal = static_cast<uint32_t>(found - descriptors.begin() - children_begin + 1u);
@@ -399,6 +412,10 @@ bool MaterializeIndirectDescriptor(const ResourcePlan&                         p
 		}
 	}
 
+	// Slots only for small key ranges; a large one is deduplicated (most entries are null).
+	if (keys.size() > 64u) {
+		one_slot_per_key = false;
+	}
 	const auto mapping_offset = snapshot.flattened_srt.size();
 	const auto key_count = sources.empty() ? keys.size() : sources.size();
 	snapshot.flattened_srt.resize(mapping_offset + 1u + key_count * 2u);
@@ -556,6 +573,15 @@ static bool BuildResourceSpecialization(const ResourcePlan& program, ResourceSna
 		const bool raw_sint_storage = storage && format == Prospero::BufferFormat::k32SInt &&
 		                              base.written && !base.read && !base.atomic;
 		image.numeric_class         = Prospero::SampledTextureNumericClass(format);
+		// A stale record of a PS4 table enumerated by key range: drop it as a null image.
+		if (Decoder::GetGuestIsa() == Decoder::GuestIsa::Gfx7 && image.indirect_root != ImageResource::NoIndirectImage &&
+		    image.indirect_root != i && image.numeric_class == Prospero::TextureNumericClass::Unsupported) {
+			snapshot.images[i].dwords.fill(0u);
+			image.numeric_class = base.atomic ? Prospero::TextureNumericClass::Uint : Prospero::TextureNumericClass::Float;
+			image.dimension     = Decoder::ImageDimension::Dim2D;
+			image.cube          = false;
+			continue;
+		}
 		if (storage) {
 			// 32-bit SINT atomics run on the R32_UINT view (see ValidateStorageTexture).
 			if ((!raw_sint_storage && !base.atomic &&
@@ -1243,6 +1269,12 @@ bool MaterializeResources(const ResourcePlan& program, const SrtRuntime& runtime
 				        // a directly loaded descriptor.
 				        if (Decoder::GetGuestIsa() == Decoder::GuestIsa::Gfx7 && !NullImageDescriptor(value)) {
 					        Decoder::Gfx7TextureSharpToGfx10(value.dwords.data());
+					        // A stale record can name an address no PS4 mapping has (above 40 bits).
+					        const uint64_t address =
+					            ((static_cast<uint64_t>(value.dwords[1] & 0xffu) << 32u) | value.dwords[0]) << 8u;
+					        if (address == 0u || address >= (1ull << 40u)) {
+						        value.dwords.fill(0u);
+					        }
 				        }
 				        // A broad heap also contains resources for other typed image operations.
 				        if (NullImageDescriptor(value) || !ValidImageDescriptor(value, image.r128) ||

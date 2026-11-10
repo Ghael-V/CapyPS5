@@ -332,8 +332,10 @@ struct PipelineCache::ProgramCache {
 		template <bool HasCalls>
 		Permutation* FindPermutation(const ShaderRecompiler::IR::SrtRuntime& runtime,
 		                             uint32_t push_data_cursor) {
-			EXIT_IF(!ShaderRecompiler::IR::MaterializeResources(
-			    resource_plan, runtime, resources, specialization));
+			if (!ShaderRecompiler::IR::MaterializeResources(resource_plan, runtime, resources, specialization)) {
+				EXIT("shader resources could not be materialized again: %s\n",
+				     ShaderRecompiler::IR::LastMaterializeFailure());
+			}
 			for (auto& candidate: permutations) {
 				const auto& layout = candidate.program.bindings;
 				if (layout.push_data_start_dword != ShaderRecompiler::IR::PushData::StartFor(

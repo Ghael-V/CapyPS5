@@ -1323,7 +1323,8 @@ static bool ReserveInsideClippedReservation(uint64_t addr, uint64_t len) {
 // block on first use, and the JIT adds the window's delta to every guest address. Contiguity holds
 // within a window and across windows allocated next to each other.
 static std::mutex                         g_remap_mutex;
-static std::array<uint64_t, RemapWindows> g_remap_host {};
+static std::vector<bool>                  g_remap_chunk_owned(RemapChunks);
+static uint64_t                           g_remap_backed_bytes = 0;
 static constexpr uint32_t                 RemapPageShift      = 16;
 static constexpr uint64_t                 RemapPagesPerWindow = RemapWindowSize >> RemapPageShift;
 // Per window: which 64 KiB pages the guest mapped, so HLE arguments there are translated while
@@ -1368,70 +1369,81 @@ bool EnableGuestRemap() {
 	return false;
 }
 
-// The emulator block of a guest window, allocated on first use (`preferred` keeps a span
-// contiguous). Caller holds g_remap_mutex.
-static uint64_t OwnRemapWindowLocked(uint32_t window, uint64_t preferred) {
-	if (g_remap_host[window] != 0) {
-		return g_remap_host[window];
+// Gives guest chunks [first, last] emulator memory: one contiguous block for the chunks not yet
+// backed, placed next to the backed ones so the range stays contiguous. Returns the host address
+// of chunk `first`, 0 if that cannot be done. Caller holds g_remap_mutex.
+static uint64_t OwnRemapChunksLocked(uint64_t first, uint64_t last) {
+	constexpr uint64_t ChunkSize = 1ull << RemapChunkShift;
+	auto*              table     = g_remap_table.load(std::memory_order_relaxed);
+	uint64_t           base      = 0; // host address of chunk `first`, once known
+	for (uint64_t chunk = first; chunk <= last; chunk++) {
+		if (g_remap_chunk_owned[chunk]) {
+			const uint64_t host = (chunk << RemapChunkShift) + static_cast<uint64_t>(table[chunk]);
+			const uint64_t at   = host - (chunk - first) * ChunkSize;
+			if (base != 0 && base != at) {
+				return 0;
+			}
+			base = at;
+		}
 	}
-	uint64_t host = 0;
-	if (preferred != 0 && FindGuestFreeRange(preferred, RemapWindowSize, RemapWindowSize) == preferred) {
-		host = preferred;
+	// Claim the unbacked chunks: as runs placed relative to `base`, or as one new block.
+	const uint64_t count = last - first + 1u;
+	if (base == 0) {
+		base = FindGuestFreeRange(0, count * ChunkSize, ChunkSize);
+		if (base == 0) {
+			return 0;
+		}
 	}
-	if (host == 0) {
-		host = FindGuestFreeRange(0, RemapWindowSize, RemapWindowSize);
+	for (uint64_t chunk = first; chunk <= last;) {
+		if (g_remap_chunk_owned[chunk]) {
+			chunk++;
+			continue;
+		}
+		uint64_t run_end = chunk;
+		while (run_end + 1u <= last && !g_remap_chunk_owned[run_end + 1u]) {
+			run_end++;
+		}
+		const uint64_t host = base + (chunk - first) * ChunkSize;
+		const uint64_t size = (run_end - chunk + 1u) * ChunkSize;
+		if (FindGuestFreeRange(host, size, ChunkSize) != host ||
+		    !g_virtual_ranges->Add(host, size, 0, 0, 0, VirtualRangeType::Reserved, "remap")) {
+			return 0;
+		}
+		UnmapGpuRange(host, size);
+		for (uint64_t owned = chunk; owned <= run_end; owned++) {
+			g_remap_chunk_owned[owned] = true;
+			const auto window = static_cast<uint32_t>(owned >> (RemapShift - RemapChunkShift));
+			if (g_remap_pages[window].load(std::memory_order_relaxed) == nullptr) {
+				g_remap_pages[window].store(new std::atomic<uint64_t>[RemapPagesPerWindow / 64u] {},
+				                            std::memory_order_release);
+			}
+			__atomic_store_n(&table[owned],
+			                 static_cast<int64_t>(base + (owned - first) * ChunkSize - (owned << RemapChunkShift)),
+			                 __ATOMIC_RELEASE);
+		}
+		g_remap_backed_bytes += size;
+		Common::DebugFlags::NoteOnce("CapyPS5-Mem", 0x52454d00ull ^ (chunk >> 4u),
+		                             "guest 0x%llx+0x%llx -> host 0x%llx (backed %llu MiB)",
+		                             static_cast<unsigned long long>(chunk << RemapChunkShift),
+		                             static_cast<unsigned long long>(size),
+		                             static_cast<unsigned long long>(host),
+		                             static_cast<unsigned long long>(g_remap_backed_bytes >> 20u));
+		chunk = run_end + 1u;
 	}
-	if (host == 0 ||
-	    !g_virtual_ranges->Add(host, RemapWindowSize, 0, 0, 0, VirtualRangeType::Reserved, "remap")) {
-		return 0;
-	}
-	UnmapGpuRange(host, RemapWindowSize);
-	g_remap_pages[window].store(new std::atomic<uint64_t>[RemapPagesPerWindow / 64u] {},
-	                            std::memory_order_release);
-	g_remap_host[window] = host;
-	Common::DebugFlags::NoteOnce("CapyPS5-Mem", 0x52454d00ull ^ window,
-	                             "guest window 0x%llx -> host 0x%llx",
-	                             static_cast<unsigned long long>(static_cast<uint64_t>(window) << RemapShift),
-	                             static_cast<unsigned long long>(host));
-	return host;
+	return base;
 }
 
-// Host address for guest [vaddr, vaddr + len) when it lies in emulator-backed windows, giving
-// them blocks as needed; 0 for ranges below them or windows that cannot be kept contiguous.
+// Host address for guest [vaddr, vaddr + len) when it lies above the guest-owned space, backing
+// its chunks as needed; 0 for ranges below it or chunks that cannot be kept contiguous.
 static uint64_t PrepareRemapRange(uint64_t vaddr, uint64_t len) {
 	constexpr uint64_t Limit = 1ull << 40u;
 	if (g_remap_table.load(std::memory_order_relaxed) == nullptr || len == 0 || vaddr >= Limit ||
-	    len > Limit - vaddr) {
-		return 0;
-	}
-	const auto first = static_cast<uint32_t>(vaddr >> RemapShift);
-	const auto last  = static_cast<uint32_t>((vaddr + len - 1u) >> RemapShift);
-	if (first < RemapFirstWindow) {
+	    len > Limit - vaddr || (vaddr >> RemapShift) < RemapFirstWindow) {
 		return 0;
 	}
 	std::lock_guard lock(g_remap_mutex);
-	uint64_t        base = 0;
-	for (uint32_t window = first; window <= last; window++) {
-		const uint64_t want =
-		    base != 0 ? base + (static_cast<uint64_t>(window - first) << RemapShift) : 0;
-		const auto host = OwnRemapWindowLocked(window, want);
-		if (host == 0 || (window != first && host != want)) {
-			return 0;
-		}
-		if (window == first) {
-			base = host;
-		}
-	}
-	// Point the chunks this range covers at the block; the rest of the window keeps its old
-	// translation (a host library sharing the window stays reachable).
-	auto* table = g_remap_table.load(std::memory_order_relaxed);
-	for (uint64_t chunk = vaddr >> RemapChunkShift; chunk <= (vaddr + len - 1u) >> RemapChunkShift; chunk++) {
-		const auto window = static_cast<uint32_t>(chunk >> (RemapShift - RemapChunkShift));
-		__atomic_store_n(&table[chunk],
-		                 static_cast<int64_t>(g_remap_host[window] - (static_cast<uint64_t>(window) << RemapShift)),
-		                 __ATOMIC_RELEASE);
-	}
-	return base + (vaddr & (RemapWindowSize - 1u));
+	const auto base = OwnRemapChunksLocked(vaddr >> RemapChunkShift, (vaddr + len - 1u) >> RemapChunkShift);
+	return base == 0 ? 0 : base + (vaddr & ((1ull << RemapChunkShift) - 1u));
 }
 
 static void MarkRemapPages(uint64_t vaddr, uint64_t len, bool mapped) {
