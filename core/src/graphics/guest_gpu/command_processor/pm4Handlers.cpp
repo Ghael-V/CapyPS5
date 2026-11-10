@@ -2770,9 +2770,10 @@ void GraphicsInitJmpTablesCxIndirect() {
 			uint32_t      slot = (cmd_offset - Pm4::CB_COLOR0_INFO) / 15;
 			HW::ColorInfo info;
 			if (IsGfx7()) {
-				// Format, number type, swap, blend and round bits match gfx10. The PS4 CMASK,
-				// FMASK and tile bits describe metadata these targets do not use.
-				value &= 0x00079ffcu;
+				// Format, number type, swap, fast clear, blend and round bits match gfx10. The
+				// PS4 FMASK and tile bits describe metadata these targets do not use. FAST_CLEAR
+				// (bit 13) stays: a CMASK filled with 0 means the target holds CB_COLOR_CLEAR_WORD.
+				value &= 0x0007bffcu;
 			}
 			info.format =
 			    static_cast<Prospero::ChannelLayout>(KYTY_PM4_GET(value, CB_COLOR0_INFO, FORMAT));
