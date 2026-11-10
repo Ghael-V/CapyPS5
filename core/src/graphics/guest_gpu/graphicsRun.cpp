@@ -353,7 +353,24 @@ void CommandProcessor::ApplyContextStateOperation(ContextStateOperation operatio
 }
 
 void CommandProcessor::BufferInit() {
+	m_draws = 0;
 	GetScheduler().Begin(m_ctx, m_ucfg, m_sh_ctx);
+}
+
+// Submits the recorded work every N draws so the host GPU starts before a long buffer ends.
+// `setprop debug.capy.flush_draws N` (0, the default, is off): it can lower frame time in games
+// that send a whole frame as one command buffer, at some submit overhead.
+void CommandProcessor::CountDraw() {
+	static Common::DebugFlags::CachedValue flush_draws("debug.capy.flush_draws", 0);
+	const auto                             every = flush_draws.Get();
+	if (every <= 0) {
+		return;
+	}
+	if (m_draws >= static_cast<uint32_t>(every)) {
+		GetScheduler().Flush();
+		m_draws = 0;
+	}
+	m_draws++;
 }
 
 void CommandProcessor::BufferFlush() {
@@ -1385,6 +1402,7 @@ void CommandProcessor::SetPredication(uint32_t condition, uint32_t op, uint32_t 
 }
 
 void CommandProcessor::DrawIndex(DrawIndexArgs args) {
+	CountDraw();
 	args.index_type_and_size = m_index_type_and_size;
 	if (args.instance_count == 0) {
 		args.instance_count = m_num_instances;
@@ -1541,6 +1559,7 @@ void CommandProcessor::DrawIndirectMulti(uint32_t data_offset, uint32_t max_coun
                                          const volatile uint32_t* count_addr,
                                          uint32_t stride_in_bytes, IndirectDrawRegisters registers,
                                          uint32_t draw_initiator, bool indexed) {
+	CountDraw();
 	EXIT_NOT_IMPLEMENTED((draw_initiator & ~0x20u) != (indexed ? 0u : 2u));
 	EXIT_NOT_IMPLEMENTED(m_draw_indirect_args_base_addr == 0);
 
@@ -1678,6 +1697,7 @@ void CommandProcessor::DispatchIndirect(uint64_t args_addr, uint32_t mode) {
 }
 
 void CommandProcessor::DrawIndexAuto(DrawAutoArgs args) {
+	CountDraw();
 	if (args.instance_count == 0) {
 		args.instance_count = m_num_instances;
 	}
