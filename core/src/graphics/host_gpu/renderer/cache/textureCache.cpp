@@ -1265,6 +1265,14 @@ void TextureCache::MaterializeColorClear(ImageId id, const ImageDesc& desc,
 	constexpr uint64_t MetadataBlockSize = 0x1000;
 	if (!range.Valid() || range.address % MetadataBlockSize != 0 || layers == 0 ||
 	    range.size % layers != 0 || (range.size / layers) % MetadataBlockSize != 0) {
+		if (ShaderRecompiler::Decoder::GetGuestIsa() == ShaderRecompiler::Decoder::GuestIsa::Gfx7) {
+			// PS4 CMASK layouts follow gfx7 rules; one this check cannot slice keeps its contents.
+			Common::DebugFlags::NoteOnce("CapyPS5-Meta", range.address ^ 0x434d41534bull,
+			                             "PS4 CMASK 0x%llx size=%llu layers=%u: no fast clear",
+			                             static_cast<unsigned long long>(range.address),
+			                             static_cast<unsigned long long>(range.size), layers);
+			return;
+		}
 		EXIT("TextureCache: color metadata slices must contain aligned 4 KiB blocks\n");
 	}
 	const auto& view           = desc.view_info;
