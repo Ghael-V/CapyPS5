@@ -587,6 +587,66 @@ void PrepareCallTarget(ShaderSource& source, const CompileOptions& options) {
 	source.call_targets = std::move(static_cast<ResourcePlan&>(query));
 }
 
+// Runs a PS4 ES in place of its passthrough GS and copy VS (ShaderGfx7GsFold): each ES ring store
+// becomes a move to v[RingVgprBase + dword], and the copy shader's exports, built from those
+// registers and constants, take the place of the final S_ENDPGM. shader.cpp has checked that the
+// ES stores single dwords to the ring and ends at its only S_ENDPGM.
+void FoldGfx7GsIntoEs(ShaderSource& source, const ShaderGfx7GsFold& fold) {
+	using Fold = ShaderGfx7GsFold;
+	const auto vmov = [](uint32_t dst, uint32_t src) {
+		return 0x7e000000u | (dst << 17u) | (1u << 9u) | src; // v_mov_b32 (VOP1), src0 encoding
+	};
+	std::vector<uint32_t>               words(source.decoded.code.begin(), source.decoded.code.end());
+	std::array<bool, Fold::RingDwordsMax> written {};
+	uint32_t                            end_word = UINT32_MAX;
+	for (const auto& inst: source.decoded.instructions) {
+		const auto word = inst.pc / 4u;
+		if (inst.opcode == Decoder::Opcode::S_ENDPGM) {
+			EXIT_NOT_IMPLEMENTED(end_word != UINT32_MAX);
+			end_word = word;
+			continue;
+		}
+		if (inst.opcode != Decoder::Opcode::BUFFER_STORE_DWORD ||
+		    inst.src2.kind != Decoder::OperandKind::Sgpr || inst.src2.reg != fold.ring_offset_sgpr) {
+			continue;
+		}
+		EXIT_NOT_IMPLEMENTED(inst.offen ||
+		                     inst.idxen || (inst.offset & 3u) != 0 ||
+		                     inst.offset / 4u >= Fold::RingDwordsMax || word + 1u >= words.size());
+		const auto dword = inst.offset / 4u;
+		written[dword]   = true;
+		words[word]      = vmov(Fold::RingVgprBase + dword, 256u + inst.dst.reg);
+		words[word + 1u] = 0xbf800000u; // s_nop 0
+	}
+	EXIT_NOT_IMPLEMENTED(end_word == UINT32_MAX || end_word >= words.size());
+	words.resize(end_word);
+	uint32_t next_const = Fold::ConstVgprBase;
+	for (uint32_t i = 0; i < fold.exports_num; i++) {
+		const auto& e = fold.exports[i];
+		uint32_t    regs[4] {};
+		for (uint32_t c = 0; c < 4u; c++) {
+			if (((e.en >> c) & 1u) == 0) {
+				continue;
+			}
+			if (e.kind[c] == Fold::Source::RingDword && e.value[c] < Fold::RingDwordsMax && written[e.value[c]]) {
+				regs[c] = Fold::RingVgprBase + e.value[c];
+				continue;
+			}
+			// A constant, or a ring dword the ES never writes (left zero).
+			EXIT_NOT_IMPLEMENTED(next_const > 255u);
+			words.push_back(vmov(next_const, 255u)); // literal source
+			words.push_back(e.kind[c] == Fold::Source::Constant ? e.value[c] : 0u);
+			regs[c] = next_const++;
+		}
+		words.push_back(0xf8000000u | (static_cast<uint32_t>(e.done) << 11u) | (e.target << 4u) | e.en);
+		words.push_back(regs[0] | (regs[1] << 8u) | (regs[2] << 16u) | (regs[3] << 24u));
+	}
+	words.push_back(0xbf810000u); // s_endpgm
+	source.code    = std::move(words);
+	source.decoded = {};
+	Decoder::DecodeProgram(source.code, source.decoded);
+}
+
 } // namespace
 
 ShaderSource PrepareShaderSource(std::span<const uint32_t> code, const CompileOptions& options) {
@@ -602,6 +662,10 @@ ShaderSource PrepareShaderSource(std::span<const uint32_t> code, const CompileOp
 		handoff.src_count = 0;
 	} else {
 		Decoder::DecodeProgram(code, source.decoded);
+	}
+	if (options.stage == ShaderType::Vertex && options.input_info.vertex != nullptr &&
+	    options.input_info.vertex->gfx7_gs.exports_num != 0) {
+		FoldGfx7GsIntoEs(source, options.input_info.vertex->gfx7_gs);
 	}
 	if (source.decoded.has_swap_pc) {
 #if defined(__ANDROID__)

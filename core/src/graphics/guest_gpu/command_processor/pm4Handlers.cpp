@@ -3786,9 +3786,33 @@ void GraphicsInitJmpTablesShIndirect() {
 	};
 	// Toolkit state restoration emits the compiler's GS-front allocation
 	// metadata here. Native GS resource registers already carry that allocation.
-	g_hw_sh_indirect_func[0x0ca] = [](KYTY_HW_SH_INDIRECT_ARGS) {
-		HwShIgnoreShaderRegister(cmd_offset, value);
+	// On PS4 (gfx7) it is SPI_SHADER_PGM_RSRC1_ES, followed by the ES resource and user data.
+	g_hw_sh_indirect_func[Pm4::SPI_SHADER_PGM_RSRC1_ES_GFX7] = [](KYTY_HW_SH_INDIRECT_ARGS) {
+		if (IsGfx7()) {
+			cp.GetShCtx().SetEsShaderResource1(value);
+		} else {
+			HwShIgnoreShaderRegister(cmd_offset, value);
+		}
 	};
+	g_hw_sh_indirect_func[Pm4::SPI_SHADER_PGM_RSRC2_ES_GFX7] = [](KYTY_HW_SH_INDIRECT_ARGS) {
+		if (IsGfx7()) {
+			cp.GetShCtx().SetEsShaderResource2(value);
+		} else {
+			HwShIgnoreShaderRegister(cmd_offset, value);
+		}
+	};
+	for (uint32_t offset = Pm4::SPI_SHADER_USER_DATA_ES_0_GFX7;
+	     offset <= Pm4::SPI_SHADER_USER_DATA_ES_15_GFX7; offset++) {
+		g_hw_sh_indirect_func[offset] = [](KYTY_HW_SH_INDIRECT_ARGS) {
+			if (IsGfx7()) {
+				cp.GetShCtx().SetEsUserSgpr(cmd_offset - Pm4::SPI_SHADER_USER_DATA_ES_0_GFX7, value,
+				                            cp.GetUserDataMarker());
+				cp.SetUserDataMarker(HW::UserSgprType::Unknown);
+			} else {
+				HwShIgnoreShaderRegister(cmd_offset, value);
+			}
+		};
+	}
 	// The same HS-front allocation word; the fused HS resource registers carry it (NHL 27).
 	g_hw_sh_indirect_func[0x14a] = [](KYTY_HW_SH_INDIRECT_ARGS) {
 		HwShIgnoreShaderRegister(cmd_offset, value);

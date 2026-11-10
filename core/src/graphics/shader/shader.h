@@ -133,6 +133,27 @@ struct ShaderTessellationInputInfo {
 	uint32_t output_topology       = 0;
 };
 
+// A PS4 (gfx7) legacy geometry pipeline (ES -> GS -> copy VS) whose GS passes each input
+// triangle through unchanged runs as its ES alone: the ES ring stores become the exports the copy
+// shader would make. Each export component is an ES ring dword or a constant.
+struct ShaderGfx7GsFold {
+	static constexpr uint32_t MaxExports    = 8;
+	static constexpr uint32_t RingDwordsMax = 96;  // kept in v[RingVgprBase + dword]
+	static constexpr uint32_t RingVgprBase  = 128; // the ES may use at most 128 VGPRs
+	static constexpr uint32_t ConstVgprBase = RingVgprBase + RingDwordsMax;
+	enum class Source : uint8_t { None, RingDword, Constant };
+	struct Export {
+		uint32_t target = 0;
+		uint32_t en     = 0;
+		bool     done   = false;
+		Source   kind[4] {};
+		uint32_t value[4] {};
+	};
+	uint32_t exports_num      = 0;
+	uint32_t ring_offset_sgpr = 0; // the ES's ES2GS ring offset (the SGPR after its user SGPRs)
+	Export   exports[MaxExports];
+};
+
 struct ShaderVertexInputInfo {
 	static constexpr int RES_MAX = 32;
 
@@ -160,6 +181,8 @@ struct ShaderVertexInputInfo {
 	// A PS4 (gfx7) hardware vertex shader: user SGPRs from s0, the vertex index in v0 and the
 	// instance index in v1..v3, instead of the NGG layout.
 	bool                    gfx7_vs             = false;
+	// With gfx7_vs: the program is the ES of a folded passthrough GS (exports_num != 0).
+	ShaderGfx7GsFold        gfx7_gs;
 	// GPU-side indirect draws: these user SGPRs take gl_BaseVertex/gl_BaseInstance instead of
 	// values patched from CPU-read arguments, and native fetches see indices without them.
 	// UINT32_MAX: not a GPU indirect draw; IndirectNoSgpr: one without that offset register.

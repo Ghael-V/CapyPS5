@@ -764,6 +764,13 @@ constexpr uint32_t SPI_SHADER_PGM_RSRC1_VS    = 0x4A;
 constexpr uint32_t SPI_SHADER_PGM_RSRC2_VS    = 0x4B;
 constexpr uint32_t SPI_SHADER_USER_DATA_VS_0  = 0x4C;
 constexpr uint32_t SPI_SHADER_USER_DATA_VS_15 = 0x5B;
+
+// The gfx7 export shader stage (PS4 legacy geometry pipelines). On PS5, 0xCA carries the
+// compiler's GS-front allocation word instead.
+constexpr uint32_t SPI_SHADER_PGM_RSRC1_ES_GFX7    = 0xCA;
+constexpr uint32_t SPI_SHADER_PGM_RSRC2_ES_GFX7    = 0xCB;
+constexpr uint32_t SPI_SHADER_USER_DATA_ES_0_GFX7  = 0xCC;
+constexpr uint32_t SPI_SHADER_USER_DATA_ES_15_GFX7 = 0xDB;
 constexpr uint32_t SPI_SHADER_USER_DATA_PS_15 = 0x1B;
 constexpr uint32_t SPI_SHADER_USER_DATA_PS_31 = 0x2B;
 constexpr uint32_t SPI_SHADER_USER_ACCUM_PS_0 = 0x32;
