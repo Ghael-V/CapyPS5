@@ -984,6 +984,20 @@ public:
 		void* ptr = mmap(reinterpret_cast<void*>(vaddr), size, PROT_NONE,
 		                 MAP_PRIVATE | MAP_ANON | MAP_NORESERVE | MAP_FIXED_NOREPLACE, -1, 0);
 		if (ptr == MAP_FAILED || reinterpret_cast<uint64_t>(ptr) != vaddr) {
+#if defined(__ANDROID__)
+			__android_log_print(ANDROID_LOG_WARN, "CapyPS5-Mem", "adopt host window 0x%llx+0x%llx failed: %p errno %d",
+			                    static_cast<unsigned long long>(vaddr), static_cast<unsigned long long>(size), ptr, errno);
+			if (FILE* maps = fopen("/proc/self/maps", "r"); maps != nullptr) {
+				char line[256];
+				while (fgets(line, sizeof(line), maps) != nullptr) {
+					unsigned long long a = 0, b = 0;
+					if (sscanf(line, "%llx-%llx", &a, &b) == 2 && a < vaddr + size && b > vaddr) {
+						__android_log_print(ANDROID_LOG_WARN, "CapyPS5-Mem", "  occupied by %s", line);
+					}
+				}
+				fclose(maps);
+			}
+#endif
 			if (ptr != MAP_FAILED) {
 				munmap(ptr, size);
 			}

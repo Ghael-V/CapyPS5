@@ -1335,9 +1335,11 @@ KYTY_CP_OP_PARSER(CpOpDispatchDirect) {
 KYTY_CP_OP_PARSER(CpOpDispatchIndirect) {
 	KYTY_PROFILER_FUNCTION();
 
-	EXIT_NOT_IMPLEMENTED(cmd_id != 0xc0011600 && cmd_id != 0xc0021600);
+	// Bit 1 is the compute shader type, set by the PS4 driver's DISPATCH_INDIRECT builders.
+	const auto id = cmd_id & ~2u;
+	EXIT_NOT_IMPLEMENTED(id != 0xc0011600 && id != 0xc0021600);
 
-	if (cmd_id == 0xc0021600) {
+	if (id == 0xc0021600) {
 		cp.DispatchIndirect(buffer[0] | (static_cast<uint64_t>(buffer[1]) << 32u), buffer[2]);
 		return 3;
 	}

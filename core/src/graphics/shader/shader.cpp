@@ -1658,6 +1658,7 @@ ShaderParams PrepareProgram(
 ShaderParams PrepareProgram(const HW::ComputeShaderInfo& regs, const HW::ShaderRegisters& sh,
                             ShaderComputeInputInfo& info) {
 	const auto [data, hash] = ShaderGetMappedData(regs.cs_regs.data_addr, "ShaderGetInputInfoCS():");
+	ShaderDebugDisassembleGfx7(regs.cs_regs.data_addr, "cs");
 	ShaderGetStaticInputInfoCS(regs, sh, data, info);
 	return GetShaderParams(
 	    regs.cs_regs.data_addr, hash,

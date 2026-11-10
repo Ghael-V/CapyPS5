@@ -2,6 +2,7 @@
 // SPDX-FileCopyrightText: Copyright KytyPS5 contributors; based on Kyty, Copyright (c) 2021 InoriRus (MIT)
 // SPDX-License-Identifier: GPL-2.0-only
 
+#include "common/debugFlags.h"
 #include "graphics/shader/recompiler/ir/passes/ResourceMaterialization.h"
 
 #include "common/assert.h"
@@ -22,6 +23,10 @@
 #include <unordered_set>
 
 namespace Libs::Graphics::ShaderRecompiler::IR {
+// Why the last MaterializeResources call on this thread failed (diagnostics).
+static thread_local const char* t_materialize_failure = "";
+static thread_local std::string t_specialization_failure;
+
 namespace {
 
 constexpr uint64_t AddressMask            = 0x0000ffffffffffffull;
@@ -30,6 +35,8 @@ constexpr uint64_t MaxIndirectDescriptorProbes = 65536u;
 bool SpecializationFail(std::string_view message) {
 	std::fprintf(stderr, "shader resource specialization failed: %.*s\n",
 	             static_cast<int>(message.size()), message.data());
+	t_specialization_failure.assign(message);
+	t_materialize_failure = t_specialization_failure.c_str();
 	return false;
 }
 
@@ -526,6 +533,7 @@ static bool BuildResourceSpecialization(const ResourcePlan& program, ResourceSna
 		if (base.atomic &&
 		    (base.atomic64 ? format != Prospero::BufferFormat::k32_32UInt
 		                   : format != Prospero::BufferFormat::k32UInt &&
+		                         format != Prospero::BufferFormat::k32SInt &&
 		                         format != Prospero::BufferFormat::k32Float)) {
 			return SpecializationFail(
 			    fmt::format("atomic image descriptor {} uses unsupported format {}", i,
@@ -549,7 +557,9 @@ static bool BuildResourceSpecialization(const ResourcePlan& program, ResourceSna
 		                              base.written && !base.read && !base.atomic;
 		image.numeric_class         = Prospero::SampledTextureNumericClass(format);
 		if (storage) {
-			if ((!raw_sint_storage && image.numeric_class == Prospero::TextureNumericClass::Sint) ||
+			// 32-bit SINT atomics run on the R32_UINT view (see ValidateStorageTexture).
+			if ((!raw_sint_storage && !base.atomic &&
+			     image.numeric_class == Prospero::TextureNumericClass::Sint) ||
 			    image.numeric_class == Prospero::TextureNumericClass::Unsupported) {
 				return SpecializationFail(
 				    fmt::format("storage image descriptor {} uses unsupported format {}", i,
@@ -620,6 +630,26 @@ static bool BuildResourceSpecialization(const ResourcePlan& program, ResourceSna
 			    image.mip_count != image_class.mip_count ||
 			    image.conversion_format != image_class.conversion_format ||
 			    image.shader_swizzle != image_class.shader_swizzle) {
+				// A PS4 table enumerated by key range (32 light slots) also holds records the
+				// shader never selects; their stale T#s become null images instead of failing.
+				if (Decoder::GetGuestIsa() == Decoder::GuestIsa::Gfx7) {
+					Common::DebugFlags::NoteOnce(
+					    "CapyPS5-Indirect", (uint64_t {program.info.images[root_index].first_use_pc} << 8u) ^ candidate,
+					    "indirect image pc 0x%x candidate %u nulled: class %u/%u dim %u/%u mips %u/%u conv %u/%u",
+					    program.info.images[root_index].first_use_pc, candidate,
+					    static_cast<uint32_t>(image.numeric_class), static_cast<uint32_t>(image_class.numeric_class),
+					    static_cast<uint32_t>(image.dimension), static_cast<uint32_t>(image_class.dimension),
+					    image.mip_count, image_class.mip_count, static_cast<uint32_t>(image.conversion_format),
+					    static_cast<uint32_t>(image_class.conversion_format));
+					snapshot.images[candidate].dwords.fill(0u);
+					image.numeric_class     = image_class.numeric_class;
+					image.dimension         = image_class.dimension;
+					image.mip_count         = image_class.mip_count;
+					image.conversion_format = image_class.conversion_format;
+					image.shader_swizzle    = image_class.shader_swizzle;
+					image.cube              = image_class.cube;
+					continue;
+				}
 				return SpecializationFail(
 				    fmt::format("indirect image table at pc 0x{:08x} has incompatible candidates",
 				                program.info.images[root_index].first_use_pc));
@@ -1074,9 +1104,6 @@ ResourcePlan ExtractResourcePlan(const Program& program) {
 	return plan;
 }
 
-// Why the last MaterializeResources call on this thread failed (diagnostics).
-static thread_local const char* t_materialize_failure = "";
-
 static bool MaterializeFail(const char* reason) {
 	t_materialize_failure = reason;
 	return false;
@@ -1212,6 +1239,11 @@ bool MaterializeResources(const ResourcePlan& program, const SrtRuntime& runtime
 			if (!MaterializeIndirectDescriptor(
 			        program, indirect, i, 8u, observed, clean, snapshot, snapshot.images,
 			        specialization.images, UINT32_MAX, [&](DescriptorValue& value) {
+				        // Table entries are guest T#s too: a PS4 one needs the same conversion as
+				        // a directly loaded descriptor.
+				        if (Decoder::GetGuestIsa() == Decoder::GuestIsa::Gfx7 && !NullImageDescriptor(value)) {
+					        Decoder::Gfx7TextureSharpToGfx10(value.dwords.data());
+				        }
 				        // A broad heap also contains resources for other typed image operations.
 				        if (NullImageDescriptor(value) || !ValidImageDescriptor(value, image.r128) ||
 				            (bounded_table && DescriptorDimension(value, image.dimension) != image.dimension))

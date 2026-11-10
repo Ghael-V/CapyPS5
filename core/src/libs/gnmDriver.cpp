@@ -599,6 +599,67 @@ int KYTY_SYSV_ABI GnmDispatchDirect(uint32_t* cmd, uint32_t size, uint32_t x, ui
 	return OK;
 }
 
+// Indirect dispatches and draws (packet layouts as in shadPS4's GnmDriver). The arguments come from
+// the base set by SET_BASE plus data_offset, or, on a compute queue (MEC), from `args` itself.
+int KYTY_SYSV_ABI GnmDispatchIndirect(uint32_t* cmd, uint32_t size, uint32_t data_offset, uint32_t flags) {
+	PRINT_NAME();
+	if (cmd == nullptr || size != 7) {
+		return -1;
+	}
+	*cmd++ = Type3(0x16, 2) | 2u | (flags & 1u); // DISPATCH_INDIRECT, compute shader type, predicate
+	*cmd++ = data_offset;
+	*cmd++ = (flags & 0x18u) + 1u;
+	WriteNop(cmd, 4);
+	return OK;
+}
+
+int KYTY_SYSV_ABI GnmDispatchIndirectOnMec(uint32_t* cmd, uint32_t size, uint64_t args, uint32_t modifier) {
+	PRINT_NAME();
+	if (cmd == nullptr || size != 8 || args == 0 || (args & 3u) != 0) {
+		return -1;
+	}
+	*cmd++ = Type3(0x16, 3) | 2u | (modifier & 1u);
+	*cmd++ = static_cast<uint32_t>(args);
+	*cmd++ = static_cast<uint32_t>(args >> 32u);
+	*cmd++ = (modifier & 0x18u) | 1u;
+	WriteNop(cmd, 4);
+	return OK;
+}
+
+int KYTY_SYSV_ABI GnmDrawIndexIndirect(uint32_t* cmd, uint32_t size, uint32_t data_offset, uint32_t stage,
+                                       uint32_t vertex_sgpr, uint32_t instance_sgpr, uint32_t flags) {
+	PRINT_NAME();
+	// SPI_SHADER_USER_DATA_x_0 of the stage that receives the base vertex and instance (VS, ES, LS).
+	constexpr std::array<uint32_t, 7> user_data {0u, 0u, 0x4cu, 0u, 0xccu, 0u, 0x14cu};
+	if (cmd == nullptr || size != 9 || stage >= user_data.size() || vertex_sgpr >= 0x10u ||
+	    instance_sgpr >= 0x10u) {
+		return -1;
+	}
+	*cmd++ = Type3(0x25, 4); // DRAW_INDEX_INDIRECT
+	*cmd++ = data_offset;
+	*cmd++ = vertex_sgpr == 0 ? 0u : vertex_sgpr + user_data[stage];
+	*cmd++ = instance_sgpr == 0 ? 0u : instance_sgpr + user_data[stage];
+	*cmd++ = 0; // DRAW_INITIATOR
+	WriteNop(cmd, 4);
+	return OK;
+}
+
+int KYTY_SYSV_ABI GnmDrawIndexOffset(uint32_t* cmd, uint32_t size, uint32_t index_offset, uint32_t index_count,
+                                     uint32_t flags) {
+	PRINT_NAME();
+	(void)flags;
+	if (cmd == nullptr || size != 9) {
+		return -1;
+	}
+	*cmd++ = Type3(0x35, 4); // DRAW_INDEX_OFFSET_2
+	*cmd++ = index_count;    // max size
+	*cmd++ = index_offset;
+	*cmd++ = index_count;
+	*cmd++ = 0; // DRAW_INITIATOR
+	WriteNop(cmd, 4);
+	return OK;
+}
+
 // PS4 PS setter of SDK 3.50 and later: the null shader also resets CB_SHADER_MASK.
 int KYTY_SYSV_ABI GnmSetPsShader350(uint32_t* cmd, uint32_t size, const uint32_t* regs) {
 	PRINT_NAME();
@@ -900,6 +961,12 @@ uint64_t KYTY_SYSV_ABI GnmGetTheTessellationFactorRingBufferBaseAddress() {
 	return 0xff0000000ull;
 }
 
+uint32_t KYTY_SYSV_ABI GnmGetOffChipTessellationBufferSize() {
+	PRINT_NAME();
+	// The PS4 driver's off-chip tessellation buffer (as in shadPS4): games allocate it themselves.
+	return 0x800000u;
+}
+
 void KYTY_SYSV_ABI GnmFlushGarlic() {
 	PRINT_NAME();
 }
@@ -962,6 +1029,10 @@ LIB_DEFINE(InitGnmDriver_1) {
 	LIB_FUNC("mLVL7N7BVBg", Gnm::GnmSetPsShader350);  // UpdatePsShader350
 	LIB_FUNC("Kx-h-nWQJ8A", Gnm::GnmSetCsShaderWithModifier);
 	LIB_FUNC("0BzLGljcwBo", Gnm::GnmDispatchDirect);
+	LIB_FUNC("Z43vKp5k7r0", Gnm::GnmDispatchIndirect);
+	LIB_FUNC("wED4ZXCFJT0", Gnm::GnmDispatchIndirectOnMec);
+	LIB_FUNC("ED9-Fjr8Ta4", Gnm::GnmDrawIndexIndirect);
+	LIB_FUNC("oYM+YzfCm2Y", Gnm::GnmDrawIndexOffset);
 	LIB_FUNC("cFCp0NX8wf0", Gnm::GnmSetVgtControl);
 	LIB_FUNC("jiItzS6+22g", Gnm::GnmInsertMarker); // SetMarker
 	LIB_FUNC("W1Etj-jlW7Y", Gnm::GnmInsertMarker); // PushMarker
@@ -987,6 +1058,7 @@ LIB_DEFINE(InitGnmDriver_1) {
 	LIB_FUNC("H7-fgvEutM0", Gnm::GnmGetEqTimeStamp);
 	LIB_FUNC("jtkqXpAOY6w", Gnm::GnmSetGsRingSizes);
 	LIB_FUNC("ln33zjBrfjk", Gnm::GnmGetTheTessellationFactorRingBufferBaseAddress);
+	LIB_FUNC("FFVZcCu3zWU", Gnm::GnmGetOffChipTessellationBufferSize);
 	LIB_FUNC("iBt3Oe00Kvc", Gnm::GnmFlushGarlic);
 	LIB_FUNC("jg33rEKLfVs", Gnm::GnmIsUserPaEnabled);
 	LIB_FUNC("RU74kek-N0c", Gnm::GnmLogicalCuMaskToPhysicalCuMask);

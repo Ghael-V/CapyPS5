@@ -138,6 +138,8 @@ int KYTY_SYSV_ABI KernelSetVirtualRangeName(const void* addr, uint64_t len, cons
 int KYTY_SYSV_ABI KernelClearVirtualRangeName(const void* addr, uint64_t len);
 int KYTY_SYSV_ABI KernelMunmap(uint64_t vaddr, size_t len);
 size_t KYTY_SYSV_ABI KernelGetDirectMemorySize();
+int KYTY_SYSV_ABI    KernelGetDirectMemoryType(int64_t phys_addr, int* type_out, int64_t* start_out,
+                                            int64_t* end_out);
 int KYTY_SYSV_ABI    KernelAvailableDirectMemorySize(int64_t search_start, int64_t search_end,
                                                      size_t alignment, int64_t* phys_addr_out,
                                                      size_t* size_out);
@@ -213,6 +215,15 @@ using AddressFoldHook = void (*)(uint64_t mask);
 void SetAddressFoldHook(AddressFoldHook hook);
 /** Enables folding up front (the JIT masks from its start). */
 void SetAddressFoldMask(uint64_t mask);
+/** Second fold level: a folded address with `bit` set also loses the bit below it. A PS4 guest
+ * uses a 40-bit space (up to 0xfbffffffff); with the 39-bit mask alone its top half folds onto
+ * the host's own libraries and heaps, with this it folds into the guest-owned window. Must be set
+ * before guest code is translated; the hook tells the JIT. */
+void SetAddressFoldHighBit(uint64_t bit);
+void SetAddressFoldHighBitHook(AddressFoldHook hook);
+/** Caps the direct memory reported to the game (a PS4 has less than the PS5 sized backing).
+ * Call before the memory subsystem starts. */
+void SetDirectMemoryLimit(uint64_t size);
 /** Guest ranges above the fold mask that games really use (reservations placed at their folded
  * address). Emulator functions receive raw guest pointers, so their arguments inside these
  * windows are folded on entry. */
