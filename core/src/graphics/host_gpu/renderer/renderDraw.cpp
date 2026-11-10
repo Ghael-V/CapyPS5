@@ -2137,6 +2137,12 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 		              static_cast<unsigned long long>(Common::Telemetry::g_game_frames.load()),
 		              static_cast<long long>(watch_run ? run_index : watch_dump_seen - watch_dump_left));
 		m_context.GetTextureCache().DebugSaveImageLinear(state.color_info[0].image_id, dir + name);
+		// The other color targets too, as <name>_c<slot>.img.
+		for (uint32_t c = 1; c < state.color_count; c++) {
+			std::string extra = dir + name;
+			extra.insert(extra.size() - 4, "_c" + std::to_string(c));
+			m_context.GetTextureCache().DebugSaveImageLinear(state.color_info[c].image_id, extra);
+		}
 		if (watch_run && state.depth_info.image_id) {
 			std::snprintf(name, sizeof(name), "/%06llu_%03lld_d.img",
 			              static_cast<unsigned long long>(Common::Telemetry::g_game_frames.load()),
