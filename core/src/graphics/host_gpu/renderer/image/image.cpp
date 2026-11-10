@@ -405,6 +405,18 @@ void Image::Upload(std::span<const vk::BufferImageCopy> copies, vk::Buffer buffe
 	if (static_cast<bool>(FullAspectMask(backing.format) & vk::ImageAspectFlagBits::eDepth)) {
 		Common::DebugFlags::LogDepthWrite("Upload", track_addr);
 	}
+#if defined(__ANDROID__)
+	{
+		// `debug.capy.gpu_profile 2`: which images are uploaded (a re-upload of the same one shows
+		// the CPU-dirty tracking misfiring).
+		static Common::DebugFlags::CachedValue profile("debug.capy.gpu_profile", 0);
+		if (profile.Get() == 2) {
+			__android_log_print(ANDROID_LOG_WARN, "CapyPS5-Upload", "upload 0x%llx %ux%u size 0x%llx rendering %d",
+			                    static_cast<unsigned long long>(track_addr), backing.extent.width, backing.extent.height,
+			                    static_cast<unsigned long long>(size), m_scheduler.Current().IsRendering() ? 1 : 0);
+		}
+	}
+#endif
 	m_scheduler.EndRendering();
 	if (m_bc_decoded) {
 		UploadBcDecoded(copies, buffer, offset, size);

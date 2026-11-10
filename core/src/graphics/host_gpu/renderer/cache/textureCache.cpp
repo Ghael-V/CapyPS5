@@ -22,6 +22,7 @@
 #include "graphics/host_gpu/renderer/render.h"
 #include "kernel/memory.h"
 
+#include <xxhash.h>
 #include <algorithm>
 #include <array>
 #include <bit>
@@ -933,6 +934,20 @@ TextureCache::OverlapResult TextureCache::ResolveOverlap(const ImageInfo& reques
 		                         (requested.gfx7_micro_pitch != 0 && cached.info.gfx7_micro_pitch != 0);
 		if (gfx7_loaded && !cached.IsGpuModified() &&
 		    (requested.extent != cached.info.extent || requested.data.size != cached.info.data.size)) {
+#if defined(__ANDROID__)
+			static Common::DebugFlags::CachedValue profile("debug.capy.gpu_profile", 0);
+			if (profile.Get() == 2) {
+				__android_log_print(ANDROID_LOG_WARN, "CapyPS5-Upload",
+				                    "replace 0x%llx %ux%ux%u size 0x%llx fmt %u by %ux%ux%u size 0x%llx fmt %u",
+				                    static_cast<unsigned long long>(requested.data.address), cached.info.extent.width,
+				                    cached.info.extent.height, cached.info.extent.depth,
+				                    static_cast<unsigned long long>(cached.info.data.size),
+				                    static_cast<unsigned>(cached.info.guest_format), requested.extent.width,
+				                    requested.extent.height, requested.extent.depth,
+				                    static_cast<unsigned long long>(requested.data.size),
+				                    static_cast<unsigned>(requested.guest_format));
+			}
+#endif
 			FreeImage(cached_id);
 			return {merged_id};
 		}
@@ -1116,17 +1131,47 @@ void TextureCache::UploadGfx7MicroTiled(Image& image) {
 				}
 				continue;
 			}
-			for (uint32_t y = 0; y < rows; y++) {
-				for (uint32_t x = 0; x < columns; x++) {
-					const uint32_t element = (x & 1u) | ((y & 1u) << 1u) | ((x & 2u) << 1u) |
-					                         ((y & 2u) << 2u) | ((x & 4u) << 2u) | ((y & 4u) << 3u);
-					const uint64_t source = slice + ((y / 8u) * uint64_t {per_row} + x / 8u) * tile_size +
-					                        uint64_t {element} * bytes;
-					if (source + bytes <= guest.size()) {
-						std::memcpy(out + out_offset, guest.data() + source, bytes);
+			const auto detile = [&]<uint32_t Bytes>() {
+				// Within a micro-tile row the texels come in pairs: x = 0,1 | 2,3 | 4,5 | 6,7 sit
+				// at elements 0,1 | 4,5 | 16,17 | 20,21 (plus the row's y bits).
+				constexpr std::array<uint32_t, 4> pair_element {0u, 4u, 16u, 20u};
+				for (uint32_t y = 0; y < rows; y++) {
+					const uint32_t row_element = ((y & 1u) << 1u) | ((y & 2u) << 2u) | ((y & 4u) << 3u);
+					const uint64_t row_tiles   = slice + (y / 8u) * uint64_t {per_row} * tile_size;
+					for (uint32_t x = 0; x < columns; x += 2u) {
+						const uint32_t element = pair_element[(x / 2u) & 3u] | row_element;
+						const uint64_t source  = row_tiles + (x / 8u) * tile_size + uint64_t {element} * Bytes;
+						const uint32_t count   = std::min(2u, columns - x);
+						if (source + uint64_t {count} * Bytes <= guest.size()) {
+							std::memcpy(out + out_offset, guest.data() + source, Bytes);
+							if (count == 2u) {
+								std::memcpy(out + out_offset + Bytes, guest.data() + source + Bytes, Bytes);
+							}
+						}
+						out_offset += uint64_t {count} * Bytes;
 					}
-					out_offset += bytes;
 				}
+			};
+			switch (bytes) {
+				case 1u: detile.template operator()<1u>(); break;
+				case 2u: detile.template operator()<2u>(); break;
+				case 4u: detile.template operator()<4u>(); break;
+				case 8u: detile.template operator()<8u>(); break;
+				case 16u: detile.template operator()<16u>(); break;
+				default:
+					for (uint32_t y = 0; y < rows; y++) {
+						for (uint32_t x = 0; x < columns; x++) {
+							const uint32_t element = (x & 1u) | ((y & 1u) << 1u) | ((x & 2u) << 1u) |
+							                         ((y & 2u) << 2u) | ((x & 4u) << 2u) | ((y & 4u) << 3u);
+							const uint64_t source =
+							    slice + ((y / 8u) * uint64_t {per_row} + x / 8u) * tile_size + uint64_t {element} * bytes;
+							if (source + bytes <= guest.size()) {
+								std::memcpy(out + out_offset, guest.data() + source, bytes);
+							}
+							out_offset += bytes;
+						}
+					}
+					break;
 			}
 		}
 		in_offset += layout.size * info.resources.layers;
@@ -1331,6 +1376,7 @@ void TextureCache::MaterializeColorClear(ImageId id, const ImageDesc& desc,
 }
 
 void TextureCache::RefreshImage(ImageId id) {
+	static Common::DebugFlags::CachedValue small_image_hash("debug.capy.small_image_hash", 1);
 	Common::DebugFlags::FrameTrace("  tc %s id=%u addr=0x%llx", "refresh", static_cast<uint32_t>(id.index),
 	                               static_cast<unsigned long long>(m_slot_images[id].info.data.address));
 	auto& image = m_slot_images[id];
@@ -1358,7 +1404,28 @@ void TextureCache::RefreshImage(ImageId id) {
 	if (!cpu_dirty) {
 		return;
 	}
+	// Write tracking works on pages: a small image sharing one with data the CPU rewrites every
+	// frame came back dirty on every bind (God of War re-uploaded one 1x1 texture ~600 times a
+	// second, each upload ending the render pass). Unchanged bytes keep the uploaded image.
+	constexpr uint64_t SmallImageBytes = 64u * 1024u;
+	const auto         small = image.info.data.size != 0 && image.info.data.size <= SmallImageBytes &&
+	                   !image.IsGpuModified() && !image.IsBufferModified() &&
+	                   image.IsDefinitelyCpuDirty() && small_image_hash.Get() != 0;
+	uint64_t           hash  = 0;
+	if (small) {
+		std::array<uint8_t, SmallImageBytes> bytes;
+		if (LibKernel::Memory::ReadGuestMemory(image.info.data.address, bytes.data(), image.info.data.size)) {
+			hash = XXH3_64bits(bytes.data(), static_cast<size_t>(image.info.data.size));
+			if (image.HasUploadHash() && image.UploadHash() == hash) {
+				image.RefreshComplete();
+				return;
+			}
+		}
+	}
 	InitializeImage(id);
+	if (auto* refreshed = m_slot_images.try_get(id); refreshed != nullptr) {
+		refreshed->SetUploadHash(hash, small && hash != 0);
+	}
 }
 
 ImageId TextureCache::AssociateStencil(ImageId depth_id, GuestRange stencil) {

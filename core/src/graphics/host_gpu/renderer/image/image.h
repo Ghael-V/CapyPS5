@@ -145,6 +145,13 @@ public:
 		return backing.image == nullptr ? 0 : Common::AlignUp(info.data.size, 1024);
 	}
 	[[nodiscard]] uint64_t HashGuestEdges() const;
+	// Content hash of a small image's guest bytes at its last upload (see RefreshImage).
+	[[nodiscard]] bool     HasUploadHash() const { return m_upload_hash_valid; }
+	[[nodiscard]] uint64_t UploadHash() const { return m_upload_hash; }
+	void                   SetUploadHash(uint64_t hash, bool valid) {
+		m_upload_hash       = hash;
+		m_upload_hash_valid = valid;
+	}
 
 	[[nodiscard]] bool IsScaled() const noexcept { return scale != 1.0f; }
 	// A BCn image stored decoded on a GPU without BCn textures (see BcDecoder).
@@ -191,6 +198,8 @@ private:
 	GraphicContext&   m_graphics;
 	CommandScheduler& m_scheduler;
 	uint64_t          m_maybe_cpu_hash   = 0;
+	uint64_t          m_upload_hash      = 0;
+	bool              m_upload_hash_valid = false;
 	bool              m_cpu_dirty        = false;
 	bool              m_maybe_cpu_dirty  = false;
 	bool              m_maybe_hash_valid = false;

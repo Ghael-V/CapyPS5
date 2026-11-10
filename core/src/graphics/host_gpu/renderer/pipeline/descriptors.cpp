@@ -1132,6 +1132,7 @@ void RenderExecutor::CommitBindings(CommandBuffer&                     buffer,
                                     const PipelineCache::Pipeline&     pipeline,
                                     std::span<PreparedBindings* const> prepared_bindings) {
 	KYTY_PROFILER_FUNCTION();
+	static Common::DebugFlags::CachedValue sample_in_general("debug.capy.sample_in_general", 1);
 	auto   vk_buffer        = buffer.Handle();
 	size_t image_descriptor_count = 0;
 	size_t write_count      = 0;
@@ -1278,6 +1279,12 @@ void RenderExecutor::CommitBindings(CommandBuffer&                     buffer,
 				image.Transit(vk::ImageLayout::eGeneral,
 				              vk::AccessFlagBits2::eShaderRead | vk::AccessFlagBits2::eShaderWrite,
 				              range, vk_buffer);
+			} else if (!image.info.IsDepth() && image.backing.state.layout == vk::ImageLayout::eGeneral &&
+			           sample_in_general.Get() != 0) {
+				// Uploads and compute writes leave color images in GENERAL, which sampling also
+				// accepts: switching layout here would end the active render pass for every newly
+				// bound texture (`debug.capy.sample_in_general 0` restores the old behaviour).
+				image.Transit(vk::ImageLayout::eGeneral, vk::AccessFlagBits2::eShaderRead, range, vk_buffer);
 			} else {
 				image.Transit(image.info.IsDepth() ? vk::ImageLayout::eDepthStencilReadOnlyOptimal
 				                                   : vk::ImageLayout::eShaderReadOnlyOptimal,
