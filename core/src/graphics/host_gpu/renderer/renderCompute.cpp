@@ -10,6 +10,7 @@
 #include "common/logging/log.h"
 #include "common/profiler.h"
 #include "common/stringUtils.h"
+#include "common/telemetry.h"
 #include "common/threads.h"
 #include "graphics/guest_gpu/gpu_defs.h"
 #include "graphics/guest_gpu/graphicsRun.h"
@@ -43,6 +44,10 @@
 #include <span>
 #include <unordered_map>
 #include <vector>
+
+#if defined(__ANDROID__)
+#include "android/capyps5_jni.h"
+#endif
 
 namespace Libs::Graphics {
 static bool FillSourcesDisjoint(std::span<const ShaderRecompiler::IR::DescriptorValue> sources,
@@ -636,6 +641,34 @@ void RenderExecutor::DispatchDirect(uint64_t submit_id, CommandBuffer& buffer,
 
 	// The removed host fence also ordered read-only dispatches before later writers.
 	ShaderAccessBarrier(vk_buffer, vk::PipelineStageFlagBits::eComputeShader);
+#if defined(__ANDROID__)
+	// `setprop debug.capy.watch_cs 0x<cs>` + `debug.capy.watch_dump N`: save the images the next N
+	// dispatches of that compute shader write to <files>/watch/cs_<game frame>_<n>_<image>.img.
+	static Common::DebugFlags::CachedValue watch_cs("debug.capy.watch_cs", 0);
+	static Common::DebugFlags::CachedValue watch_cs_dump("debug.capy.watch_dump", 0);
+	static int64_t                         watch_cs_left = 0;
+	static int64_t                         watch_cs_seen = 0;
+	if (watch_cs_dump.Get() != watch_cs_seen) {
+		watch_cs_seen = watch_cs_dump.Get();
+		watch_cs_left = watch_cs_seen;
+	}
+	if (watch_cs_left > 0 && watch_cs.Get() != 0 &&
+	    static_cast<uint64_t>(watch_cs.Get()) == sh_ctx.GetCs().cs_regs.data_addr) {
+		const auto dir = AndroidGetFilesDir() + "/watch";
+		Common::File::CreateDirectories(dir);
+		for (uint32_t i = 0; i < bindings.images.size() && i < program.info.images.size(); i++) {
+			if (!program.info.images[i].written || !bindings.images[i].image_id) {
+				continue;
+			}
+			char name[80];
+			std::snprintf(name, sizeof(name), "/cs_%06llu_%03lld_%u.img",
+			              static_cast<unsigned long long>(Common::Telemetry::g_game_frames.load()),
+			              static_cast<long long>(watch_cs_seen - watch_cs_left), i);
+			m_context.GetTextureCache().DebugSaveImageLinear(bindings.images[i].image_id, dir + name);
+		}
+		watch_cs_left--;
+	}
+#endif
 	ResetBindings();
 }
 
