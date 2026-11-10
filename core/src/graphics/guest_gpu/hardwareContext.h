@@ -75,6 +75,9 @@ struct ColorDccControl {
 
 struct ColorCmask {
 	uint64_t addr = 0;
+	// PS4 (gfx7) CB_COLOR_CMASK_SLICE.TILE_MAX + 1: 128x128-pixel CMASK blocks (128 bytes each) per
+	// slice, 0 when not set.
+	uint32_t gfx7_slice_blocks = 0;
 };
 
 struct ColorFmask {

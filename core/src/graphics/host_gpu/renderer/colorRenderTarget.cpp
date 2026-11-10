@@ -18,6 +18,7 @@
 #include "graphics/host_gpu/renderer/render.h"
 #include "graphics/host_gpu/renderer/renderContext.h"
 #include "graphics/host_gpu/vulkanCommon.h"
+#include "graphics/shader/recompiler/frontend/decode/ShaderDecoder.h"
 
 #include <algorithm>
 #include <array>
@@ -265,6 +266,12 @@ void RenderExecutor::ResolveRenderColorTarget(CommandBuffer& buffer, RenderColor
 			(void)TileGetDccSize(width, height, layers, bytes_per_element, levels,
 			                     rt.attrib3.tile_mode, metadata_size, rt.attrib.num_fragments);
 			desc.info.metadata.dcc_alpha_msb = DccAlphaOnMsb(rt.info);
+		} else if (ShaderRecompiler::Decoder::GetGuestIsa() ==
+		               ShaderRecompiler::Decoder::GuestIsa::Gfx7 &&
+		           rt.cmask.gfx7_slice_blocks != 0) {
+			// PS4: CB_COLOR_CMASK_SLICE gives the slice size in 128-byte (128x128-pixel) blocks.
+			metadata_size.size  = uint64_t {rt.cmask.gfx7_slice_blocks} * 128u * layers;
+			metadata_size.align = 256;
 		} else {
 			(void)TileGetCmaskSize(width, height, layers, levels, metadata_size);
 		}
