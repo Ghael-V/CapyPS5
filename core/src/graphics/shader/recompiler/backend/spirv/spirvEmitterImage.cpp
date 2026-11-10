@@ -2,6 +2,7 @@
 // SPDX-FileCopyrightText: Copyright KytyPS5 contributors; based on Kyty, Copyright (c) 2021 InoriRus (MIT)
 // SPDX-License-Identifier: GPL-2.0-only
 
+#include "common/debugFlags.h"
 #include "graphics/guest_gpu/gpu_format.h"
 #include "graphics/shader/recompiler/HostFeatures.h"
 #include "graphics/shader/recompiler/backend/spirv/spirvEmitterInstructions.h"
@@ -755,7 +756,9 @@ void EmitImage(ValueEmitContext& ctx, const IR::Inst& inst) {
 	// gfx7 MIMG decodes as 2D because the T# sets the dimension. Lay its address out by the image's
 	// real dimension; the translator carries the extra address VGPRs (MakeImageAddress).
 	IR::MemoryInfo gfx7_memory;
-	const bool     gfx7_layout = Decoder::GetGuestIsa() == Decoder::GuestIsa::Gfx7 &&
+	static Common::DebugFlags::CachedValue gfx7_mimg_dim("debug.capy.gfx7_mimg_dim", 1);
+	const bool     gfx7_layout = gfx7_mimg_dim.Get() != 0 &&
+	                         Decoder::GetGuestIsa() == Decoder::GuestIsa::Gfx7 &&
 	                         memory.resource < state.program.info.images.size();
 	if (gfx7_layout) {
 		gfx7_memory                          = memory;
