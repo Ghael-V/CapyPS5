@@ -329,9 +329,17 @@ IR::Value Translator::MakeImageAddress(const Decoder::Instruction& inst,
                                        const Decoder::Operand&     base) {
 	std::array<IR::Value, 13> components {};
 	components.fill(IR::Value(0u));
-	const auto count =
+	auto count =
 	    Decoder::ImageAddressDwordCount(inst.image_sample_flags, inst.image_address_components);
 	EXIT_IF(count > components.size());
+	// gfx7 MIMG takes its dimension from the T#: the instruction decodes as 2D, but a 3D or cube
+	// image reads more address VGPRs. Carry the following ones too; the emitter places the
+	// components by the image's real dimension (see EmitImage).
+	if (Decoder::GetGuestIsa() == Decoder::GuestIsa::Gfx7 && base.kind == Decoder::OperandKind::Vgpr &&
+	    inst.image_nsa_dwords == 0) {
+		const auto available = 256u - std::min(base.reg, 256u);
+		count = std::min({count + 4u, static_cast<uint32_t>(components.size()), available});
+	}
 	const auto nsa_components =
 	    std::min(inst.image_nsa_dwords * 4u, Decoder::MaxImageNsaAddressComponents);
 	for (uint32_t index = 0; index < count; index++) {
