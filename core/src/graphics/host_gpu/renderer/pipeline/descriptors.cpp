@@ -844,12 +844,18 @@ void RenderExecutor::PrepareBindings(const ShaderStageRuntime& runtime,
 	prepared.shader_data.clear();
 	for (uint32_t i = 0; i < program.info.images.size(); i++) {
 		auto binding = ResolveTexture(program.info.images[i], snapshot.images[i]);
-		Common::DebugFlags::FrameTrace("    image[%u] class=%u vkfmt=%d dim=%u mips=%u conv=%u", i,
+		Common::DebugFlags::FrameTrace("    image[%u] class=%u vkfmt=%d dim=%u mips=%u conv=%u swz=%d%d%d%d aspect=0x%x storage=%d", i,
 		                               static_cast<uint32_t>(program.info.images[i].numeric_class),
 		                               static_cast<int>(binding.desc.view_info.format),
 		                               static_cast<uint32_t>(program.info.images[i].dimension),
 		                               program.info.images[i].mip_count,
-		                               static_cast<uint32_t>(program.info.images[i].conversion_format));
+		                               static_cast<uint32_t>(program.info.images[i].conversion_format),
+		                               static_cast<int>(binding.desc.view_info.mapping.r),
+		                               static_cast<int>(binding.desc.view_info.mapping.g),
+		                               static_cast<int>(binding.desc.view_info.mapping.b),
+		                               static_cast<int>(binding.desc.view_info.mapping.a),
+		                               static_cast<uint32_t>(binding.desc.view_info.aspect),
+		                               binding.desc.type == TextureCache::BindingType::Storage ? 1 : 0);
 		BindImage(binding.image_id, binding.desc.type == TextureCache::BindingType::Storage);
 		binding.mip_views.swap(prepared.images[i].mip_views);
 		binding.mip_views.clear();

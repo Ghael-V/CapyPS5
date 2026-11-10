@@ -1019,6 +1019,7 @@ static void HwShSetCsRegister(CommandProcessor& cp, uint32_t cmd_offset, uint32_
 		case Pm4::COMPUTE_PGM_HI:
 			cs_regs.data_addr &= 0xFFFF00FFFFFFFFFFull;
 			cs_regs.data_addr |= (static_cast<uint64_t>(value) & 0xffu) << 40u;
+			ShaderDebugDisassembleGfx7(cs_regs.data_addr, "cs");
 			break;
 		case Pm4::COMPUTE_PGM_RSRC1:
 			cs_regs.vgprs =
