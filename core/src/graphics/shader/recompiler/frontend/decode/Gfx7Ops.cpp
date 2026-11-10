@@ -101,10 +101,22 @@ void DecodeVop3Gfx7(uint32_t pc, std::span<const uint32_t> code, uint32_t word_i
 		SetUnsupported(inst, Family::VOP3, opcode, "gfx7 VOP3 opcode is not implemented");
 		return;
 	}
-	const uint32_t low = IsVop3b(opcode) ? (word0 & 0x7fffu)
-	                                     : (word0 & 0x7ffu) | (((word0 >> 11u) & 1u) << 15u);
-	const std::array<uint32_t, 3> words {low | (gfx10 << 16u) | Vop3Prefix, WordAt(code, word_index + 1u),
-	                                     0u};
+	uint32_t low = IsVop3b(opcode) ? (word0 & 0x7fffu)
+	                               : (word0 & 0x7ffu) | (((word0 >> 11u) & 1u) << 15u);
+	uint32_t word1  = WordAt(code, word_index + 1u);
+	uint32_t opcode10 = gfx10;
+	if (opcode >= 0x161u && opcode <= 0x163u) {
+		// V_LSHL_B64, V_LSHR_B64, V_ASHR_I64 exist in gfx10 only as the *REV forms (0x2ff-0x301):
+		// swap src0/src1 with their abs and neg bits.
+		opcode10 = 0x2ffu + (opcode - 0x161u);
+		const uint32_t src0 = word1 & 0x1ffu, src1 = (word1 >> 9u) & 0x1ffu;
+		const uint32_t neg  = word1 >> 29u;
+		word1 = (word1 & ~0x3ffffu & 0x1fffffffu) | src1 | (src0 << 9u) |
+		        (((neg & 4u) | ((neg & 1u) << 1u) | ((neg >> 1u) & 1u)) << 29u);
+		const uint32_t abs = (low >> 8u) & 7u;
+		low = (low & ~(7u << 8u)) | (((abs & 4u) | ((abs & 1u) << 1u) | ((abs >> 1u) & 1u)) << 8u);
+	}
+	const std::array<uint32_t, 3> words {low | (opcode10 << 16u) | Vop3Prefix, word1, 0u};
 	DecodeVop3(pc, words, 0, inst);
 	Restore(inst, code, word_index, 2, opcode);
 }

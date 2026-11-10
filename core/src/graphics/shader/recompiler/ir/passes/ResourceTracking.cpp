@@ -1051,6 +1051,42 @@ private:
 		LaneQuantifier lanes = LaneQuantifier::All;
 	};
 
+	// An exclusive upper bound for a descriptor table key from how it is computed (0 if none):
+	// FindILsb32 is below 32 (its -1 sentinel is excluded by the loops that select with it), a
+	// bitfield of N bits below 2^N, an AND with a constant up to it, a sum and a Phi by their parts.
+	uint64_t KeyUpperBound(Value value, uint32_t depth = 0) const {
+		value = value.Resolve();
+		if (value.IsImmediate()) return value.GetType() == Type::U32 ? uint64_t {value.U32()} + 1u : 0u;
+		const auto* inst = value.TryInstruction();
+		if (inst == nullptr || depth > 16u) return 0;
+		uint32_t immediate = 0;
+		switch (inst->GetOpcode()) {
+			case ValueOpcode::FindILsb32: return 32u;
+			case ValueOpcode::BitFieldUExtract:
+				return ImmediateU32(inst->Arg(2), immediate) && immediate < 32u ? (1ull << immediate) : 0u;
+			case ValueOpcode::BitwiseAnd32:
+				if (ImmediateU32(inst->Arg(1), immediate) || ImmediateU32(inst->Arg(0), immediate))
+					return uint64_t {immediate} + 1u;
+				return 0;
+			case ValueOpcode::IAdd32: {
+				const auto a = KeyUpperBound(inst->Arg(0), depth + 1u);
+				const auto b = KeyUpperBound(inst->Arg(1), depth + 1u);
+				return a != 0 && b != 0 ? a + b - 1u : 0u;
+			}
+			case ValueOpcode::Phi: {
+				uint64_t bound = 0;
+				for (uint32_t arg = 0; arg < inst->NumArgs(); ++arg) {
+					if (inst->Arg(arg).Resolve() == value) continue; // loop-carried self
+					const auto part = KeyUpperBound(inst->Arg(arg), depth + 1u);
+					if (part == 0) return 0;
+					bound = std::max(bound, part);
+				}
+				return bound;
+			}
+			default: return 0;
+		}
+	}
+
 	// `uniform`: the value is wave-uniform (a scalar key), so an edge guarded for any lane
 	// (V_CMPX on it then EXECZ) bounds it as well as one guarded for all lanes.
 	bool NonzeroOnEntry(Value value, const Block* block, uint32_t excluded = 0u,
@@ -1070,6 +1106,23 @@ private:
 				if (positive && test->GetOpcode() == ValueOpcode::LogicalAnd)
 					return self(self, test->Arg(0), true, depth + 1u) ||
 					       self(self, test->Arg(1), true, depth + 1u);
+				// A false `a || b` implies both false (a PS4 loop exits on `key == -1 || key >= n`).
+				if (!positive && test->GetOpcode() == ValueOpcode::LogicalOr)
+					return self(self, test->Arg(0), false, depth + 1u) ||
+					       self(self, test->Arg(1), false, depth + 1u);
+				if (test->GetOpcode() == ValueOpcode::LogicalNot)
+					return self(self, test->Arg(0), !positive, depth + 1u);
+				// Per-lane conditions arrive ANDed with the lane's EXEC state, which is true for
+				// every lane that runs the use: a false `cond && exec` there means a false `cond`.
+				if (uniform && !positive && test->GetOpcode() == ValueOpcode::LogicalAnd)
+					return self(self, test->Arg(0), false, depth + 1u) ||
+					       self(self, test->Arg(1), false, depth + 1u);
+				// S_CSELECT_B64 mask, exec, 0: for an active lane the mask is the condition.
+				if (test->GetOpcode() == ValueOpcode::SelectU1 && test->NumArgs() == 3u) {
+					const auto other = test->Arg(2).Resolve();
+					if (other.IsImmediate() && other.GetType() == Type::U1 && !other.U1())
+						return self(self, test->Arg(0), positive, depth + 1u);
+				}
 				if (test->NumArgs() != 2u ||
 				    !((test->GetOpcode() == ValueOpcode::INotEqual32 && positive) ||
 				      (test->GetOpcode() == ValueOpcode::IEqual32 && !positive))) return false;
@@ -1849,7 +1902,49 @@ private:
 				} else if (const auto* bound = m_shader_writes ? BoundedLoop(key, handle.Parent()) : nullptr) {
 					// Likewise a counted loop over the records (`for i < count`).
 					indirect.key_count = bound->Arg(1);
+				} else if (const auto range = KeyUpperBound(key);
+				           Decoder::GetGuestIsa() == Decoder::GuestIsa::Gfx7 && range != 0 && range <= 4096u) {
+					// Keys computed from bit scans of 64-bit masks or bitfields of a light list.
+					indirect.key_count = Value(static_cast<uint32_t>(range));
+				} else if (Decoder::GetGuestIsa() == Decoder::GuestIsa::Gfx7 && !plan.table_indexed &&
+				           MatchScalarMaterialKey(key, indirect, material_source)) {
+					// Keys read from a list in a guarded scalar loop: the host enumerates the list.
+					plan.retain_reads = true;
 				} else {
+					Common::DebugFlags::NoteOnce(
+					    "CapyPS5-Indirect", m_program.shader_hash ^ 0x4249u ^ reinterpret_cast<uintptr_t>(&handle),
+					    "shader 0x%016llx: table key not bounded (selector %s, mask guard %d, key guard %d, writes %d)",
+					    static_cast<unsigned long long>(m_program.shader_hash),
+					    selector != nullptr ? std::string(ValueOpcodeName(selector->GetOpcode())).c_str() : "none",
+					    selector != nullptr && selector->NumArgs() == 1u &&
+					        NonzeroOnEntry(selector->Arg(0), handle.Parent(), 0u, true),
+					    NonzeroOnEntry(key, handle.Parent(), UINT32_MAX, true), m_shader_writes);
+					{
+						// Diagnostics: the edge conditions on the way up to the selector.
+						const auto describe = [&](const auto& self, Value value, uint32_t depth) -> std::string {
+							value = value.Resolve();
+							if (value.IsImmediate()) return value.GetType() == Type::U1 ? (value.U1() ? "#1" : "#0") : value.GetType() == Type::U32 ? fmt::format("#{:x}", value.U32()) : std::string("#imm");
+							const auto* inst = value.TryInstruction();
+							if (inst == nullptr) return "?";
+							if (inst == selector) return "KEY";
+							if (depth > 4u) return std::string(ValueOpcodeName(inst->GetOpcode()));
+							std::string text = std::string(ValueOpcodeName(inst->GetOpcode())) + "(";
+							for (uint32_t arg = 0; arg < inst->NumArgs(); ++arg)
+								text += (arg != 0u ? "," : "") + self(self, inst->Arg(arg), depth + 1u);
+							return text + ")";
+						};
+						const Block* block = handle.Parent();
+						for (uint32_t step = 0; step < 16u && block != nullptr && !block->ImmPredecessors().empty(); ++step) {
+							const auto* previous = block->ImmPredecessors()[0];
+							if (const auto edge = ConditionalEdge(previous, block)) {
+								Common::DebugFlags::NoteOnce("CapyPS5-Indirect", (m_program.shader_hash ^ 0x4250u) + step + (reinterpret_cast<uintptr_t>(&handle) << 8u),
+								    "  edge %u preds=%zu positive=%d lanes=%d cond=%s", step, block->ImmPredecessors().size(),
+								    edge->positive ? 1 : 0, static_cast<int>(edge->lanes),
+								    describe(describe, edge->condition, 0u).c_str());
+							}
+							block = previous;
+						}
+					}
 					return RejectIndirect(__LINE__);
 				}
 			}
@@ -2214,6 +2309,19 @@ private:
 			    std::all_of(descriptor.dwords.begin(), descriptor.dwords.begin() + width,
 			                [](Value word) { return word.Resolve().GetType() == Type::U32; })) {
 				return false;
+			}
+			if (expected == ValueOpcode::GetImageResource && Decoder::GetGuestIsa() == Decoder::GuestIsa::Gfx7) {
+				// A PS4 image selected through a table this pass cannot bound yet: bind a null
+				// image (reads as zero) so the rest of the shader still runs.
+				Common::DebugFlags::NoteOnce(
+				    "CapyPS5-Indirect", m_program.shader_hash ^ (uint64_t {pc} << 32u),
+				    "shader 0x%016llx pc 0x%x: unresolved table image bound as null (plan rejected at line %u)",
+				    static_cast<unsigned long long>(m_program.shader_hash), pc, m_image_reject_line);
+				DescriptorSource null_image;
+				null_image.dword_count = descriptor.dword_count;
+				null_image.dwords.fill(Value(0u));
+				source = InternSource(null_image);
+				return true;
 			}
 			Fail(pc, fmt::format("{} dword {} is not a valid runtime value (indirect image rejected at line {}, last at {})",
 			                     ValueOpcodeName(expected), bad_dword, m_image_reject_line, m_indirect_reject_line));
