@@ -10,13 +10,12 @@ namespace FEXCore {
 // last GiB) touch addresses a 39-bit host cannot map; masking folds them onto a host window.
 // Host addresses are below the mask, so they are unaffected.
 inline std::atomic<uint64_t> GuestAddressFoldMask {0};
-// CapyPS5: optional second level for a 40-bit guest layout (PS4: user space up to 0xfbffffffff).
-// When an address has this bit set, the bit below it is cleared too, so the top half of the
-// guest space folds into the guest-owned window below the host's libraries instead of onto them.
-// Zero disables it.
-inline std::atomic<uint64_t> GuestAddressFoldHighBit {0};
-
-inline uint64_t FoldGuestAddressValue(uint64_t Address, uint64_t Mask, uint64_t HighBit) {
-  return (Address & Mask) & ~((Address & HighBit) >> 1);
-}
+// CapyPS5: guest window remap table for a 40-bit guest layout (PS4: user space up to
+// 0xfbffffffff). When non-zero, it is the host address of 2^19 int64 deltas, one per 2 MiB guest
+// chunk: code compiled meanwhile accesses `address + table[(address >> 21) & 0x7ffff]` instead of
+// masking. The emulator points chunks the host cannot back at blocks of its own space. The
+// address must be an AArch64 logical immediate with bits 0-21 clear (the backend ORs the index in).
+inline std::atomic<uint64_t> GuestAddressRemapTable {0};
+inline constexpr uint32_t GuestAddressRemapShift = 21;
+inline constexpr uint32_t GuestAddressRemapBits = 19;
 } // namespace FEXCore

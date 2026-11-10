@@ -200,29 +200,44 @@ static void NotifyGuestProtection(uint64_t vaddr, uint64_t size, VirtualMemory::
 // the memory calls below fold their addresses the same way; the guest keeps its unfolded pointers.
 static std::atomic<uint64_t> g_address_fold_mask {0};
 static AddressFoldHook       g_address_fold_hook = nullptr;
-// Second fold level for a 40-bit guest layout (see SetAddressFoldHighBit).
-static std::atomic<uint64_t> g_address_fold_high_bit {0};
-static AddressFoldHook       g_address_fold_high_bit_hook = nullptr;
+// Guest window remap for a 40-bit guest layout (see EnableGuestRemap): one int64 delta per 2 MiB
+// chunk of the PS4 user space, which the JIT reads at the table's fixed address. Emulator blocks
+// are handed out per 1 GiB window.
+static constexpr uint32_t   RemapShift       = 30;
+static constexpr uint64_t   RemapWindowSize  = 1ull << RemapShift;
+static constexpr uint32_t   RemapWindows     = 1024;
+static constexpr uint32_t   RemapChunkShift  = 21;
+static constexpr uint32_t   RemapChunks      = 1u << (40u - RemapChunkShift);
+// Windows from here on (0x4000000000) lie outside the guest-owned space and get emulator blocks.
+static constexpr uint32_t   RemapFirstWindow = 0x100;
+static std::atomic<int64_t*> g_remap_table {nullptr};
+static AddressFoldHook       g_remap_hook = nullptr;
+
+static uint64_t RemapDelta(uint64_t vaddr) {
+	auto* table = g_remap_table.load(std::memory_order_acquire);
+	return table == nullptr ? 0u
+	                        : static_cast<uint64_t>(__atomic_load_n(
+	                              &table[(vaddr >> RemapChunkShift) & (RemapChunks - 1u)], __ATOMIC_RELAXED));
+}
 
 static uint64_t FoldWithMask(uint64_t vaddr, uint64_t mask) {
-	const auto high_bit = g_address_fold_high_bit.load(std::memory_order_relaxed);
-	return (vaddr & mask) & ~((vaddr & high_bit) >> 1u);
+	return g_remap_table.load(std::memory_order_relaxed) != nullptr ? vaddr + RemapDelta(vaddr)
+	                                                                : vaddr & mask;
 }
 
 uint64_t FoldGuestAddress(uint64_t vaddr) {
 	const auto mask = g_address_fold_mask.load(std::memory_order_relaxed);
-	return (mask != 0 && vaddr > mask) ? FoldWithMask(vaddr, mask) : vaddr;
-}
-
-void SetAddressFoldHighBitHook(AddressFoldHook hook) {
-	g_address_fold_high_bit_hook = hook;
-}
-
-void SetAddressFoldHighBit(uint64_t bit) {
-	g_address_fold_high_bit.store(bit, std::memory_order_relaxed);
-	if (g_address_fold_high_bit_hook != nullptr) {
-		g_address_fold_high_bit_hook(bit);
+	if (mask == 0) {
+		return vaddr;
 	}
+	if (g_remap_table.load(std::memory_order_relaxed) != nullptr) {
+		return vaddr < (1ull << 40u) ? vaddr + RemapDelta(vaddr) : vaddr & mask;
+	}
+	return vaddr > mask ? vaddr & mask : vaddr;
+}
+
+void SetGuestRemapHook(AddressFoldHook hook) {
+	g_remap_hook = hook;
 }
 
 void SetDirectMemoryLimit(uint64_t size) {
@@ -252,10 +267,16 @@ void RegisterFoldWindow(uint64_t start, uint64_t size) {
 }
 
 bool HasFoldWindows() {
-	return g_fold_window_count.load(std::memory_order_relaxed) != 0;
+	return g_fold_window_count.load(std::memory_order_relaxed) != 0 ||
+	       g_remap_table.load(std::memory_order_relaxed) != nullptr;
 }
 
+static uint64_t RemapHleArgument(uint64_t value);
+
 uint64_t FoldHleArgument(uint64_t value) {
+	if (g_remap_table.load(std::memory_order_relaxed) != nullptr) {
+		return RemapHleArgument(value);
+	}
 	// Every window lies above the mask, so most arguments (small values, folded pointers) leave
 	// at once; this runs for all 16 argument slots of every emulator call.
 	const auto mask = g_address_fold_mask.load(std::memory_order_relaxed);
@@ -1292,6 +1313,172 @@ static bool ReserveInsideClippedReservation(uint64_t addr, uint64_t len) {
 		return false;
 	}
 	return g_virtual_ranges->Add(addr, len, 0, 0, 0, VirtualRangeType::Reserved, "clip");
+}
+
+// ---- Guest window remap (PS4) ----
+// A PS4 game owns a 40-bit user space and uses all of it (a 472 GiB PRT aperture whose pages are
+// mapped at fixed addresses, fixed maps at 0xfaaaa00000). On a 39-bit host the upper half of the
+// guest-visible range is the host's own (libraries, the ART heap, the GPU driver), so a mask cannot
+// place those pages. Instead each 1 GiB guest window above the guest-owned space gets an emulator
+// block on first use, and the JIT adds the window's delta to every guest address. Contiguity holds
+// within a window and across windows allocated next to each other.
+static std::mutex                         g_remap_mutex;
+static std::array<uint64_t, RemapWindows> g_remap_host {};
+static constexpr uint32_t                 RemapPageShift      = 16;
+static constexpr uint64_t                 RemapPagesPerWindow = RemapWindowSize >> RemapPageShift;
+// Per window: which 64 KiB pages the guest mapped, so HLE arguments there are translated while
+// host handles that happen to fall in the same window are left alone.
+static std::array<std::atomic<std::atomic<uint64_t>*>, RemapWindows> g_remap_pages {};
+
+bool EnableGuestRemap() {
+	if (g_address_fold_mask.load(std::memory_order_relaxed) == 0 ||
+	    g_remap_table.load(std::memory_order_relaxed) != nullptr) {
+		return false;
+	}
+	// The backend ORs `window * 8` into the address: it must be a logical immediate above bit 12.
+	constexpr std::array<uint64_t, 5> candidates {0x3f00000000ull, 0x3e00000000ull, 0x3c00000000ull,
+	                                              0x3800000000ull, 0x3000000000ull};
+	constexpr uint64_t                TableBytes = uint64_t {RemapChunks} * sizeof(int64_t);
+	for (const auto address: candidates) {
+		if (!g_guest_address_space->Commit(address, TableBytes, VirtualMemory::Mode::ReadWrite)) {
+			continue;
+		}
+		auto* table = reinterpret_cast<int64_t*>(address);
+		// Until a chunk is mapped, behave like the 39-bit mask (0x80.. and 0xc0.. -> 0x00..);
+		// below 0x8000000000 addresses stay as they are (host data the guest reads lives there).
+		constexpr uint32_t PerWindow = 1u << (RemapShift - RemapChunkShift);
+		for (uint32_t chunk = 0; chunk < RemapChunks; chunk++) {
+			table[chunk] = chunk >= 0x300u * PerWindow   ? -static_cast<int64_t>(3ull << 38u)
+			               : chunk >= 0x200u * PerWindow ? -static_cast<int64_t>(1ull << 39u)
+			                                             : 0;
+		}
+		g_remap_table.store(table, std::memory_order_release);
+		if (g_remap_hook != nullptr) {
+			g_remap_hook(address);
+		}
+#if defined(__ANDROID__)
+		__android_log_print(ANDROID_LOG_INFO, "CapyPS5-Mem", "guest window remap table at 0x%llx",
+		                    static_cast<unsigned long long>(address));
+#endif
+		return true;
+	}
+#if defined(__ANDROID__)
+	__android_log_print(ANDROID_LOG_WARN, "CapyPS5-Mem", "guest window remap: no room for the table");
+#endif
+	return false;
+}
+
+// The emulator block of a guest window, allocated on first use (`preferred` keeps a span
+// contiguous). Caller holds g_remap_mutex.
+static uint64_t OwnRemapWindowLocked(uint32_t window, uint64_t preferred) {
+	if (g_remap_host[window] != 0) {
+		return g_remap_host[window];
+	}
+	uint64_t host = 0;
+	if (preferred != 0 && FindGuestFreeRange(preferred, RemapWindowSize, RemapWindowSize) == preferred) {
+		host = preferred;
+	}
+	if (host == 0) {
+		host = FindGuestFreeRange(0, RemapWindowSize, RemapWindowSize);
+	}
+	if (host == 0 ||
+	    !g_virtual_ranges->Add(host, RemapWindowSize, 0, 0, 0, VirtualRangeType::Reserved, "remap")) {
+		return 0;
+	}
+	UnmapGpuRange(host, RemapWindowSize);
+	g_remap_pages[window].store(new std::atomic<uint64_t>[RemapPagesPerWindow / 64u] {},
+	                            std::memory_order_release);
+	g_remap_host[window] = host;
+	Common::DebugFlags::NoteOnce("CapyPS5-Mem", 0x52454d00ull ^ window,
+	                             "guest window 0x%llx -> host 0x%llx",
+	                             static_cast<unsigned long long>(static_cast<uint64_t>(window) << RemapShift),
+	                             static_cast<unsigned long long>(host));
+	return host;
+}
+
+// Host address for guest [vaddr, vaddr + len) when it lies in emulator-backed windows, giving
+// them blocks as needed; 0 for ranges below them or windows that cannot be kept contiguous.
+static uint64_t PrepareRemapRange(uint64_t vaddr, uint64_t len) {
+	constexpr uint64_t Limit = 1ull << 40u;
+	if (g_remap_table.load(std::memory_order_relaxed) == nullptr || len == 0 || vaddr >= Limit ||
+	    len > Limit - vaddr) {
+		return 0;
+	}
+	const auto first = static_cast<uint32_t>(vaddr >> RemapShift);
+	const auto last  = static_cast<uint32_t>((vaddr + len - 1u) >> RemapShift);
+	if (first < RemapFirstWindow) {
+		return 0;
+	}
+	std::lock_guard lock(g_remap_mutex);
+	uint64_t        base = 0;
+	for (uint32_t window = first; window <= last; window++) {
+		const uint64_t want =
+		    base != 0 ? base + (static_cast<uint64_t>(window - first) << RemapShift) : 0;
+		const auto host = OwnRemapWindowLocked(window, want);
+		if (host == 0 || (window != first && host != want)) {
+			return 0;
+		}
+		if (window == first) {
+			base = host;
+		}
+	}
+	// Point the chunks this range covers at the block; the rest of the window keeps its old
+	// translation (a host library sharing the window stays reachable).
+	auto* table = g_remap_table.load(std::memory_order_relaxed);
+	for (uint64_t chunk = vaddr >> RemapChunkShift; chunk <= (vaddr + len - 1u) >> RemapChunkShift; chunk++) {
+		const auto window = static_cast<uint32_t>(chunk >> (RemapShift - RemapChunkShift));
+		__atomic_store_n(&table[chunk],
+		                 static_cast<int64_t>(g_remap_host[window] - (static_cast<uint64_t>(window) << RemapShift)),
+		                 __ATOMIC_RELEASE);
+	}
+	return base + (vaddr & (RemapWindowSize - 1u));
+}
+
+static void MarkRemapPages(uint64_t vaddr, uint64_t len, bool mapped) {
+	if (g_remap_table.load(std::memory_order_relaxed) == nullptr || len == 0 ||
+	    vaddr >= (1ull << 40u)) {
+		return;
+	}
+	for (uint64_t page = vaddr >> RemapPageShift; page <= (vaddr + len - 1u) >> RemapPageShift;
+	     page++) {
+		const auto window = page >> (RemapShift - RemapPageShift);
+		if (window < RemapFirstWindow || window >= RemapWindows) {
+			continue;
+		}
+		auto* bits = g_remap_pages[window].load(std::memory_order_acquire);
+		if (bits == nullptr) {
+			continue;
+		}
+		const auto index = page & (RemapPagesPerWindow - 1u);
+		const auto bit   = 1ull << (index % 64u);
+		if (mapped) {
+			bits[index / 64u].fetch_or(bit, std::memory_order_relaxed);
+		} else {
+			bits[index / 64u].fetch_and(~bit, std::memory_order_relaxed);
+		}
+	}
+}
+
+static bool IsRemappedGuestAddress(uint64_t vaddr) {
+	const auto window = vaddr >> RemapShift;
+	return window >= RemapFirstWindow && window < RemapWindows &&
+	       g_remap_pages[window].load(std::memory_order_acquire) != nullptr;
+}
+
+static uint64_t RemapHleArgument(uint64_t value) {
+	const auto window = value >> RemapShift;
+	if (window < RemapFirstWindow || window >= RemapWindows) {
+		return value;
+	}
+	const auto* bits = g_remap_pages[window].load(std::memory_order_acquire);
+	if (bits == nullptr) {
+		return value;
+	}
+	const auto index = (value >> RemapPageShift) & (RemapPagesPerWindow - 1u);
+	if (((bits[index / 64u].load(std::memory_order_relaxed) >> (index % 64u)) & 1u) == 0) {
+		return value;
+	}
+	return value + RemapDelta(value);
 }
 
 void Initialize() {
@@ -2658,14 +2845,19 @@ static int MapFlexibleMemory(void** addr_in_out, size_t len, int prot, int flags
 	if (addr_in_out == nullptr) {
 		return MapFlexibleMemoryUnfolded(addr_in_out, len, prot, flags, name);
 	}
-	const auto original = reinterpret_cast<uint64_t>(*addr_in_out);
-	const auto folded   = FoldGuestAddress(original);
+	const auto    original      = reinterpret_cast<uint64_t>(*addr_in_out);
+	constexpr int GuestMapFixed = 0x10;
+	const auto remapped = (flags & GuestMapFixed) != 0 ? PrepareRemapRange(original, len) : 0;
+	const auto folded   = remapped != 0 ? remapped : FoldGuestAddress(original);
 	*addr_in_out        = reinterpret_cast<void*>(folded);
 	const int result    = MapFlexibleMemoryUnfolded(addr_in_out, len, prot, flags, name);
 	if (folded != original && reinterpret_cast<uint64_t>(*addr_in_out) == folded) {
 		*addr_in_out = reinterpret_cast<void*>(original);
 	} else if (folded != original && result != OK) {
 		*addr_in_out = reinterpret_cast<void*>(original);
+	}
+	if (result == OK && remapped != 0) {
+		MarkRemapPages(original, len, true);
 	}
 	return result;
 }
@@ -3033,7 +3225,16 @@ static int UnmapMemoryRange(uint64_t vaddr, size_t len) {
 static int UnmapMemoryUnfolded(uint64_t vaddr, size_t len);
 
 static int UnmapMemory(uint64_t vaddr, size_t len) {
-	return UnmapMemoryUnfolded(FoldGuestAddress(vaddr), len);
+	const auto host   = FoldGuestAddress(vaddr);
+	const int  result = UnmapMemoryUnfolded(host, len);
+	if (result == OK && host != vaddr && IsRemappedGuestAddress(vaddr)) {
+		MarkRemapPages(vaddr, len, false);
+		// The window's block stays the guest's: keep it out of hint-less searches.
+		if (!g_virtual_ranges->HasOverlap(host, len)) {
+			(void)g_virtual_ranges->Add(host, len, 0, 0, 0, VirtualRangeType::Reserved, "remap");
+		}
+	}
+	return result;
 }
 
 static int UnmapMemoryUnfolded(uint64_t vaddr, size_t len) {
@@ -3467,13 +3668,18 @@ static int MapDirectMemory(void** addr, size_t len, int prot, int flags,
 	if (addr == nullptr) {
 		return MapDirectMemoryUnfolded(addr, len, prot, flags, direct_memory_start, alignment, name, type);
 	}
-	const auto original = reinterpret_cast<uint64_t>(*addr);
-	const auto folded   = FoldGuestAddress(original);
+	const auto    original      = reinterpret_cast<uint64_t>(*addr);
+	constexpr int GuestMapFixed = 0x10;
+	const auto remapped = (flags & GuestMapFixed) != 0 ? PrepareRemapRange(original, len) : 0;
+	const auto folded   = remapped != 0 ? remapped : FoldGuestAddress(original);
 	*addr               = reinterpret_cast<void*>(folded);
 	const int result =
 	    MapDirectMemoryUnfolded(addr, len, prot, flags, direct_memory_start, alignment, name, type);
 	if (folded != original && (result != OK || reinterpret_cast<uint64_t>(*addr) == folded)) {
 		*addr = reinterpret_cast<void*>(original);
+	}
+	if (result == OK && remapped != 0) {
+		MarkRemapPages(original, len, true);
 	}
 	return result;
 }
@@ -4082,27 +4288,13 @@ static bool ReplaceFixedRangeWithReserved(uint64_t start, uint64_t size) {
 // Unreal Engine 4 uses the bottom (kept by the clipped reservation) and its last GiB, which lies
 // beyond a 39-bit host. Reserve where that GiB folds to (address & mask) and enable folding, so
 // the JIT and the memory calls redirect it there. `debug.capy.address_fold 0` disables this.
-// With the PS4 two-level fold the JIT folds every access to a reservation's part above the mask;
-// emulator functions get the game's raw pointers, so that part becomes a fold window too.
-static void RegisterUpperFoldWindow(uint64_t base, uint64_t requested_len) {
-	const auto mask = g_address_fold_mask.load(std::memory_order_relaxed);
-	if (mask == 0 || g_address_fold_high_bit.load(std::memory_order_relaxed) == 0 ||
-	    requested_len > UINT64_MAX - base || base + requested_len <= mask + 1u) {
-		return;
-	}
-	const uint64_t start = std::max<uint64_t>(base, mask + 1u);
-	RegisterFoldWindow(start, base + requested_len - start);
-	Common::DebugFlags::NoteOnce("CapyPS5-Mem", start ^ 0x55505057ull, "fold window 0x%llx..0x%llx",
-	                             static_cast<unsigned long long>(start),
-	                             static_cast<unsigned long long>(base + requested_len));
-}
-
 static void ReserveFoldedTail(uint64_t base, uint64_t requested_len) {
 	constexpr uint64_t FOLD_MASK = (1ull << 39u) - 1u;
 	constexpr uint64_t TAIL_SIZE = 0x40000000ull; // 1 GiB
 	static Common::DebugFlags::CachedValue address_fold("debug.capy.address_fold", 1);
 	const uint64_t                         host_stack = reinterpret_cast<uintptr_t>(&base);
-	if (address_fold.Get() == 0 || host_stack > FOLD_MASK || requested_len < TAIL_SIZE) {
+	if (address_fold.Get() == 0 || host_stack > FOLD_MASK || requested_len < TAIL_SIZE ||
+	    g_remap_table.load(std::memory_order_relaxed) != nullptr) {
 		return; // the host is not 39-bit: it maps the range itself or not at all
 	}
 	const uint64_t tail = base + requested_len - TAIL_SIZE;
@@ -4172,8 +4364,10 @@ int KYTY_SYSV_ABI KernelReserveVirtualRange(void** addr, size_t len, int flags, 
 		// address, where the JIT and the Map/Unmap wrappers send its accesses anyway; the game
 		// keeps its own address. Only the room below the next mapping is reserved there.
 		const auto fold_mask = g_address_fold_mask.load(std::memory_order_relaxed);
-		const bool folded    = clip_fixed.Get() != 0 && fold_mask != 0 && in_addr > fold_mask;
-		const auto base      = folded ? FoldWithMask(in_addr, fold_mask) : in_addr;
+		// A PS4 guest window above the guest-owned space gets its own emulator block.
+		const auto remapped = PrepareRemapRange(in_addr, len);
+		const bool folded   = remapped == 0 && clip_fixed.Get() != 0 && fold_mask != 0 && in_addr > fold_mask;
+		const auto base     = remapped != 0 ? remapped : folded ? FoldWithMask(in_addr, fold_mask) : in_addr;
 		const auto clip_min  = folded ? size_t {0x40000000ull} : FIXED_CLIP_MIN;
 		for (;;) {
 			const bool overlap = (folded || (flags & GUEST_MAP_NO_OVERWRITE) != 0) &&
@@ -4217,7 +4411,6 @@ int KYTY_SYSV_ABI KernelReserveVirtualRange(void** addr, size_t len, int flags, 
 			                             static_cast<unsigned long long>(base));
 			if (!folded) {
 				ReserveFoldedTail(in_addr, requested_len);
-				RegisterUpperFoldWindow(in_addr, requested_len);
 			} else {
 				RegisterFoldWindow(in_addr, requested_len);
 			}
@@ -4259,7 +4452,6 @@ int KYTY_SYSV_ABI KernelReserveVirtualRange(void** addr, size_t len, int flags, 
 			if (len < requested_len) {
 				RecordClippedReservation(out_addr, requested_len);
 				ReserveFoldedTail(out_addr, requested_len);
-				RegisterUpperFoldWindow(out_addr, requested_len);
 			}
 		}
 	}

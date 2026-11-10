@@ -28,16 +28,17 @@ namespace {
   private:
     IREmitter* Emit {};
     uint64_t Mask {};
-    uint64_t HighBit {};
+    uint64_t RemapTable {};
 
     Ref Fold(Ref Address) {
-      Ref Folded = Emit->_And(OpSize::i64Bit, Address, Emit->_Constant(Mask));
-      if (HighBit == 0) {
-        return Folded;
+      if (RemapTable == 0) {
+        return Emit->_And(OpSize::i64Bit, Address, Emit->_Constant(Mask));
       }
-      // Clear the bit below HighBit when HighBit is set (see GuestAddressFoldHighBit).
-      Ref High = Emit->_And(OpSize::i64Bit, Address, Emit->_Constant(HighBit));
-      return Emit->_Andn(OpSize::i64Bit, Folded, Emit->_Lshr(OpSize::i64Bit, High, Emit->_Constant(1)));
+      // address + table[window] (see GuestAddressRemapTable).
+      Ref Window = Emit->_Bfe(OpSize::i64Bit, GuestAddressRemapBits, GuestAddressRemapShift, Address);
+      Ref Delta = Emit->_LoadMem(RegClass::GPR, OpSize::i64Bit, Emit->_Constant(RemapTable), Window, OpSize::i64Bit,
+                                 MemOffsetType::SXTX, 8);
+      return Emit->_Add(OpSize::i64Bit, Address, Delta);
     }
 
     // Inline constants have no register; an absolute address that small never needs folding.
@@ -104,7 +105,7 @@ namespace {
     if (Mask == 0) {
       return;
     }
-    HighBit = GuestAddressFoldHighBit.load(std::memory_order_relaxed);
+    RemapTable = GuestAddressRemapTable.load(std::memory_order_relaxed);
     FEXCORE_PROFILE_SCOPED("PassManager::GuestAddressFold");
     Emit = IREmit;
 

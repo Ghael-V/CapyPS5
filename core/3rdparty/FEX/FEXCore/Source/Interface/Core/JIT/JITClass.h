@@ -640,6 +640,9 @@ private:
 
   [[nodiscard]] CodeBuffer::CodeBufferAllocation AllocateCodeBufferInSharedCache(size_t Size);
 
+  // CapyPS5: guest address fold of a MemSet/MemCpy working pointer (see AddressFold.h).
+  void FoldWorkingPointer(ARMEmitter::Register Reg, uint64_t FoldMask);
+
 #define DEF_OP(x) void Op_##x(IR::IROp_Header const* IROp, IR::Ref Node)
 
   ///< Unhandled handler

@@ -960,9 +960,9 @@ public:
 
 		s_fold_context = m_fex_context.get();
 		Libs::LibKernel::Memory::SetAddressFoldHook(&EnableGuestAddressFold);
-		Libs::LibKernel::Memory::SetAddressFoldHighBitHook([](uint64_t bit) {
-			FEXCore::GuestAddressFoldHighBit.store(bit, std::memory_order_relaxed);
-			ALOGI("Arm64CpuBackend: guest address fold high bit 0x%llx", static_cast<unsigned long long>(bit));
+		Libs::LibKernel::Memory::SetGuestRemapHook([](uint64_t table) {
+			FEXCore::GuestAddressRemapTable.store(table, std::memory_order_relaxed);
+			ALOGI("Arm64CpuBackend: guest window remap table 0x%llx", static_cast<unsigned long long>(table));
 		});
 		// On a 39-bit host, mask guest addresses from the start: translated code cannot be safely
 		// invalidated later from inside an HLE call. Only addresses the host cannot map change.
