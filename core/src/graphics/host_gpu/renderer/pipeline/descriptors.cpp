@@ -728,8 +728,10 @@ TextureBinding RenderExecutor::ResolveTexture(const ShaderRecompiler::IR::ImageR
 	const auto data_end   = desc.info.data.address + desc.info.data.size;
 	if (desc.info.data.size == 0 ||
 	    (gfx7_guest && (data_end < desc.info.data.address || data_end > (1ull << 40u) ||
-	                    !LibKernel::Memory::IsHostRangeMapped(desc.info.data.address, 1) ||
-	                    !LibKernel::Memory::IsHostRangeMapped(data_end - 1u, 1)))) {
+	                    LibKernel::Memory::ClampRangeSize(
+	                        LibKernel::Memory::FoldGuestAddress(desc.info.data.address), 1) == 0 ||
+	                    LibKernel::Memory::ClampRangeSize(
+	                        LibKernel::Memory::FoldGuestAddress(data_end - 1u), 1) == 0))) {
 		// A PS4 T# whose layout is empty or whose memory is not mapped (a stale table record):
 		// sample nothing.
 		Common::DebugFlags::NoteOnce("CapyPS5-Gfx7Tex", address ^ 0x5a45524full,
@@ -737,6 +739,13 @@ TextureBinding RenderExecutor::ResolveTexture(const ShaderRecompiler::IR::ImageR
 		                             static_cast<unsigned long long>(address), width, height);
 		auto       null_desc = NullTextureDesc(resource, storage ? TextureCache::BindingType::Storage
 		                                                         : TextureCache::BindingType::Texture);
+		// The shader was specialized for this T#'s mip count: keep it on the null image.
+		null_desc.info.resources.levels   = std::max(resource.mip_count, 1u);
+		null_desc.view_info.level_count = std::max(resource.mip_count, 1u);
+		if (resource.mip_count > 1u) {
+			const uint32_t side       = 1u << std::min(resource.mip_count - 1u, 14u);
+			null_desc.info.extent     = {side, side, 1};
+		}
 		const auto id        = texture_cache.FindImage(null_desc);
 		return {id, nullptr, std::move(null_desc)};
 	}
