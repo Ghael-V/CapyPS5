@@ -2,6 +2,7 @@
 // SPDX-FileCopyrightText: Copyright KytyPS5 contributors; based on Kyty, Copyright (c) 2021 InoriRus (MIT)
 // SPDX-License-Identifier: GPL-2.0-only
 
+#include "common/debugFlags.h"
 #include "graphics/host_gpu/renderer/image/tiler.h"
 
 #include "common/alignment.h"
@@ -436,9 +437,17 @@ TileManager::Result TileManager::GetScratchBuffer(uint64_t size, vk::Buffer inpu
 		if (buffer) {
 			m_scheduler.DeferOperation([old = std::move(buffer)]() mutable { old.reset(); });
 		}
+		if (size > (256ull << 20u)) {
+			Common::DebugFlags::NoteOnce("CapyPS5-Tile", size, "tile scratch buffer of %llu MiB requested",
+			                             static_cast<unsigned long long>(size >> 20u));
+		}
 		buffer = std::make_unique<Buffer>(m_graphics, m_scheduler, MemoryUsage::DeviceLocal, 0,
 		    vk::BufferUsageFlagBits::eStorageBuffer | vk::BufferUsageFlagBits::eTransferSrc |
 		        vk::BufferUsageFlagBits::eTransferDst, size);
+		if (!buffer->Handle()) {
+			EXIT("tile scratch buffer of 0x%llx bytes could not be allocated\n",
+			     static_cast<unsigned long long>(size));
+		}
 	}
 	return {buffer->Handle(), 0, size};
 }

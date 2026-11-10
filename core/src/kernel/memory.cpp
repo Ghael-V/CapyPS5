@@ -1032,14 +1032,46 @@ static uint64_t FindGuestFreeRange(uint64_t search_addr, uint64_t size, uint64_t
 	return addr;
 }
 
+// Guest memory seen by emulator code (the renderer's caches, HLE readers): with the PS4 window
+// remap a guest range can live in several emulator blocks, so accesses go chunk run by chunk run
+// at the address the JIT would use. `f(host, offset, length)`.
+template <typename F>
+static bool ForGuestSpans(uint64_t vaddr, uint64_t size, F&& f) {
+	constexpr uint64_t ChunkSize = 1ull << RemapChunkShift;
+	if (g_remap_table.load(std::memory_order_relaxed) == nullptr || size == 0 || vaddr >= (1ull << 40u) ||
+	    size > (1ull << 40u) - vaddr) {
+		return f(vaddr, 0, size);
+	}
+	uint64_t offset = 0;
+	while (offset < size) {
+		const uint64_t addr  = vaddr + offset;
+		const uint64_t delta = RemapDelta(addr);
+		uint64_t       end   = std::min<uint64_t>(size, offset + (ChunkSize - (addr & (ChunkSize - 1u))));
+		while (end < size && RemapDelta(vaddr + end) == delta) {
+			end = std::min<uint64_t>(size, end + ChunkSize);
+		}
+		if (!f(addr + delta, offset, end - offset)) {
+			return false;
+		}
+		offset = end;
+	}
+	return true;
+}
+
 bool TryWriteBacking(uint64_t vaddr, const void* data, uint64_t size) {
 	return g_guest_address_space != nullptr &&
-	       g_guest_address_space->TryWriteBacking(vaddr, data, size);
+	       ForGuestSpans(vaddr, size, [&](uint64_t host, uint64_t offset, uint64_t length) {
+		       return g_guest_address_space->TryWriteBacking(
+		           host, static_cast<const uint8_t*>(data) + offset, length);
+	       });
 }
 
 bool TryReadBacking(uint64_t vaddr, void* data, uint64_t size) {
 	return g_guest_address_space != nullptr &&
-	       g_guest_address_space->TryReadBacking(vaddr, data, size);
+	       ForGuestSpans(vaddr, size, [&](uint64_t host, uint64_t offset, uint64_t length) {
+		       return g_guest_address_space->TryReadBacking(host, static_cast<uint8_t*>(data) + offset,
+		                                                    length);
+	       });
 }
 
 bool TryReadBufferBacking(uint64_t vaddr, void* data, uint64_t size) {
@@ -1141,14 +1173,31 @@ static bool IsInPrtAperture(uint64_t address, uint64_t size = 1) {
 }
 
 bool TryReadSparseBacking(uint64_t vaddr, void* data, uint64_t size) {
-	return g_guest_address_space->TryReadSparseBacking(vaddr, data, size);
+	return ForGuestSpans(vaddr, size, [&](uint64_t host, uint64_t offset, uint64_t length) {
+		return g_guest_address_space->TryReadSparseBacking(host, static_cast<uint8_t*>(data) + offset,
+		                                                   length);
+	});
 }
 
 bool TryWriteSparseBacking(uint64_t vaddr, const void* data, uint64_t size) {
-	return g_guest_address_space->TryWriteSparseBacking(vaddr, data, size);
+	return ForGuestSpans(vaddr, size, [&](uint64_t host, uint64_t offset, uint64_t length) {
+		return g_guest_address_space->TryWriteSparseBacking(
+		    host, static_cast<const uint8_t*>(data) + offset, length);
+	});
 }
 
+static bool ReadHostMemory(uint64_t vaddr, void* data, uint64_t size);
+
 bool ReadGuestMemory(uint64_t vaddr, void* data, uint64_t size) {
+	if (data == nullptr || size == 0 || UINT64_MAX - vaddr < size) {
+		return false;
+	}
+	return ForGuestSpans(vaddr, size, [&](uint64_t host, uint64_t offset, uint64_t length) {
+		return ReadHostMemory(host, static_cast<uint8_t*>(data) + offset, length);
+	});
+}
+
+static bool ReadHostMemory(uint64_t vaddr, void* data, uint64_t size) {
 	if (data == nullptr || size == 0 || UINT64_MAX - vaddr < size) {
 		return false;
 	}
@@ -1220,7 +1269,18 @@ bool ReadGuestMemory(uint64_t vaddr, void* data, uint64_t size) {
 	return g_guest_address_space->TryReadSparseBacking(vaddr, data, size);
 }
 
+static bool IsHostRangeMappedUnfolded(uint64_t vaddr, uint64_t size);
+
 bool IsHostRangeMapped(uint64_t vaddr, uint64_t size) {
+	if (vaddr == 0 || size == 0 || UINT64_MAX - vaddr < size) {
+		return false;
+	}
+	return ForGuestSpans(vaddr, size, [](uint64_t host, uint64_t, uint64_t length) {
+		return IsHostRangeMappedUnfolded(host, length);
+	});
+}
+
+static bool IsHostRangeMappedUnfolded(uint64_t vaddr, uint64_t size) {
 	if (vaddr == 0 || size == 0 || UINT64_MAX - vaddr < size) {
 		return false;
 	}

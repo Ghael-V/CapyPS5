@@ -4814,6 +4814,12 @@ void OpDispatchBuilder::INTOp(OpcodeArgs) {
   case 0xCD: { // INT imm8
     uint8_t Literal = Op->Src[0].Literal();
 
+    // CapyPS5: PS4/PS5 code raises `int 0x41` as a debug trap (an assert path that then returns
+    // an error); a retail console continues past it, so it is a no-op here.
+    if (Literal == 0x41) {
+      return;
+    }
+
     if (CTX->HostFeatures.HostType == FEXCore::HostFeatures::HostTypeEnum::Linux) {
       constexpr uint8_t SYSCALL_LITERAL = 0x80;
       if (Literal == SYSCALL_LITERAL) {

@@ -724,6 +724,22 @@ TextureBinding RenderExecutor::ResolveTexture(const ShaderRecompiler::IR::ImageR
 		desc.info.gfx7_micro_thick = true;
 		desc.info.data.size        = desc.info.Gfx7MicroSize();
 	}
+	const bool gfx7_guest = ShaderRecompiler::Decoder::GetGuestIsa() == ShaderRecompiler::Decoder::GuestIsa::Gfx7;
+	const auto data_end   = desc.info.data.address + desc.info.data.size;
+	if (desc.info.data.size == 0 ||
+	    (gfx7_guest && (data_end < desc.info.data.address || data_end > (1ull << 40u) ||
+	                    !LibKernel::Memory::IsHostRangeMapped(desc.info.data.address, 1) ||
+	                    !LibKernel::Memory::IsHostRangeMapped(data_end - 1u, 1)))) {
+		// A PS4 T# whose layout is empty or whose memory is not mapped (a stale table record):
+		// sample nothing.
+		Common::DebugFlags::NoteOnce("CapyPS5-Gfx7Tex", address ^ 0x5a45524full,
+		                             "texture 0x%llx %ux%u has an empty PS4 layout, bound as null",
+		                             static_cast<unsigned long long>(address), width, height);
+		auto       null_desc = NullTextureDesc(resource, storage ? TextureCache::BindingType::Storage
+		                                                         : TextureCache::BindingType::Texture);
+		const auto id        = texture_cache.FindImage(null_desc);
+		return {id, nullptr, std::move(null_desc)};
+	}
 	desc.view_info = TextureViewInfo(resource, descriptor, view_format, surface_format, storage,
 	                                 view_levels, desc.info.resources.layers);
 	desc.view_info.base_level = view_base;

@@ -126,7 +126,12 @@ void ShaderDebugDisassembleGfx7(uint64_t addr, const char* stage) {
 	// `setprop debug.capy.gfx7_disasm_hash 0x<hash>`: disassemble only the shader with that hash
 	// (the CapyPS5-Compile/CapyPS5-Loops one); addresses change between runs, hashes do not.
 	static Common::DebugFlags::CachedValue only_hash("debug.capy.gfx7_disasm_hash", 0);
-	if (enabled.Get() == 0 && only_hash.Get() == 0) {
+	// `debug.capy.gfx7_disasm_addr 0x<address>`: disassemble the shader at that guest address.
+	static Common::DebugFlags::CachedValue only_addr("debug.capy.gfx7_disasm_addr", 0);
+	if (only_addr.Get() != 0 && static_cast<uint64_t>(only_addr.Get()) != addr) {
+		return;
+	}
+	if (enabled.Get() == 0 && only_hash.Get() == 0 && only_addr.Get() == 0) {
 		return;
 	}
 	if (only_hash.Get() != 0) {

@@ -103,6 +103,7 @@ KYTY_SYSV_ABI int VideoOutGetEventId(const LibKernel::EventQueue::KernelEvent* e
 KYTY_SYSV_ABI int VideoOutGetEventData(const LibKernel::EventQueue::KernelEvent* ev, int64_t* data);
 KYTY_SYSV_ABI int VideoOutGetEventCount(const LibKernel::EventQueue::KernelEvent* ev);
 KYTY_SYSV_ABI int VideoOutWaitVblank(int handle);
+KYTY_SYSV_ABI int VideoOutGetDeviceCapabilityInfo(int handle, uint64_t* capability);
 KYTY_SYSV_ABI int VideoOutGetOutputStatus(int handle, VideoOutOutputStatus* status);
 KYTY_SYSV_ABI int VideoOutAllowOutputResolutionWqhdDetection(int handle);
 KYTY_SYSV_ABI int VideoOutVrrPegToFixedRate(int handle, uint64_t arg1, uint64_t arg2);
