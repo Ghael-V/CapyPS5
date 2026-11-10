@@ -114,6 +114,8 @@ uint32_t Gfx7ShaderCodeWords(uint64_t addr) {
 	return 0;
 }
 
+static ShaderMapEntry ShaderGetMappedData(uint64_t addr, const char* label);
+
 void ShaderDebugDisassembleGfx7(uint64_t addr, const char* stage) {
 #if defined(__ANDROID__)
 	namespace Decoder = ShaderRecompiler::Decoder;
@@ -121,8 +123,19 @@ void ShaderDebugDisassembleGfx7(uint64_t addr, const char* stage) {
 		return;
 	}
 	static Common::DebugFlags::CachedValue enabled("debug.capy.gfx7_disasm", 0);
-	if (enabled.Get() == 0) {
+	// `setprop debug.capy.gfx7_disasm_hash 0x<hash>`: disassemble only the shader with that hash
+	// (the CapyPS5-Compile/CapyPS5-Loops one); addresses change between runs, hashes do not.
+	static Common::DebugFlags::CachedValue only_hash("debug.capy.gfx7_disasm_hash", 0);
+	if (enabled.Get() == 0 && only_hash.Get() == 0) {
 		return;
+	}
+	if (only_hash.Get() != 0) {
+		// Hashes past INT64_MAX do not fit the property: a value below 2^32 matches the low half.
+		const auto wanted = static_cast<uint64_t>(only_hash.Get());
+		const auto hash   = ShaderGetMappedData(addr, "gfx7 disasm:").hash;
+		if (hash != wanted && (wanted > 0xffffffffull || (hash & 0xffffffffull) != wanted)) {
+			return;
+		}
 	}
 	static std::mutex                   mutex;
 	static std::unordered_set<uint64_t> seen;
@@ -172,6 +185,12 @@ static ShaderMapEntry ShaderGetMappedData(uint64_t addr, const char* label) {
 	std::scoped_lock lock(g_shader_map_mutex);
 
 	if (auto iter = g_shader_map->find(addr); iter != g_shader_map->end()) {
+		static Common::DebugFlags::CachedValue loop_log("debug.capy.loop_log", 0);
+		if (loop_log.Get() != 0) {
+			Common::DebugFlags::NoteOnce("CapyPS5-Loops", addr, "shader 0x%llx hash 0x%016llx",
+			                             static_cast<unsigned long long>(addr),
+			                             static_cast<unsigned long long>(iter->second.hash));
+		}
 		return iter->second;
 	}
 
@@ -1463,6 +1482,7 @@ ShaderParams PrepareProgram(const HW::VertexShaderInfo& regs, const HW::Context&
                             const HW::UserConfig& user_config, ShaderVertexInputInfo& info,
                             bool mesh_shader_enabled, bool emulate_merged_gs) {
 	if (ShaderRecompiler::Decoder::GetGuestIsa() == ShaderRecompiler::Decoder::GuestIsa::Gfx7) {
+		ShaderDebugDisassembleGfx7(regs.vs_regs.data_addr, "vs");
 		return PrepareGfx7VertexProgram(regs, context, info);
 	}
 	const auto& sh     = context.GetShaderRegisters();
@@ -1625,6 +1645,8 @@ ShaderParams PrepareProgram(
     std::span<const Prospero::ColorComponentMapping, 8> target_export_mapping,
     ShaderPixelInputInfo&                               ps_info) {
 	DebugGfx7PixelResources(regs);
+	// Shaders bound by a PGM_LO write alone never reach the PGM_HI disassembly hook.
+	ShaderDebugDisassembleGfx7(regs.ps_regs.data_addr, "ps");
 	const auto [data, hash] = ShaderGetMappedData(regs.ps_regs.data_addr, "ShaderGetInputInfoPS():");
 	ShaderGetStaticInputInfoPS(regs, sh, target_export_mapping, data, ps_info);
 

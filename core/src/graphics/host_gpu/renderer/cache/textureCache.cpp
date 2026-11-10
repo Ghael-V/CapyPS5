@@ -927,9 +927,11 @@ TextureCache::OverlapResult TextureCache::ResolveOverlap(const ImageInfo& reques
 		      requested.resources.layers == cached.info.resources.layers))) {
 			return {ExpandImage(requested, cached_id)};
 		}
-		// A PS4 linear texture of another size at this address is new data the game loaded where
-		// an old texture was: the old image is simply stale.
-		if (requested.gfx7_linear && cached.info.gfx7_linear && !cached.IsGpuModified() &&
+		// A PS4 linear or 1D-tiled texture of another size at this address is new data the game
+		// loaded where an old texture was: the old image is simply stale.
+		const bool gfx7_loaded = (requested.gfx7_linear && cached.info.gfx7_linear) ||
+		                         (requested.gfx7_micro_pitch != 0 && cached.info.gfx7_micro_pitch != 0);
+		if (gfx7_loaded && !cached.IsGpuModified() &&
 		    (requested.extent != cached.info.extent || requested.data.size != cached.info.data.size)) {
 			FreeImage(cached_id);
 			return {merged_id};
