@@ -1898,7 +1898,14 @@ DEF_OP(MemSet) {
   }
   // CapyPS5: fold the working pointer only; the result is the unfolded guest pointer.
   if (const auto FoldMask = FEXCore::GuestAddressFoldMask.load(std::memory_order_relaxed); FoldMask != 0) {
+    const auto HighBit = FEXCore::GuestAddressFoldHighBit.load(std::memory_order_relaxed);
+    if (HighBit != 0) {
+      and_(ARMEmitter::Size::i64Bit, TMP4, TMP2, HighBit);
+    }
     and_(ARMEmitter::Size::i64Bit, TMP2, TMP2, FoldMask);
+    if (HighBit != 0) {
+      bic(ARMEmitter::Size::i64Bit, TMP2, TMP2, TMP4, ARMEmitter::ShiftType::LSR, 1);
+    }
   }
 
   if (!DirectionIsInline) {
@@ -2136,8 +2143,16 @@ DEF_OP(MemCpy) {
   mov(TMP3, MemRegSrc.X());
   // CapyPS5: fold the working pointers only; the results are the unfolded guest pointers.
   if (const auto FoldMask = FEXCore::GuestAddressFoldMask.load(std::memory_order_relaxed); FoldMask != 0) {
-    and_(ARMEmitter::Size::i64Bit, TMP2, TMP2, FoldMask);
-    and_(ARMEmitter::Size::i64Bit, TMP3, TMP3, FoldMask);
+    const auto HighBit = FEXCore::GuestAddressFoldHighBit.load(std::memory_order_relaxed);
+    for (const auto Reg : {TMP2, TMP3}) {
+      if (HighBit != 0) {
+        and_(ARMEmitter::Size::i64Bit, TMP4, Reg, HighBit);
+      }
+      and_(ARMEmitter::Size::i64Bit, Reg, Reg, FoldMask);
+      if (HighBit != 0) {
+        bic(ARMEmitter::Size::i64Bit, Reg, Reg, TMP4, ARMEmitter::ShiftType::LSR, 1);
+      }
+    }
   }
 
   // TMP1 = Length

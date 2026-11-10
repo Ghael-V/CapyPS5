@@ -28,9 +28,16 @@ namespace {
   private:
     IREmitter* Emit {};
     uint64_t Mask {};
+    uint64_t HighBit {};
 
     Ref Fold(Ref Address) {
-      return Emit->_And(OpSize::i64Bit, Address, Emit->_Constant(Mask));
+      Ref Folded = Emit->_And(OpSize::i64Bit, Address, Emit->_Constant(Mask));
+      if (HighBit == 0) {
+        return Folded;
+      }
+      // Clear the bit below HighBit when HighBit is set (see GuestAddressFoldHighBit).
+      Ref High = Emit->_And(OpSize::i64Bit, Address, Emit->_Constant(HighBit));
+      return Emit->_Andn(OpSize::i64Bit, Folded, Emit->_Lshr(OpSize::i64Bit, High, Emit->_Constant(1)));
     }
 
     // Inline constants have no register; an absolute address that small never needs folding.
@@ -97,6 +104,7 @@ namespace {
     if (Mask == 0) {
       return;
     }
+    HighBit = GuestAddressFoldHighBit.load(std::memory_order_relaxed);
     FEXCORE_PROFILE_SCOPED("PassManager::GuestAddressFold");
     Emit = IREmit;
 

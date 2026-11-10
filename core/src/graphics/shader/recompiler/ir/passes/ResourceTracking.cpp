@@ -16,6 +16,7 @@
 #include <optional>
 #include <span>
 #include <tuple>
+#include <unordered_map>
 #include <unordered_set>
 #include <utility>
 
@@ -511,6 +512,14 @@ private:
 		bool table_indexed = false;
 		const Inst* table_read = nullptr;
 	};
+
+	// Last line that rejected an indirect descriptor plan (diagnostics in Fail).
+	mutable uint32_t m_indirect_reject_line = 0;
+	uint32_t m_image_reject_line = 0;
+	bool RejectIndirect(uint32_t line) const {
+		if (m_indirect_reject_line == 0) m_indirect_reject_line = line; // the innermost check
+		return false;
+	}
 
 	[[noreturn]] void Fail(uint32_t pc, const std::string& reason) const {
 		const auto message =
@@ -1042,32 +1051,56 @@ private:
 		LaneQuantifier lanes = LaneQuantifier::All;
 	};
 
-	bool NonzeroOnEntry(Value value, const Block* block) const {
-		// Each unique predecessor must execute before this use. Stop at joins: an
-		// unrelated comparison is not a bound on FindILsb's zero-input sentinel.
-		for (size_t depth = 0; block != nullptr && depth < m_program.blocks.size(); ++depth) {
-			if (block->ImmPredecessors().size() != 1u) {
-				return false;
-			}
-			const auto* previous = block->ImmPredecessors()[0];
-			const auto edge = ConditionalEdge(previous, block);
-			if (edge && edge->lanes == LaneQuantifier::All) {
-				const auto* test = edge->condition.TryInstruction();
-				if (test != nullptr && test->NumArgs() == 2u &&
-				    ((test->GetOpcode() == ValueOpcode::INotEqual32 && edge->positive) ||
-				     (test->GetOpcode() == ValueOpcode::IEqual32 && !edge->positive))) {
-					for (uint32_t arg = 0; arg < 2u; ++arg) {
-						uint32_t immediate;
-						if (ImmediateU32(test->Arg(arg), immediate) && immediate == 0u &&
-						    EquivalentValue(m_program, test->Arg(arg ^ 1u), value)) {
-							return true;
-						}
+	// `uniform`: the value is wave-uniform (a scalar key), so an edge guarded for any lane
+	// (V_CMPX on it then EXECZ) bounds it as well as one guarded for all lanes.
+	bool NonzeroOnEntry(Value value, const Block* block, uint32_t excluded = 0u,
+	                    bool uniform = false) const {
+		// Every path into this use must cross an edge taken only when `value != excluded` (for
+		// all lanes). Joins are followed into each predecessor; a cycle or the entry without
+		// such an edge fails, so an unrelated comparison never counts as the bound.
+		std::unordered_map<const Block*, int> state; // 1 in progress, 2 guarded, 3 not guarded
+		const auto guards = [&](const Block* previous, const Block* next) {
+			const auto edge = ConditionalEdge(previous, next);
+			if (!edge || (edge->lanes != LaneQuantifier::All && !uniform)) return false;
+			// A taken `a && b` implies both (V_CMPX ands the comparison into EXEC).
+			const auto implies = [&](const auto& self, Value condition, bool positive,
+			                         uint32_t depth) -> bool {
+				const auto* test = condition.Resolve().TryInstruction();
+				if (test == nullptr || depth > 8u) return false;
+				if (positive && test->GetOpcode() == ValueOpcode::LogicalAnd)
+					return self(self, test->Arg(0), true, depth + 1u) ||
+					       self(self, test->Arg(1), true, depth + 1u);
+				if (test->NumArgs() != 2u ||
+				    !((test->GetOpcode() == ValueOpcode::INotEqual32 && positive) ||
+				      (test->GetOpcode() == ValueOpcode::IEqual32 && !positive))) return false;
+				for (uint32_t arg = 0; arg < 2u; ++arg) {
+					uint32_t immediate;
+					if (ImmediateU32(test->Arg(arg), immediate) && immediate == excluded &&
+					    EquivalentValue(m_program, test->Arg(arg ^ 1u), value)) {
+						return true;
 					}
 				}
+				return false;
+			};
+			return implies(implies, edge->condition, edge->positive, 0u);
+		};
+		const auto visit = [&](const auto& self, const Block* current, size_t depth) -> bool {
+			if (current == nullptr || depth > m_program.blocks.size()) return false;
+			auto& mark = state[current];
+			if (mark != 0) return mark == 2;
+			mark = 1;
+			const auto& predecessors = current->ImmPredecessors();
+			bool guarded = !predecessors.empty();
+			for (const auto* previous: predecessors) {
+				if (!guards(previous, current) && !self(self, previous, depth + 1u)) {
+					guarded = false;
+					break;
+				}
 			}
-			block = previous;
-		}
-		return false;
+			state[current] = guarded ? 2 : 3;
+			return guarded;
+		};
+		return visit(visit, block, 0u);
 	}
 
 	uint32_t WorkgroupAxis(Value key) const {
@@ -1678,23 +1711,23 @@ private:
 		for (uint32_t dword = 0; dword < handle.NumArgs(); ++dword) {
 			auto* read = descriptor.dwords[dword].Resolve().TryInstruction();
 			if (read == nullptr) {
-				return false;
+				return RejectIndirect(__LINE__);
 			}
 			uint32_t memory_index = 0;
 			const auto* memory = ScalarReadMemory(*read, memory_index);
 			uint32_t component = 0;
 			const bool indexed = memory == nullptr;
 			if (indexed) {
-				if (handle.NumArgs() != 8u) return false;
+				if (handle.NumArgs() != 8u) return RejectIndirect(__LINE__);
 				const auto* selected = UniformizedMaterialValue(descriptor.dwords[dword], handle);
-				if (selected == nullptr) return false;
+				if (selected == nullptr) return RejectIndirect(__LINE__);
 				const auto* extract = selected->Arg(1).Resolve().TryInstruction();
 				if (extract == nullptr || extract->GetOpcode() != ValueOpcode::CompositeExtractU32x4 ||
-				    !ImmediateU32(extract->Arg(1), component) || component >= 4u) return false;
+				    !ImmediateU32(extract->Arg(1), component) || component >= 4u) return RejectIndirect(__LINE__);
 				read = extract->Arg(0).Resolve().TryInstruction();
-				if (read == nullptr || read->GetOpcode() != ValueOpcode::LoadBufferU32x4) return false;
+				if (read == nullptr || read->GetOpcode() != ValueOpcode::LoadBufferU32x4) return RejectIndirect(__LINE__);
 				memory_index = read->Flags<MemoryFlags>().index;
-				if (memory_index >= m_program.memory_info.size()) return false;
+				if (memory_index >= m_program.memory_info.size()) return RejectIndirect(__LINE__);
 				memory = &m_program.memory_info[memory_index];
 				uint32_t offset = 1u, scalar = 1u;
 				if (memory->kind != ResourceKind::Buffer || memory->typed || memory->formatted ||
@@ -1703,12 +1736,12 @@ private:
 				    !ImmediateU32(read->Arg(2), offset) || offset != 0u ||
 				    !ImmediateU32(read->Arg(3), scalar) || scalar != 0u ||
 				    !EquivalentValue(m_program, read->Arg(4), selected->Arg(0)) ||
-				    (dword != 0u && !EquivalentValue(m_program, table_guard, read->Arg(4)))) return false;
+				    (dword != 0u && !EquivalentValue(m_program, table_guard, read->Arg(4)))) return RejectIndirect(__LINE__);
 				table_guard = read->Arg(4);
 			}
 			if (memory->offset > INT32_MAX || (memory->offset & 3u) != 0u ||
 			    !MemoryIndexBelongsTo(memory_index, *read)) {
-				return false;
+				return RejectIndirect(__LINE__);
 			}
 			auto* current_handle = read->Arg(0).Resolve().TryInstruction();
 			Value current_key;
@@ -1718,18 +1751,21 @@ private:
 			    current_handle->GetOpcode() != (memory->kind == ResourceKind::ScalarAddress
 			                                      ? ValueOpcode::GetAddressResource
 			                                      : ValueOpcode::GetBufferResource) ||
-			    (memory->kind == ResourceKind::ScalarAddress && read->Parent() != handle.Parent()) ||
+			    // PS4 shaders load a light's T# blocks before sampling it; the handle uses the read
+			    // directly, so in SSA that read dominates it. Kept to one block elsewhere.
+			    (memory->kind == ResourceKind::ScalarAddress && read->Parent() != handle.Parent() &&
+			     Decoder::GetGuestIsa() != Decoder::GuestIsa::Gfx7) ||
 			    (table_handle != nullptr &&
 			     !EquivalentValue(m_program, Value(table_handle), Value(current_handle))) ||
 			    (!indexed && !MatchTableOffset(read->Arg(1), current_key, offset, stride))) {
-				return false;
+				return RejectIndirect(__LINE__);
 			}
 			if (indexed) {
 				current_key = read->Arg(1);
 				offset = component * 4u;
 			}
 			if (dword == 0u) {
-				if (component != 0u) return false;
+				if (component != 0u) return RejectIndirect(__LINE__);
 				plan.table_indexed = indexed;
 				key = current_key;
 				table_offset = offset;
@@ -1739,7 +1775,7 @@ private:
 			           !EquivalentValue(m_program, key, current_key) ||
 			           uint64_t {table_offset} + table_immediate + dword * sizeof(uint32_t) !=
 			               uint64_t {offset} + memory->offset) {
-				return false;
+				return RejectIndirect(__LINE__);
 			}
 			plan.split_offsets |= !indexed && offset != table_offset;
 			table_handle = current_handle;
@@ -1752,28 +1788,28 @@ private:
 					       return consumer.user->GetOpcode() != ValueOpcode::StoreBufferU32;
 				       });
 			    })) {
-				return false;
+				return RejectIndirect(__LINE__);
 			}
 			plan.memory[dword] = memory_index;
 			plan.reads[dword] = read;
 		}
 
 		if (!MakeRuntimeTableSource(*plan.reads[0], table_source)) {
-			return false;
+			return RejectIndirect(__LINE__);
 		}
 		return true;
 	}
 
 	bool TryMakeIndirectImage(Inst& handle, const DescriptorSource& descriptor,
 	                          IndirectDescriptorPlan& plan) {
-		if (handle.GetOpcode() != ValueOpcode::GetImageResource || handle.NumArgs() != 8u) return false;
+		if (handle.GetOpcode() != ValueOpcode::GetImageResource || handle.NumArgs() != 8u) return RejectIndirect(__LINE__);
 		DescriptorSource table_source;
 		Value key;
 		uint32_t table_offset = 0;
 		uint32_t table_stride = 0;
 		uint32_t table_immediate = 0;
 		if (!MatchDescriptorTable(handle, descriptor, plan, table_source, key, table_offset,
-		                          table_stride, table_immediate)) return false;
+		                          table_stride, table_immediate)) return RejectIndirect(__LINE__);
 		DescriptorSource material_source;
 		DescriptorSource::IndirectDescriptor indirect;
 		indirect.table_offset = table_offset;
@@ -1785,9 +1821,11 @@ private:
 			// only the image handle is projected onto the bounded workgroup key.
 			plan.retain_reads = true;
 		} else if (table_source.dword_count == 2u) {
-			if (table_stride != 32u) return false;
+			// A packed T# array (stride 32) or records holding a T# (a PS4 light list uses
+			// 0x108-byte entries); materialization reads key * stride + offset either way.
+			if (table_stride < 32u || (table_stride & 3u) != 0u) return RejectIndirect(__LINE__);
 			const auto* selector = key.Resolve().TryInstruction();
-			const bool bitscan = selector != nullptr && selector->GetOpcode() == ValueOpcode::FindILsb32 &&
+			bool bitscan = selector != nullptr && selector->GetOpcode() == ValueOpcode::FindILsb32 &&
 			    selector->NumArgs() == 1u && !m_shader_writes &&
 			    NonzeroOnEntry(selector->Arg(0), handle.Parent());
 			if (bitscan) {
@@ -1798,10 +1836,25 @@ private:
 			}
 			if (indirect.key_count.IsEmpty() &&
 			    !MatchUniformizedMaterialKey(key, handle, indirect, material_source)) {
-				return false;
+				// A FindILsb key guarded against its sentinel (mask != 0, or key != -1 as a PS4
+				// light loop tests it) is below 32 whatever the shader writes: its image stores
+				// do not change the descriptor records read through the scalar table.
+				bitscan = selector != nullptr && selector->GetOpcode() == ValueOpcode::FindILsb32 &&
+				          selector->NumArgs() == 1u &&
+				          (NonzeroOnEntry(selector->Arg(0), handle.Parent(), 0u, true) ||
+				           NonzeroOnEntry(key, handle.Parent(), UINT32_MAX, true));
+				material_source = {};
+				if (bitscan) {
+					indirect.key_count = Value(32u);
+				} else if (const auto* bound = m_shader_writes ? BoundedLoop(key, handle.Parent()) : nullptr) {
+					// Likewise a counted loop over the records (`for i < count`).
+					indirect.key_count = bound->Arg(1);
+				} else {
+					return RejectIndirect(__LINE__);
+				}
 			}
 			if ((table_offset & 3u) != 0u ||
-			    (bitscan && table_offset > UINT32_MAX - (32u * 32u - 1u))) return false;
+			    (bitscan && uint64_t {table_offset} + uint64_t {table_stride} * 32u > UINT32_MAX)) return RejectIndirect(__LINE__);
 		} else if (!plan.table_indexed &&
 		           MatchScalarMaterialKey(key, indirect, material_source)) {
 			// The host enumerates the guarded scalar loop; its key and T# payload stay on the GPU.
@@ -1809,7 +1862,7 @@ private:
 		} else {
 			// A bounded V# supplies the complete image table. Leave every GPU selector
 			// and descriptor read in the shader; the host only translates table bytes.
-			if (plan.split_offsets) return false;
+			if (plan.split_offsets) return RejectIndirect(__LINE__);
 			indirect.table_stride = 0u;
 			indirect.table_offset = 0u;
 			indirect.table_immediate = 0u;
@@ -1973,16 +2026,16 @@ private:
 		const bool sampler = handle.GetOpcode() == ValueOpcode::GetSamplerResource;
 		if ((!sampler && handle.GetOpcode() != ValueOpcode::GetImageResource) ||
 		    handle.NumArgs() != (sampler ? 4u : 8u))
-			return false;
+			return RejectIndirect(__LINE__);
 		if (std::ranges::any_of(handle.Uses(), [&](const Use& use) {
 			const auto op = use.user->GetOpcode();
 			if (op != ValueOpcode::ImageSampleRaw) return sampler || op != ValueOpcode::ImageGatherRaw;
 			return sampler && (m_program.memory_info[use.user->Flags<MemoryFlags>().index]
 			                       .image_sample_flags & Decoder::ImageSampleFlagAdjust) != 0u;
-		})) return false;
+		})) return RejectIndirect(__LINE__);
 		bool has_phi = false;
 		for (size_t word = 0; word < handle.NumArgs(); ++word) has_phi |= handle.Arg(word).Resolve().IsPhi();
-		if (!has_phi) return false;
+		if (!has_phi) return RejectIndirect(__LINE__);
 		// Normalize synchronized descriptor words to one GPU ordinal.
 		// Build the complete graph before changing IR so an unsupported leaf is transactional.
 		struct Choice {
@@ -2046,7 +2099,7 @@ private:
 		DescriptorSource root;
 		root.dword_count = handle.NumArgs();
 		for (uint32_t word = 0; word < root.dword_count; ++word) root.dwords[word] = handle.Arg(word);
-		if (visit(visit, root) == UINT32_MAX || choices.front().branch == nullptr) return false;
+		if (visit(visit, root) == UINT32_MAX || choices.front().branch == nullptr) return RejectIndirect(__LINE__);
 		DescriptorSource finite_source;
 		finite_source.dword_count = root.dword_count;
 		finite_source.dwords.fill(Value(0u));
@@ -2059,7 +2112,7 @@ private:
 			choice.key = Value(static_cast<uint32_t>(found - sources.begin()));
 			if (found == sources.end()) sources.push_back(source);
 		}
-		if (sources.empty()) return false;
+		if (sources.empty()) return RejectIndirect(__LINE__);
 		for (auto& choice: choices) {
 			if (choice.branch == nullptr) continue;
 			auto* block = choice.branch->Parent();
@@ -2124,7 +2177,9 @@ private:
 					if (ValidateSource(descriptor, bad_dword)) return;
 					IndirectDescriptorPlan plan;
 					if (sampler ? TryMakeFiniteDescriptor(*handle, plan)
-					             : (TryMakeIndirectImage(*handle, descriptor, plan) ||
+					             : (((m_indirect_reject_line = 0), false) ||
+					                TryMakeIndirectImage(*handle, descriptor, plan) ||
+					                ((m_image_reject_line = m_indirect_reject_line), (m_indirect_reject_line = 0), false) ||
 					                TryMakeFiniteDescriptor(*handle, plan) ||
 					                TryMakeIndirectBuffer(*handle, descriptor, plan))) {
 						for (const auto& previous: m_indirect_descriptors) {
@@ -2160,8 +2215,8 @@ private:
 			                [](Value word) { return word.Resolve().GetType() == Type::U32; })) {
 				return false;
 			}
-			Fail(pc, fmt::format("{} dword {} is not a valid runtime value",
-			                     ValueOpcodeName(expected), bad_dword));
+			Fail(pc, fmt::format("{} dword {} is not a valid runtime value (indirect image rejected at line {}, last at {})",
+			                     ValueOpcodeName(expected), bad_dword, m_image_reject_line, m_indirect_reject_line));
 		}
 		source = InternSource(descriptor);
 		return true;

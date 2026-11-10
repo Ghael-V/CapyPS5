@@ -164,6 +164,11 @@ static void Init(const Config::ConfigOptions& cfg, const std::filesystem::path& 
 		    flexible_memory_size != 0) {
 			Libs::LibKernel::Memory::SetFlexibleMemorySize(flexible_memory_size);
 		}
+		// A PS4 game (binary param.sfo) gets the console's direct memory: 5248 MiB in all minus the
+		// 512 MiB flexible area, as shadPS4 configures it for SDK 5.00 and later (extended memory on).
+		if (param_json.filename() == "param.sfo") {
+			Libs::LibKernel::Memory::SetDirectMemoryLimit((5248ull - 512ull) * 1024ull * 1024ull);
+		}
 	}
 	if (cfg.splash_enabled) {
 		Libs::Graphics::InitializeSplashScreen(param_json.parent_path());
@@ -194,6 +199,9 @@ static void LoadElf(const std::filesystem::path& elf, bool dbg_print_reloc = fal
 	if (rt->MainProgramIsPs4()) {
 		Libs::Graphics::ShaderRecompiler::Decoder::SetGuestIsa(
 		    Libs::Graphics::ShaderRecompiler::Decoder::GuestIsa::Gfx7);
+		// PS4 user space reaches 0xfbffffffff: fold its top half into the guest window (no guest
+		// code has been translated yet).
+		Libs::LibKernel::Memory::SetAddressFoldHighBit(1ull << 39u);
 	}
 
 	if (dbg_print_reloc) {

@@ -81,6 +81,8 @@ constexpr uint64_t DEFAULT_FLEXIBLE_MEMORY_SIZE = 1ull * 1024ull * 1024ull * 102
 
 static uint64_t                      g_flexible_memory_size        = DEFAULT_FLEXIBLE_MEMORY_SIZE;
 static bool                          g_flexible_memory_size_frozen = false;
+// Direct memory reported to the game, 0 for all of the backing (see SetDirectMemoryLimit).
+static uint64_t                      g_direct_memory_limit         = 0;
 static Graphics::RenderContext*       g_gpu_resources               = nullptr;
 
 static Graphics::RenderContext& GetGpuResources() {
@@ -198,10 +200,34 @@ static void NotifyGuestProtection(uint64_t vaddr, uint64_t size, VirtualMemory::
 // the memory calls below fold their addresses the same way; the guest keeps its unfolded pointers.
 static std::atomic<uint64_t> g_address_fold_mask {0};
 static AddressFoldHook       g_address_fold_hook = nullptr;
+// Second fold level for a 40-bit guest layout (see SetAddressFoldHighBit).
+static std::atomic<uint64_t> g_address_fold_high_bit {0};
+static AddressFoldHook       g_address_fold_high_bit_hook = nullptr;
+
+static uint64_t FoldWithMask(uint64_t vaddr, uint64_t mask) {
+	const auto high_bit = g_address_fold_high_bit.load(std::memory_order_relaxed);
+	return (vaddr & mask) & ~((vaddr & high_bit) >> 1u);
+}
 
 uint64_t FoldGuestAddress(uint64_t vaddr) {
 	const auto mask = g_address_fold_mask.load(std::memory_order_relaxed);
-	return (mask != 0 && vaddr > mask) ? (vaddr & mask) : vaddr;
+	return (mask != 0 && vaddr > mask) ? FoldWithMask(vaddr, mask) : vaddr;
+}
+
+void SetAddressFoldHighBitHook(AddressFoldHook hook) {
+	g_address_fold_high_bit_hook = hook;
+}
+
+void SetAddressFoldHighBit(uint64_t bit) {
+	g_address_fold_high_bit.store(bit, std::memory_order_relaxed);
+	if (g_address_fold_high_bit_hook != nullptr) {
+		g_address_fold_high_bit_hook(bit);
+	}
+}
+
+void SetDirectMemoryLimit(uint64_t size) {
+	EXIT_IF(g_flexible_memory_size_frozen);
+	g_direct_memory_limit = size;
 }
 
 void SetAddressFoldHook(AddressFoldHook hook) {
@@ -240,7 +266,7 @@ uint64_t FoldHleArgument(uint64_t value) {
 	for (uint32_t i = 0; i < count; i++) {
 		const auto& [start, size] = g_fold_windows[i];
 		if (value - start < size) {
-			return value & g_address_fold_mask.load(std::memory_order_relaxed);
+			return FoldWithMask(value, mask);
 		}
 	}
 	return value;
@@ -792,7 +818,8 @@ public:
 #endif
 	static uint64_t           Size() {
 		EXIT_IF(g_flexible_memory_size >= TotalSize());
-		return TotalSize() - g_flexible_memory_size;
+		const uint64_t size = TotalSize() - g_flexible_memory_size;
+		return g_direct_memory_limit != 0 ? std::min(size, g_direct_memory_limit) : size;
 	}
 
 	bool Alloc(uint64_t search_start, uint64_t search_end, size_t len, size_t alignment,
@@ -970,7 +997,12 @@ static uint64_t FindGuestFreeRange(uint64_t search_addr, uint64_t size, uint64_t
 	};
 
 	if (search_addr != 0) {
-		return find_in(search_addr, HOST_USER_MAX + 1u);
+		// A hint is only a hint: with no room above it (a PS4 game hints 0x9900000000, beyond the
+		// guest window) search like a hint-less call instead of failing. The game ignored that
+		// ENOMEM and put every fiber stack at its hint.
+		if (const auto hinted = find_in(search_addr, HOST_USER_MAX + 1u); hinted != 0) {
+			return hinted;
+		}
 	}
 	auto addr = find_in(GUEST_DEFAULT_MAP_BASE, HOST_SYSTEM_MANAGED_MAX + 1u);
 	if (addr == 0) {
@@ -1252,7 +1284,11 @@ static bool ReserveInsideClippedReservation(uint64_t addr, uint64_t len) {
 			}
 		}
 	}
-	if (!inside || g_virtual_ranges->HasOverlap(addr, len)) {
+	// Only space the guest address space owns: a folded address above HOST_USER_MAX lies in
+	// the host half, where the caller adopts a host window instead (a PS4 title maps at
+	// 0xfaaaa00000, which folds into its own clipped 472 GiB reservation).
+	if (!inside || addr > HOST_USER_MAX || len > HOST_USER_MAX + 1u - addr ||
+	    g_virtual_ranges->HasOverlap(addr, len)) {
 		return false;
 	}
 	return g_virtual_ranges->Add(addr, len, 0, 0, 0, VirtualRangeType::Reserved, "clip");
@@ -3034,6 +3070,25 @@ int KYTY_SYSV_ABI KernelMunmap(uint64_t vaddr, size_t len) {
 	return UnmapMemory(vaddr, len);
 }
 
+int KYTY_SYSV_ABI KernelGetDirectMemoryType(int64_t phys_addr, int* type_out, int64_t* start_out,
+                                            int64_t* end_out) {
+	PRINT_NAME();
+
+	std::lock_guard<std::recursive_mutex> memory_operation_lock(g_memory_operation_mutex);
+
+	if (type_out == nullptr || start_out == nullptr || end_out == nullptr || phys_addr < 0) {
+		return KERNEL_ERROR_EINVAL;
+	}
+	PhysicalMemory::AllocatedBlock block {};
+	if (!g_physical_memory->Find(static_cast<uint64_t>(phys_addr), false, &block)) {
+		return KERNEL_ERROR_ENOENT;
+	}
+	*type_out  = block.memory_type;
+	*start_out = static_cast<int64_t>(block.start_addr);
+	*end_out   = static_cast<int64_t>(block.start_addr + block.size);
+	return OK;
+}
+
 size_t KYTY_SYSV_ABI KernelGetDirectMemorySize() {
 	PRINT_NAME();
 
@@ -3648,6 +3703,14 @@ static int MapDirectMemoryUnfolded(void** addr, size_t len, int prot, int flags,
 	     magic_enum::enum_name(gpu_mode), shared_backing ? "yes" : "no", shared_reason);
 
 	if (out_addr == 0) {
+#if defined(__ANDROID__)
+		__android_log_print(ANDROID_LOG_WARN, "CapyPS5-Mem",
+		                    "direct map failed: in 0x%llx len 0x%llx dmem 0x%llx align 0x%llx flags 0x%x reserved %d reason %s",
+		                    static_cast<unsigned long long>(in_addr), static_cast<unsigned long long>(len),
+		                    static_cast<unsigned long long>(direct_memory_start),
+		                    static_cast<unsigned long long>(alignment), static_cast<unsigned>(flags),
+		                    reserved_target ? 1 : 0, shared_reason);
+#endif
 		return MapDirectNoMemory(__LINE__);
 	}
 
@@ -4019,6 +4082,21 @@ static bool ReplaceFixedRangeWithReserved(uint64_t start, uint64_t size) {
 // Unreal Engine 4 uses the bottom (kept by the clipped reservation) and its last GiB, which lies
 // beyond a 39-bit host. Reserve where that GiB folds to (address & mask) and enable folding, so
 // the JIT and the memory calls redirect it there. `debug.capy.address_fold 0` disables this.
+// With the PS4 two-level fold the JIT folds every access to a reservation's part above the mask;
+// emulator functions get the game's raw pointers, so that part becomes a fold window too.
+static void RegisterUpperFoldWindow(uint64_t base, uint64_t requested_len) {
+	const auto mask = g_address_fold_mask.load(std::memory_order_relaxed);
+	if (mask == 0 || g_address_fold_high_bit.load(std::memory_order_relaxed) == 0 ||
+	    requested_len > UINT64_MAX - base || base + requested_len <= mask + 1u) {
+		return;
+	}
+	const uint64_t start = std::max<uint64_t>(base, mask + 1u);
+	RegisterFoldWindow(start, base + requested_len - start);
+	Common::DebugFlags::NoteOnce("CapyPS5-Mem", start ^ 0x55505057ull, "fold window 0x%llx..0x%llx",
+	                             static_cast<unsigned long long>(start),
+	                             static_cast<unsigned long long>(base + requested_len));
+}
+
 static void ReserveFoldedTail(uint64_t base, uint64_t requested_len) {
 	constexpr uint64_t FOLD_MASK = (1ull << 39u) - 1u;
 	constexpr uint64_t TAIL_SIZE = 0x40000000ull; // 1 GiB
@@ -4031,7 +4109,7 @@ static void ReserveFoldedTail(uint64_t base, uint64_t requested_len) {
 	if (tail <= FOLD_MASK) {
 		return;
 	}
-	const uint64_t folded = tail & FOLD_MASK;
+	const uint64_t folded = FoldWithMask(tail, FOLD_MASK);
 	if (g_virtual_ranges->HasOverlap(folded, TAIL_SIZE) ||
 	    !g_virtual_ranges->Add(folded, TAIL_SIZE, 0, 0, 0, VirtualRangeType::Reserved, "fold")) {
 		Common::DebugFlags::NoteOnce("CapyPS5-Mem", folded ^ 0x464f4c44ull,
@@ -4095,7 +4173,7 @@ int KYTY_SYSV_ABI KernelReserveVirtualRange(void** addr, size_t len, int flags, 
 		// keeps its own address. Only the room below the next mapping is reserved there.
 		const auto fold_mask = g_address_fold_mask.load(std::memory_order_relaxed);
 		const bool folded    = clip_fixed.Get() != 0 && fold_mask != 0 && in_addr > fold_mask;
-		const auto base      = folded ? (in_addr & fold_mask) : in_addr;
+		const auto base      = folded ? FoldWithMask(in_addr, fold_mask) : in_addr;
 		const auto clip_min  = folded ? size_t {0x40000000ull} : FIXED_CLIP_MIN;
 		for (;;) {
 			const bool overlap = (folded || (flags & GUEST_MAP_NO_OVERWRITE) != 0) &&
@@ -4139,6 +4217,7 @@ int KYTY_SYSV_ABI KernelReserveVirtualRange(void** addr, size_t len, int flags, 
 			                             static_cast<unsigned long long>(base));
 			if (!folded) {
 				ReserveFoldedTail(in_addr, requested_len);
+				RegisterUpperFoldWindow(in_addr, requested_len);
 			} else {
 				RegisterFoldWindow(in_addr, requested_len);
 			}
@@ -4180,6 +4259,7 @@ int KYTY_SYSV_ABI KernelReserveVirtualRange(void** addr, size_t len, int flags, 
 			if (len < requested_len) {
 				RecordClippedReservation(out_addr, requested_len);
 				ReserveFoldedTail(out_addr, requested_len);
+				RegisterUpperFoldWindow(out_addr, requested_len);
 			}
 		}
 	}

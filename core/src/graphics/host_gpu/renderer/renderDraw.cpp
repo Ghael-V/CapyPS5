@@ -785,8 +785,10 @@ static uint32_t DrawColorOutputMask(const HW::Context& ctx) {
 		if (slot >= RENDER_COLOR_ATTACHMENTS_MAX) {
 			break;
 		}
+		// COLOR_INVALID (format 0) disables the target in hardware, whatever the write masks say.
 		if (sh_regs.target_output_mode[index] != 0 &&
-		    render_target_mask_slot(write_mask, slot) != 0) {
+		    render_target_mask_slot(write_mask, slot) != 0 &&
+		    ctx.GetRenderTarget(slot).info.format != Prospero::ChannelLayout::kInvalid) {
 			output_mask |= 1u << slot;
 		}
 	}

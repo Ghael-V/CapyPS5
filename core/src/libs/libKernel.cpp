@@ -3614,6 +3614,7 @@ LIB_DEFINE(InitLibKernel_1_Mem) {
 	LIB_FUNC("4h6F1LLbTiw", Memory::KernelMapFlexibleMemory);
 	LIB_FUNC("cQke9UuBQOk", Memory::KernelMunmap);
 	LIB_FUNC("pO96TwzOm5E", Memory::KernelGetDirectMemorySize);
+	LIB_FUNC("BC+OG5m9+bw", Memory::KernelGetDirectMemoryType);
 	LIB_FUNC("C0f7TJcbfac", Memory::KernelAvailableDirectMemorySize);
 	LIB_FUNC("tZ2yplY8MBY", Memory::KernelGetPageTableStats);
 	LIB_FUNC("rTXw65xmLIA", Memory::KernelAllocateDirectMemory);

@@ -148,7 +148,7 @@ void StackDumpHandler(int /*signal*/, siginfo_t* /*info*/, void* context) {
 	const auto* uc = static_cast<const ucontext_t*>(context);
 	char        name[32] = {};
 	pthread_getname_np(pthread_self(), name, sizeof(name));
-	char line[1600];
+	char line[2400];
 	int  used = std::snprintf(line, sizeof(line), "tid %d [%s]:", static_cast<int>(gettid()), name);
 	const auto add = [&](uint64_t address) {
 		if (used >= static_cast<int>(sizeof(line)) - 64) {
@@ -168,6 +168,14 @@ void StackDumpHandler(int /*signal*/, siginfo_t* /*info*/, void* context) {
 	if (const auto guest_rip = Cpu::GuestRipFromHostPc(uc->uc_mcontext.pc); guest_rip != 0) {
 		used += std::snprintf(line + used, sizeof(line) - used, " guest_rip=0x%llx",
 		                      static_cast<unsigned long long>(guest_rip));
+		// FEX keeps the guest GPRs in host registers inside JIT code (x64::SRA order:
+		// rax x4, rcx x7, rdx x5, rbx x6, rsp x8, rbp x9, rsi x10, rdi x11, r8-r15 x12-x17,x19,x29).
+		constexpr std::array<int, 16> sra {4, 7, 5, 6, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 19, 29};
+		used += std::snprintf(line + used, sizeof(line) - used, " gregs");
+		for (const auto reg: sra) {
+			used += std::snprintf(line + used, sizeof(line) - used, " %llx",
+			                      static_cast<unsigned long long>(uc->uc_mcontext.regs[reg]));
+		}
 	}
 	add(uc->uc_mcontext.pc);
 	add(uc->uc_mcontext.regs[30]);
@@ -586,16 +594,32 @@ public:
 
 			// Guest stack arguments if function takes > 6 arguments
 			uint64_t* guest_stack = reinterpret_cast<uint64_t*>(Frame->State.gregs[FEXCore::X86State::REG_RSP]);
-			uint64_t a6  = guest_stack ? guest_stack[1] : 0;
-			uint64_t a7  = guest_stack ? guest_stack[2] : 0;
-			uint64_t a8  = guest_stack ? guest_stack[3] : 0;
-			uint64_t a9  = guest_stack ? guest_stack[4] : 0;
-			uint64_t a10 = guest_stack ? guest_stack[5] : 0;
-			uint64_t a11 = guest_stack ? guest_stack[6] : 0;
-			uint64_t a12 = guest_stack ? guest_stack[7] : 0;
-			uint64_t a13 = guest_stack ? guest_stack[8] : 0;
-			uint64_t a14 = guest_stack ? guest_stack[9] : 0;
-			uint64_t a15 = guest_stack ? guest_stack[10] : 0;
+			// The 10 possible stack arguments can run past the top of a stack the guest placed at
+			// the end of a mapping (a PS4 fiber or thread stack); read across a page boundary
+			// only through the checked reader, and take unmapped slots as 0.
+			std::array<uint64_t, 11> stack_args {};
+			if (guest_stack != nullptr) {
+				const auto rsp = reinterpret_cast<uint64_t>(guest_stack);
+				if (((rsp + sizeof(stack_args) - 1u) >> 12u) == (rsp >> 12u)) {
+					std::memcpy(stack_args.data(), guest_stack, sizeof(stack_args));
+				} else {
+					for (size_t slot = 0; slot < stack_args.size(); slot++) {
+						if (!Libs::LibKernel::Memory::ReadGuestMemory(rsp + slot * 8u, &stack_args[slot], 8u)) {
+							stack_args[slot] = 0;
+						}
+					}
+				}
+			}
+			uint64_t a6  = stack_args[1];
+			uint64_t a7  = stack_args[2];
+			uint64_t a8  = stack_args[3];
+			uint64_t a9  = stack_args[4];
+			uint64_t a10 = stack_args[5];
+			uint64_t a11 = stack_args[6];
+			uint64_t a12 = stack_args[7];
+			uint64_t a13 = stack_args[8];
+			uint64_t a14 = stack_args[9];
+			uint64_t a15 = stack_args[10];
 			if (Libs::LibKernel::Memory::HasFoldWindows()) {
 				// Pointers into guest ranges above the 39-bit host limit reach emulator code
 				// unmasked (the JIT only masks the guest's own accesses).
@@ -936,6 +960,10 @@ public:
 
 		s_fold_context = m_fex_context.get();
 		Libs::LibKernel::Memory::SetAddressFoldHook(&EnableGuestAddressFold);
+		Libs::LibKernel::Memory::SetAddressFoldHighBitHook([](uint64_t bit) {
+			FEXCore::GuestAddressFoldHighBit.store(bit, std::memory_order_relaxed);
+			ALOGI("Arm64CpuBackend: guest address fold high bit 0x%llx", static_cast<unsigned long long>(bit));
+		});
 		// On a 39-bit host, mask guest addresses from the start: translated code cannot be safely
 		// invalidated later from inside an HLE call. Only addresses the host cannot map change.
 		{
