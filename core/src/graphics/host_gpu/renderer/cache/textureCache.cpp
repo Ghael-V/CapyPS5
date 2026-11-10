@@ -1261,8 +1261,9 @@ void TextureCache::MaterializeColorClear(ImageId id, const ImageDesc& desc,
 		}
 	}
 	const auto layers = desc.info.TransferLayers();
-	// These one-mip surfaces use complete 4 KiB color metadata blocks.
-	constexpr uint64_t MetadataBlockSize = 0x1000;
+	// These one-mip surfaces use complete 4 KiB color metadata blocks (PS4 CMASK slices: 128 bytes).
+	const uint64_t MetadataBlockSize =
+	    ShaderRecompiler::Decoder::GetGuestIsa() == ShaderRecompiler::Decoder::GuestIsa::Gfx7 ? 0x80u : 0x1000u;
 	if (!range.Valid() || range.address % MetadataBlockSize != 0 || layers == 0 ||
 	    range.size % layers != 0 || (range.size / layers) % MetadataBlockSize != 0) {
 		if (ShaderRecompiler::Decoder::GetGuestIsa() == ShaderRecompiler::Decoder::GuestIsa::Gfx7) {

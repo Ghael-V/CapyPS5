@@ -2859,6 +2859,18 @@ void GraphicsInitJmpTablesCxIndirect() {
 			base.addr |= static_cast<uint64_t>(value) << 8u;
 			cp.GetCtx().SetColorCmask(slot, base);
 		};
+		// The next register is CB_COLOR_CMASK_SLICE on PS4 (gfx7); gfx10 has nothing there.
+		if (g_hw_ctx_indirect_func[cmd_offset + 1u] == nullptr) {
+			g_hw_ctx_indirect_func[cmd_offset + 1u] = [](KYTY_HW_CTX_INDIRECT_ARGS) {
+				if (!IsGfx7()) {
+					return;
+				}
+				uint32_t slot = (cmd_offset - 1u - Pm4::CB_COLOR0_CMASK) / 15;
+				auto     base = cp.GetCtx().GetRenderTarget(slot).cmask;
+				base.gfx7_slice_blocks = (value & 0x3fffu) + 1u;
+				cp.GetCtx().SetColorCmask(slot, base);
+			};
+		}
 	}
 
 	for (auto cmd_offset = Pm4::CB_COLOR0_CMASK_BASE_EXT;
