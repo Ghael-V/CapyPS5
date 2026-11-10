@@ -56,13 +56,22 @@ ImageInfo::Gfx7MicroLevel ImageInfo::Gfx7MicroLevelLayout(uint32_t level) const 
 		layout.size   = Common::AlignUp(uint64_t {layout.pitch} * layout.height * bytes_per_block, uint64_t {256u});
 		return layout;
 	}
-	// Micro tiles are 8x8 blocks, and each level is a whole number of 256-byte groups.
+	// Micro tiles are 8x8 blocks (8x8x4 when thick), and each level is a whole number of 256-byte
+	// groups.
+	const uint32_t thickness = gfx7_micro_thick ? 4u : 1u;
 	layout.pitch  = Common::AlignUp(w, 8u);
 	layout.height = Common::AlignUp(h, 8u);
-	layout.size   = uint64_t {layout.pitch} * layout.height * bytes_per_block;
+	layout.size   = uint64_t {layout.pitch} * layout.height * bytes_per_block * thickness;
 	while (layout.size % 256u != 0u) {
 		layout.pitch += 8u;
-		layout.size = uint64_t {layout.pitch} * layout.height * bytes_per_block;
+		layout.size = uint64_t {layout.pitch} * layout.height * bytes_per_block * thickness;
+	}
+	if (gfx7_micro_thick) {
+		uint32_t d = std::max(extent.depth >> level, 1u);
+		if (gfx7_micro_pow2) {
+			d = std::bit_ceil(d);
+		}
+		layout.groups = (d + thickness - 1u) / thickness;
 	}
 	return layout;
 }
@@ -70,7 +79,8 @@ ImageInfo::Gfx7MicroLevel ImageInfo::Gfx7MicroLevelLayout(uint32_t level) const 
 uint64_t ImageInfo::Gfx7MicroSize() const {
 	uint64_t total = 0;
 	for (uint32_t level = 0; level < resources.levels; level++) {
-		total += Gfx7MicroLevelLayout(level).size * resources.layers;
+		const auto layout = Gfx7MicroLevelLayout(level);
+		total += layout.size * layout.groups * resources.layers;
 	}
 	return total;
 }

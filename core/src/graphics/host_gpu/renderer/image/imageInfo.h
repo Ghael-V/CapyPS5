@@ -103,6 +103,8 @@ struct ImageInfo {
 	bool     gfx7_micro_pow2  = false;
 	// With gfx7_micro_pitch: guest memory is linear (tile index 8), in raster order.
 	bool     gfx7_linear      = false;
+	// With gfx7_micro_pitch: a 1D-thick volume (tile index 19), micro tiles of 8x8x4 texels.
+	bool     gfx7_micro_thick = false;
 	// PS4 (gfx7) render target: the bytes it really occupies in guest memory, 0 when unknown.
 	// data.size follows the gfx10 layout and can be larger, covering the game's next allocation.
 	uint64_t gfx7_guest_size  = 0;
@@ -110,7 +112,8 @@ struct ImageInfo {
 	struct Gfx7MicroLevel {
 		uint32_t pitch  = 0; // blocks
 		uint32_t height = 0; // blocks
-		uint64_t size   = 0; // one slice, bytes
+		uint64_t size   = 0; // one slice (one 4-slice group when thick), bytes
+		uint32_t groups = 1; // thick volumes: 4-slice groups of the level
 	};
 	[[nodiscard]] Gfx7MicroLevel Gfx7MicroLevelLayout(uint32_t level) const;
 	[[nodiscard]] uint64_t       Gfx7MicroSize() const;

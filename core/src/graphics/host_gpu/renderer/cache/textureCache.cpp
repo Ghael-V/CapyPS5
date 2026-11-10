@@ -1041,7 +1041,7 @@ void TextureCache::UploadGfx7MicroTiled(Image& image) {
 	for (uint32_t level = 0; level < info.resources.levels; level++) {
 		const auto active = info.MipExtent(level);
 		linear_size += uint64_t {(active.width + tw - 1u) / tw} * ((active.height + th - 1u) / th) * bytes *
-		               info.resources.layers;
+		               (info.gfx7_micro_thick ? active.depth : info.resources.layers);
 	}
 	auto staging = std::make_unique<Buffer>(m_graphics, m_scheduler, MemoryUsage::Upload, 0,
 	                                        vk::BufferUsageFlagBits::eTransferSrc, linear_size);
@@ -1056,6 +1056,45 @@ void TextureCache::UploadGfx7MicroTiled(Image& image) {
 		const auto rows     = (active.height + th - 1u) / th;
 		const auto per_row  = layout.pitch / 8u;
 		const auto tile_size = uint64_t {64u} * bytes;
+		if (info.gfx7_micro_thick) {
+			// 1D-thick volume: 8x8x4 micro tiles; the bit order inside one follows the texel size
+			// (AMD addrlib ComputePixelIndexWithinMicroTile, as in shadPS4's tiling.comp).
+			const auto thick_tile = tile_size * 4u;
+			vk::BufferImageCopy copy {};
+			copy.bufferOffset      = out_offset;
+			copy.bufferRowLength   = columns * tw;
+			copy.bufferImageHeight = rows * th;
+			copy.imageSubresource  = {vk::ImageAspectFlagBits::eColor, level, 0, 1};
+			copy.imageExtent       = vk::Extent3D {active.width, active.height, active.depth};
+			copies.push_back(copy);
+			for (uint32_t z = 0; z < active.depth; z++) {
+				for (uint32_t y = 0; y < rows; y++) {
+					for (uint32_t x = 0; x < columns; x++) {
+						const auto bit = [](uint32_t value, uint32_t index) { return (value >> index) & 1u; };
+						const uint32_t x0 = bit(x, 0), x1 = bit(x, 1), y0 = bit(y, 0), y1 = bit(y, 1);
+						const uint32_t z0 = bit(z, 0), z1 = bit(z, 1);
+						uint32_t low = 0;
+						if (bytes <= 2u) {
+							low = x0 | (y0 << 1u) | (x1 << 2u) | (y1 << 3u) | (z0 << 4u) | (z1 << 5u);
+						} else if (bytes == 4u) {
+							low = x0 | (y0 << 1u) | (x1 << 2u) | (z0 << 3u) | (y1 << 4u) | (z1 << 5u);
+						} else {
+							low = x0 | (y0 << 1u) | (z0 << 2u) | (x1 << 3u) | (y1 << 4u) | (z1 << 5u);
+						}
+						const uint32_t element = low | (bit(x, 2) << 6u) | (bit(y, 2) << 7u);
+						const uint64_t source  = in_offset + uint64_t {z / 4u} * layout.size +
+						                        ((y / 8u) * uint64_t {per_row} + x / 8u) * thick_tile +
+						                        uint64_t {element} * bytes;
+						if (source + bytes <= guest.size()) {
+							std::memcpy(out + out_offset, guest.data() + source, bytes);
+						}
+						out_offset += bytes;
+					}
+				}
+			}
+			in_offset += layout.size * layout.groups;
+			continue;
+		}
 		for (uint32_t layer = 0; layer < info.resources.layers; layer++) {
 			const uint64_t slice = in_offset + layer * layout.size;
 			vk::BufferImageCopy copy {};
