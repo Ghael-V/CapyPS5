@@ -2774,6 +2774,11 @@ void GraphicsInitJmpTablesCxIndirect() {
 				// PS4 FMASK and tile bits describe metadata these targets do not use. FAST_CLEAR
 				// (bit 13) stays: a CMASK filled with 0 means the target holds CB_COLOR_CLEAR_WORD.
 				value &= 0x0007bffcu;
+				// `setprop debug.capy.gfx7_fast_clear 0` drops the PS4 CMASK fast clears (bisection).
+				static Common::DebugFlags::CachedValue gfx7_fast_clear("debug.capy.gfx7_fast_clear", 1);
+				if (gfx7_fast_clear.Get() == 0) {
+					value &= ~0x00002000u;
+				}
 			}
 			info.format =
 			    static_cast<Prospero::ChannelLayout>(KYTY_PM4_GET(value, CB_COLOR0_INFO, FORMAT));
@@ -3413,8 +3418,12 @@ void GraphicsInitJmpTablesCxIndirect() {
 	};
 
 	g_hw_ctx_indirect_func[Pm4::DB_Z_INFO] = [](KYTY_HW_CTX_INDIRECT_ARGS) {
-		// gfx7: only the format and sample count mean the same; its tile and HTile bits do not.
-		cp.GetCtx().SetDepthZInfo(HW::DepthZInfo::Decode(IsGfx7() ? value & 0xfu : value));
+		// gfx7: the format, sample count, ALLOW_EXPCLEAR (27) and TILE_SURFACE_ENABLE (29) mean the
+		// same as on gfx10; its tile bits do not. With TILE_SURFACE_ENABLE the target has an HTile, so
+		// the game's HTile fills are depth fast clears (`debug.capy.gfx7_htile 0` drops it).
+		static Common::DebugFlags::CachedValue gfx7_htile("debug.capy.gfx7_htile", 1);
+		const uint32_t gfx7_mask = gfx7_htile.Get() != 0 ? 0x2800000fu : 0xfu;
+		cp.GetCtx().SetDepthZInfo(HW::DepthZInfo::Decode(IsGfx7() ? value & gfx7_mask : value));
 	};
 
 	g_hw_ctx_indirect_func[Pm4::DB_DEPTH_BOUNDS_MIN] = [](KYTY_HW_CTX_INDIRECT_ARGS) {

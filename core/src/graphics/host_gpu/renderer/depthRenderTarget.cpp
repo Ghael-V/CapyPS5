@@ -156,6 +156,10 @@ static TextureCache::ImageDesc MakeDepthTargetDesc(const CommandBuffer& buffer,
 	    !z.stencil_info.HasValidTextureCompatibility()) {
 		DepthFatal("invalid PS5 depth texture-compatibility encoding");
 	}
+	// PS4 HTile buffers are only register (256-byte) aligned. The HTile serves clear tracking by
+	// its base address here, so a PS4 one need not meet the PS5 32 KiB alignment.
+	const bool gfx7_target =
+	    ShaderRecompiler::Decoder::GetGuestIsa() == ShaderRecompiler::Decoder::GuestIsa::Gfx7;
 	const bool has_htile = z.z_info.htile_acceleration;
 	const bool unsupported_shading_rate_encoding =
 	    z.shading_rate_encoding > 1 || (z.shading_rate_encoding != 0 && !has_htile);
@@ -193,7 +197,8 @@ static TextureCache::ImageDesc MakeDepthTargetDesc(const CommandBuffer& buffer,
 		DepthFatal("stencil state without an active stencil attachment");
 	}
 	if (has_htile) {
-		if (z.htile_data_base_addr == 0 || (z.htile_data_base_addr & 0x7fffu) != 0) {
+		if (z.htile_data_base_addr == 0 ||
+		    (z.htile_data_base_addr & (gfx7_target ? 0xffu : 0x7fffu)) != 0) {
 			DepthFatal("invalid HTile metadata address");
 		}
 		if (z.depth_view.slice_max >= 32) {
@@ -353,6 +358,14 @@ void RenderExecutor::ResolveRenderDepthTarget(CommandBuffer& buffer, RenderDepth
 	r.depth_write_enable      = r.depth_test_enable && dc.z_write_enable &&
 	                            !z.depth_view.depth_write_disable && !r.depth_clear_enable;
 	r.depth_compare_op        = static_cast<vk::CompareOp>(dc.zfunc);
+	// `setprop debug.capy.eq_depth N` (diagnosis): N=1 tests EQUAL as GREATER_OR_EQUAL, 2 as
+	// LESS_OR_EQUAL, 3 as ALWAYS. Tells a depth-EQUAL pass that misses its prepass apart.
+	static Common::DebugFlags::CachedValue eq_depth("debug.capy.eq_depth", 0);
+	if (eq_depth.Get() != 0 && r.depth_compare_op == vk::CompareOp::eEqual) {
+		r.depth_compare_op = eq_depth.Get() == 1   ? vk::CompareOp::eGreaterOrEqual
+		                     : eq_depth.Get() == 2 ? vk::CompareOp::eLessOrEqual
+		                                           : vk::CompareOp::eAlways;
+	}
 
 	r.depth_bounds_test_enable = dc.depth_bounds_enable;
 
