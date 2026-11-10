@@ -707,6 +707,14 @@ TextureBinding RenderExecutor::ResolveTexture(const ShaderRecompiler::IR::ImageR
 			desc.info = target;
 		}
 	}
+	if ((descriptor.fields[7] & 0x80000000u) != 0u && (descriptor.fields[7] & 0x1fu) == 19u &&
+	    desc.info.IsVolume()) {
+		// A PS4 1D-thick volume: 8x8x4 micro tiles in raster order.
+		desc.info.gfx7_micro_pitch = ((descriptor.fields[7] >> 5u) & 0x3fffu) + 1u;
+		desc.info.gfx7_micro_pow2  = (descriptor.fields[7] & 0x40000000u) != 0u;
+		desc.info.gfx7_micro_thick = true;
+		desc.info.data.size        = desc.info.Gfx7MicroSize();
+	}
 	desc.view_info = TextureViewInfo(resource, descriptor, view_format, surface_format, storage,
 	                                 view_levels, desc.info.resources.layers);
 	desc.view_info.base_level = view_base;
