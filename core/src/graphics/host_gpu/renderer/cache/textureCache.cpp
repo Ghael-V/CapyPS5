@@ -45,6 +45,11 @@ constexpr uint64_t NumFramesBeforeRemoval = 32;
 	const auto  format   = desc.view_info.format;
 	const bool  cmask    = metadata.kind == ImageMetadataKind::Cmask;
 	if (cmask ? code == 0 : code == 0x20) {
+		// `setprop debug.capy.clear_r11 0`: skip register clears of B10G11R11 targets (bisection).
+		static Common::DebugFlags::CachedValue clear_r11("debug.capy.clear_r11", 1);
+		if (clear_r11.Get() == 0 && format == vk::Format::eB10G11R11UfloatPack32) {
+			return false;
+		}
 		// Register clears belong to the color buffer; the texture pipe cannot decode them.
 		return desc.type == TextureCache::BindingType::RenderTarget &&
 		       metadata.clear_register_valid &&

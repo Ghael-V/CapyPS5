@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: GPL-2.0-only
 
 #include "common/assert.h"
+#include "common/debugFlags.h"
 #include "common/logging/log.h"
 #include "graphics/shader/recompiler/HostFeatures.h"
 #include "graphics/shader/recompiler/frontend/translate/Translator.h"
@@ -335,7 +336,10 @@ IR::Value Translator::MakeImageAddress(const Decoder::Instruction& inst,
 	// gfx7 MIMG takes its dimension from the T#: the instruction decodes as 2D, but a 3D or cube
 	// image reads more address VGPRs. Carry the following ones too; the emitter places the
 	// components by the image's real dimension (see EmitImage).
-	if (Decoder::GetGuestIsa() == Decoder::GuestIsa::Gfx7 && base.kind == Decoder::OperandKind::Vgpr &&
+	// `setprop debug.capy.gfx7_mimg_dim 0` keeps the old 2D-only layout (bisection aid).
+	static Common::DebugFlags::CachedValue gfx7_mimg_dim("debug.capy.gfx7_mimg_dim", 1);
+	if (gfx7_mimg_dim.Get() != 0 && Decoder::GetGuestIsa() == Decoder::GuestIsa::Gfx7 &&
+	    base.kind == Decoder::OperandKind::Vgpr &&
 	    inst.image_nsa_dwords == 0) {
 		const auto available = 256u - std::min(base.reg, 256u);
 		count = std::min({count + 4u, static_cast<uint32_t>(components.size()), available});
