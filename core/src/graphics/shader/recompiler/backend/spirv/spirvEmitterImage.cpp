@@ -751,7 +751,18 @@ void EmitImage(ValueEmitContext& ctx, const IR::Inst& inst) {
 	const auto op         = inst.GetOpcode();
 	const auto image_info = IR::ImageOpcodeInfoOf(op);
 	auto&       state     = ctx.state;
-	const auto& mem       = ctx.Memory(inst);
+	const auto& memory    = ctx.Memory(inst);
+	// gfx7 MIMG decodes as 2D because the T# sets the dimension. Lay its address out by the image's
+	// real dimension; the translator carries the extra address VGPRs (MakeImageAddress).
+	IR::MemoryInfo gfx7_memory;
+	const bool     gfx7_layout = Decoder::GetGuestIsa() == Decoder::GuestIsa::Gfx7 &&
+	                         memory.resource < state.program.info.images.size();
+	if (gfx7_layout) {
+		gfx7_memory                          = memory;
+		gfx7_memory.image_dimension          = state.program.info.images[memory.resource].dimension;
+		gfx7_memory.image_address_components = 13u;
+	}
+	const auto& mem       = gfx7_layout ? gfx7_memory : memory;
 	const auto  image_arg = inst.Arg(0);
 	ctx.ResourceIndex(image_arg, IR::ValueOpcode::GetImageResource);
 	const auto& image   = state.program.info.images.at(mem.resource);

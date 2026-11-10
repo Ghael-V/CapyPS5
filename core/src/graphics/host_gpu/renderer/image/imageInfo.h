@@ -546,7 +546,30 @@ inline constexpr std::array<VideoOutFormatPolicy, 12> VIDEO_OUT_FORMAT_POLICIES 
 			next.float32[2] = static_cast<float>(packed & 0x3ffu) / 1023.0f;
 			next.float32[3] = static_cast<float>((packed >> 30u) & 0x3u) / 3.0f;
 			break;
-		default: return false;
+		case vk::Format::eB10G11R11UfloatPack32: {
+			// Unsigned floats with a 5-bit exponent: 6-bit mantissas for R and G, 5-bit for B.
+			const auto ufloat = [](uint32_t value, uint32_t mantissa_bits) {
+				const auto exponent = value >> mantissa_bits;
+				const auto mantissa = value & ((1u << mantissa_bits) - 1u);
+				const auto scale    = static_cast<float>(1u << mantissa_bits);
+				if (exponent == 0) {
+					return static_cast<float>(mantissa) / scale * 0x1p-14f;
+				}
+				return (1.0f + static_cast<float>(mantissa) / scale) *
+				       std::ldexp(1.0f, static_cast<int>(exponent) - 15);
+			};
+			next.float32[0] = ufloat(packed & 0x7ffu, 6);
+			next.float32[1] = ufloat((packed >> 11u) & 0x7ffu, 6);
+			next.float32[2] = ufloat(packed >> 22u, 5);
+			next.float32[3] = 1.0f;
+			break;
+		}
+		default:
+			// All-zero bits are zero in every float, normalized and integer format.
+			if (packed != 0u) {
+				return false;
+			}
+			break;
 	}
 	clear = next;
 	return true;
