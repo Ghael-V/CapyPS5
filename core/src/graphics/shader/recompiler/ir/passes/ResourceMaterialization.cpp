@@ -1272,7 +1272,13 @@ bool MaterializeResources(const ResourcePlan& program, const SrtRuntime& runtime
 					        // A stale record can name an address no PS4 mapping has (above 40 bits).
 					        const uint64_t address =
 					            ((static_cast<uint64_t>(value.dwords[1] & 0xffu) << 32u) | value.dwords[0]) << 8u;
-					        if (address == 0u || address >= (1ull << 40u)) {
+					        // ...or reserved swizzle selectors (2, 3 in DST_SEL_X..W).
+					        bool reserved_swizzle = false;
+					        for (uint32_t component = 0; component < 4u; ++component) {
+						        const uint32_t selector = (value.dwords[3] >> (3u * component)) & 7u;
+						        reserved_swizzle |= selector == 2u || selector == 3u;
+					        }
+					        if (address == 0u || address >= (1ull << 40u) || reserved_swizzle) {
 						        value.dwords.fill(0u);
 					        }
 				        }

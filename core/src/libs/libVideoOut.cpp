@@ -44,6 +44,7 @@ LIB_DEFINE(InitVideoOut_1) {
 	LIB_FUNC("rWUTcKdkUzQ", VideoOut::VideoOutGetEventData);
 	LIB_FUNC("Mt4QHHkxkOc", VideoOut::VideoOutGetEventCount);
 	LIB_FUNC("j6RaAUlaLv0", VideoOut::VideoOutWaitVblank);
+	LIB_FUNC("kGVLc3htQE8", VideoOut::VideoOutGetDeviceCapabilityInfo);
 	LIB_FUNC("utPrVdxio-8", VideoOut::VideoOutGetOutputStatus);
 	LIB_FUNC("5tRaBjtdTzY", VideoOut::VideoOutVrrPegToFixedRate);
 	LIB_FUNC("T4ucGB8CsnM", VideoOut::VideoOutVrrUnpegFromFixedRate);

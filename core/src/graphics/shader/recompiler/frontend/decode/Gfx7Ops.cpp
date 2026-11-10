@@ -119,6 +119,10 @@ void DecodeVop3Gfx7(uint32_t pc, std::span<const uint32_t> code, uint32_t word_i
 	const std::array<uint32_t, 3> words {low | (opcode10 << 16u) | Vop3Prefix, word1, 0u};
 	DecodeVop3(pc, words, 0, inst);
 	Restore(inst, code, word_index, 2, opcode);
+	// V_CMPX in VOP3 form: gfx7 writes SDST too (gfx10 drops it); the translator writes dst2.
+	if (inst.dst.kind == OperandKind::ExecLo && opcode < 0x100u) {
+		DecodeScalarDestination(word0 & 0xffu, pc, inst.dst2);
+	}
 }
 
 bool DecodeVop2Gfx7(uint32_t pc, std::span<const uint32_t> code, uint32_t word_index,

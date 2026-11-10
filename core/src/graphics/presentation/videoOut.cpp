@@ -2012,6 +2012,17 @@ KYTY_SYSV_ABI int VideoOutGetEventCount(const EventQueue::KernelEvent* ev) {
 	return static_cast<int>((static_cast<uint64_t>(ev->data) >> 12u) & 0xfu);
 }
 
+// The display's capabilities (bit 0: BT.2020 PQ, i.e. HDR); the host output is SDR.
+KYTY_SYSV_ABI int VideoOutGetDeviceCapabilityInfo(int handle, uint64_t* capability) {
+	PRINT_NAME();
+	(void)handle;
+	if (capability == nullptr) {
+		return VIDEO_OUT_ERROR_INVALID_ADDRESS;
+	}
+	*capability = 0;
+	return OK;
+}
+
 KYTY_SYSV_ABI int VideoOutWaitVblank(int handle) {
 	PRINT_NAME();
 
