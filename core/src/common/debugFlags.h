@@ -237,9 +237,11 @@ inline bool FrameTracing() {
 inline void FrameTrace(const char* fmt, ...) {
 	// Skip early draws when diagnosing a late pass in a draw-heavy frame.
 	static CachedValue trace_from("debug.capy.trace_from", 0);
+	// `debug.capy.trace_max N`: lines per traced frame (default 20000).
+	static CachedValue trace_max("debug.capy.trace_max", 20000);
 	if (!FrameTracing() ||
 	    g_trace_draws.load(std::memory_order_relaxed) < static_cast<uint32_t>(std::max<int64_t>(0, trace_from.Get())) ||
-	    g_trace_lines.fetch_add(1, std::memory_order_relaxed) >= 20000) {
+	    g_trace_lines.fetch_add(1, std::memory_order_relaxed) >= static_cast<uint32_t>(std::max<int64_t>(0, trace_max.Get()))) {
 		return;
 	}
 #if defined(__ANDROID__)

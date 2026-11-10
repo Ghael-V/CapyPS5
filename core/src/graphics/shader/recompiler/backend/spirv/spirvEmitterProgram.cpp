@@ -125,6 +125,23 @@ uint32_t LoopCapValue() {
 // their invocations, so a full-screen pass where every invocation loops still ends in bounded
 // time, while small dispatches keep up to LoopCap() each.
 uint32_t EmitInitialLoopBudget(EmitterState& state) {
+	// `setprop debug.capy.loop_cap_hash 0x<hash>` with `debug.capy.loop_cap_small N`: that shader
+	// alone gets budget N (bisects which shader hangs the GPU; read when shaders compile).
+	static Common::DebugFlags::CachedValue cap_hash("debug.capy.loop_cap_hash", 0);
+	static Common::DebugFlags::CachedValue cap_small("debug.capy.loop_cap_small", 64);
+	// `debug.capy.loop_cap_stage S` (ShaderType number) with `loop_cap_lo`/`loop_cap_hi` (top 32
+	// bits of the hash, [lo, hi)): those shaders get `loop_cap_small` (bisection by range).
+	static Common::DebugFlags::CachedValue cap_stage("debug.capy.loop_cap_stage", 0);
+	static Common::DebugFlags::CachedValue cap_lo("debug.capy.loop_cap_lo", 0);
+	static Common::DebugFlags::CachedValue cap_hi("debug.capy.loop_cap_hi", 0x100000000ll);
+	const auto top = static_cast<int64_t>(state.program.shader_hash >> 32u);
+	const bool by_hash = cap_hash.Get() != 0 && static_cast<uint64_t>(cap_hash.Get()) == state.program.shader_hash;
+	const bool by_range = cap_stage.Get() != 0 &&
+	                      cap_stage.Get() == static_cast<int64_t>(state.program.stage) &&
+	                      top >= cap_lo.Get() && top < cap_hi.Get();
+	if (by_hash || by_range) {
+		return ConstantU32(state, static_cast<uint32_t>(std::clamp<int64_t>(cap_small.Get(), 1, UINT32_MAX)));
+	}
 	const auto  cap  = ConstantU32(state, LoopCap());
 	const auto* cs   = ShaderWorkgroupInput(state.program.stage, state.input_info);
 	const auto  total = DispatchLoopBudget();
@@ -854,6 +871,16 @@ void EmitProgram(EmitterState& state) {
 		                          ConstantU32(state, 1));
 	}
 	const bool has_loops = ProgramHasLoops(state.program);
+	// `setprop debug.capy.loop_log 1`: name the shaders that contain loops (tag CapyPS5-Loops), to
+	// find one that never ends; pair the hash with the address from the same tag.
+	static Common::DebugFlags::CachedValue loop_log("debug.capy.loop_log", 0);
+	if (has_loops && loop_log.Get() != 0) {
+		Common::DebugFlags::NoteOnce("CapyPS5-Loops", state.program.shader_hash ^ 0x4c4f4f50ull,
+		                             "stage %u shader hash 0x%016llx has loops%s",
+		                             static_cast<uint32_t>(state.program.stage),
+		                             static_cast<unsigned long long>(state.program.shader_hash),
+		                             state.program.dispatcher_fallback ? " (dispatcher)" : "");
+	}
 	if (has_loops && LoopCap() != 0) {
 		state.loop_budget_variable = state.builder.DefineGlobalVariable(
 		    TypePointer(state, spv::StorageClassPrivate, TypeU32(state)), spv::StorageClassPrivate);
