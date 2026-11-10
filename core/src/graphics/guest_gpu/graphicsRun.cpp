@@ -1418,12 +1418,13 @@ static void PatchIndirectDrawOffsets(CommandProcessor& cp, IndirectDrawRegisters
                                      uint32_t vertex_offset, uint32_t instance_offset,
                                      uint32_t first_index, uint32_t draw_index) {
 	const auto write = [&](uint32_t location, uint32_t value) {
-		if (location == Pm4::SH_NOP) {
+		// PS4 packets leave unused offset registers at 0 rather than SH_NOP.
+		if (location == Pm4::SH_NOP || location == 0u) {
 			return;
 		}
 		EXIT_NOT_IMPLEMENTED(location >= Pm4::SH_NUM ||
 		                     g_hw_sh_indirect_func[location] == nullptr);
-		if (g_hw_sh_indirect_func[location] == nullptr) {
+		if (location >= Pm4::SH_NUM || g_hw_sh_indirect_func[location] == nullptr) {
 			return; // a stage with no user-data handler (PS4 ES/LS): nothing reads it
 		}
 		g_hw_sh_indirect_func[location](cp, location, value);

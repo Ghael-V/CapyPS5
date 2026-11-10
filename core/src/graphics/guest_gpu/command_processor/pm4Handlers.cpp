@@ -1818,7 +1818,8 @@ KYTY_CP_OP_PARSER(CpOpEventWriteEop) {
 
 	EXIT_NOT_IMPLEMENTED(cmd_id != 0xC0044700);
 
-	uint32_t cache_policy       = (buffer[0] >> 25u) & 0x3u;
+	// Bits 25-26 are a cache hint the emulator need not follow; PS4 games set them.
+	uint32_t cache_policy       = IsGfx7() ? 0u : (buffer[0] >> 25u) & 0x3u;
 	uint32_t event_write_dest   = ((buffer[0] >> 23u) & 0x10u) | ((buffer[2] >> 16u) & 0x01u);
 	uint32_t eop_event_type     = (buffer[0]) & 0x3fu;
 	uint32_t cache_action       = (buffer[0] >> 12u) & 0x3fu;

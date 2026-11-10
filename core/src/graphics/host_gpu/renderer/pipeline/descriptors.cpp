@@ -669,8 +669,13 @@ TextureBinding RenderExecutor::ResolveTexture(const ShaderRecompiler::IR::ImageR
 	} else {
 		desc.info.UpdateSize();
 	}
+	// PS4 tiled textures are aligned to their gfx7 tiles, not to the gfx10 swizzle block that
+	// stands in for them here (small targets sit on 32 KiB boundaries).
 	const auto alignment =
-	    tile == Prospero::TileMode::kLinear ? 256u : desc.info.tiling.block.block_size;
+	    tile == Prospero::TileMode::kLinear ||
+	            ShaderRecompiler::Decoder::GetGuestIsa() == ShaderRecompiler::Decoder::GuestIsa::Gfx7
+	        ? 256u
+	        : desc.info.tiling.block.block_size;
 	EXIT_NOT_IMPLEMENTED(desc.info.data.size == 0 || alignment == 0 ||
 	                     (address & (static_cast<uint64_t>(alignment) - 1u)) != 0);
 	if (storage) {
