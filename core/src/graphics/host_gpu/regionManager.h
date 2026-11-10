@@ -100,24 +100,24 @@ public:
 	template <DirtySource source>
 	[[nodiscard]] bool IsModified(uint64_t offset, uint64_t size) const {
 		const auto [start, end] = GetPageRange(m_cpu_addr + offset, size);
-		return GetBits<source>().FirstRangeFrom(start).first < end;
+		return GetBits<source>().Any(start, end);
 	}
 
 	template <DirtySource source, bool enable>
 	void ChangeState(uint64_t vaddr, uint64_t size) {
 		const auto [start, end] = GetPageRange(vaddr, size);
 		if constexpr (source == DirtySource::Cpu && enable) {
-			if (RegionBits(m_gpu_dirty, start, end).Any()) {
+			if (m_gpu_dirty.Any(start, end)) {
 				EXIT("CPU dirty state conflicts with GPU dirty state\n");
 			}
 		}
 		if constexpr (source == DirtySource::Gpu && enable) {
-			if (RegionBits(m_cpu_dirty, start, end).Any()) {
+			if (m_cpu_dirty.Any(start, end)) {
 				EXIT("GPU dirty state conflicts with CPU dirty state\n");
 			}
 		}
 		auto&      bits = GetBits<source>();
-		RegionBits changed(enable ? ~bits : bits, start, end);
+		RegionBits changed = enable ? RegionBits(~bits, start, end) : RegionBits(bits, start, end);
 		if constexpr (enable) {
 			bits.SetRange(start, end);
 		} else {
@@ -134,7 +134,7 @@ public:
 	void ForEachModifiedRange(uint64_t vaddr, uint64_t size, Func&& func) {
 		const auto [start, end] = GetPageRange(vaddr, size);
 		auto&      bits         = GetBits<source>();
-		if (bits.FirstRangeFrom(start).first >= end) {
+		if (!bits.Any(start, end)) {
 			return;
 		}
 		RegionBits mask(bits, start, end);
