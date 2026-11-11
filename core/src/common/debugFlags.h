@@ -185,11 +185,17 @@ inline void RegisterAvPlayerVideoBuffer(uint64_t address, uint64_t size) {
 inline std::atomic<uint64_t> g_watch_addr {0};
 
 /** Logs writes that touch the watched address; used to find who should signal a label. */
+inline void FrameTrace(const char* fmt, ...);
 inline void WatchWrite(const char* who, uint64_t addr, uint64_t size, uint64_t value) {
-	const auto watch = g_watch_addr.load(std::memory_order_relaxed);
+	// `debug.capy.watch_addr <vaddr>`: watch that address instead (also noted in frame traces).
+	static CachedValue watch_addr("debug.capy.watch_addr", 0);
+	const auto watch = watch_addr.Get() != 0 ? static_cast<uint64_t>(watch_addr.Get())
+	                                         : g_watch_addr.load(std::memory_order_relaxed);
 	if (watch == 0 || addr > watch + 7 || addr + size <= watch) {
 		return;
 	}
+	FrameTrace("  WATCH %s 0x%llx size=%llu value=0x%llx", who, static_cast<unsigned long long>(addr),
+	           static_cast<unsigned long long>(size), static_cast<unsigned long long>(value));
 	static std::atomic<uint32_t> logged {0};
 	if (logged.fetch_add(1) >= 64) {
 		return;

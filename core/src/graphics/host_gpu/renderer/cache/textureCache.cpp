@@ -1779,6 +1779,8 @@ void TextureCache::CommitGpuWrite(Image& image) {
 	if (!image.depth_id && image.backing.image == nullptr) {
 		EXIT("TextureCache: GPU writes require a native image or stencil association\n");
 	}
+	Common::DebugFlags::WatchWrite("image write", image.info.data.address, image.info.data.size,
+	                               static_cast<uint64_t>(image.info.guest_format));
 	image.ClearBufferModified();
 	if (image.IsCpuDirty()) {
 		image.RefreshComplete();
