@@ -666,6 +666,14 @@ static vk::Device VulkanCreateDevice(GraphicContext& graphics,
 	     static_cast<vk::ShaderStageFlags::MaskType>(graphics.required_subgroup_size_stages),
 	     graphics.compute_subgroup_size_control_enabled ? "true" : "false",
 	     graphics.SupportsComputeWave64() ? "true" : "false");
+#if defined(__ANDROID__)
+	__android_log_print(ANDROID_LOG_INFO, "CapyPS5-Gpu",
+	                    "subgroups: default=%u min=%u max=%u stages=0x%x compute wave64=%s",
+	                    graphics.subgroup_size, graphics.min_subgroup_size, graphics.max_subgroup_size,
+	                    static_cast<unsigned>(static_cast<vk::ShaderStageFlags::MaskType>(
+	                        graphics.required_subgroup_size_stages)),
+	                    graphics.SupportsComputeWave64() ? "yes" : "no");
+#endif
 	graphics.provoking_vertex_last_enabled = provoking_extension && provoking_vertex.provokingVertexLast;
 	graphics.attachment_feedback_loop_enabled =
 	    feedback_extensions && feedback_layout.attachmentFeedbackLoopLayout &&
