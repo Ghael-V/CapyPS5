@@ -137,8 +137,13 @@ public:
 
 	[[nodiscard]] bool Overlaps(uint64_t address, uint64_t size,
 	                            bool pages = false) const noexcept {
-		return pages ? ImagePageRangesOverlap(info.data.address, info.data.size, address, size)
-		             : ImageRangeOverlaps(info.data.address, info.data.size, address, size);
+		// A PS4 render target ends at its real size: the rest of its PS5-layout range is the
+		// game's next allocation (God of War Ragnarok's lit target follows its velocity target).
+		const auto own = info.gfx7_guest_size != 0 && info.gfx7_guest_size < info.data.size
+		                     ? info.gfx7_guest_size
+		                     : info.data.size;
+		return pages ? ImagePageRangesOverlap(info.data.address, own, address, size)
+		             : ImageRangeOverlaps(info.data.address, own, address, size);
 	}
 	[[nodiscard]] bool SafeToDownload() const noexcept {
 		return IsGpuModified() && !IsBufferModified() && !IsCpuDirty();
