@@ -1336,6 +1336,16 @@ PipelineCache::GetComputePipeline(const ShaderComputeInputInfo& input_info,
 		ShaderDbgDumpInputInfo(input_info);
 	}
 
+#if defined(__ANDROID__)
+	{
+		static std::atomic<uint32_t> created {0};
+		const auto n = created.fetch_add(1) + 1;
+		if (scaled_images != 0 || n % 50 == 0) {
+			__android_log_print(ANDROID_LOG_WARN, "CapyPS5-Compile", "compute pipeline #%u program=%llu scaled=0x%x", n,
+			                    static_cast<unsigned long long>(compute_program.id), scaled_images);
+		}
+	}
+#endif
 	auto cached = std::make_unique<Pipeline>();
 	m_pipelines_since_save++;
 	CreatePipelineInternal(m_graphics, *cached, input_info.stage, compute_program.module,

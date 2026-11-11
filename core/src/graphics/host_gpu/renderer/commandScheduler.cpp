@@ -525,10 +525,14 @@ uint64_t CommandScheduler::Submit(SubmitInfo submit) {
 
 	vk::Result result;
 	uint64_t   tick;
+	vk::Fence  fence = nullptr;
 	{
 		Common::LockGuard lock(graphics.queue_mutex);
 		tick = m_master.NextTick();
-		submit.AddSignal(m_master.Handle(), tick);
+		fence = m_master.AcquireFence();
+		if (fence == nullptr) {
+			submit.AddSignal(m_master.Handle(), tick);
+		}
 
 		vk::TimelineSemaphoreSubmitInfo timeline_info {};
 		timeline_info.waitSemaphoreValueCount   = submit.num_wait_semaphores;
@@ -546,7 +550,10 @@ uint64_t CommandScheduler::Submit(SubmitInfo submit) {
 		submit_info.signalSemaphoreCount = submit.num_signal_semaphores;
 		submit_info.pSignalSemaphores    = submit.signal_semaphores.data();
 
-		result = graphics.queue.submit(1, &submit_info, nullptr);
+		result = graphics.queue.submit(1, &submit_info, fence);
+		if (result == vk::Result::eSuccess) {
+			m_master.Track(tick, fence);
+		}
 	}
 
 	if (result != vk::Result::eSuccess) {
