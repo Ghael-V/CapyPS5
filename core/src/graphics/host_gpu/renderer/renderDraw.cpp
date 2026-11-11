@@ -2147,6 +2147,44 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 #endif
 	}
 #if defined(__ANDROID__)
+	// `debug.capy.dump_ud_ps 0x<ps>`: log the user SGPRs of the next 32 draws with that pixel shader,
+	// and dump_ud_off/dump_ud_len bytes (default 0, 64) at the pointer in SGPRs dump_ud_ptr/+1
+	// (tag CapyPS5-UserData). Re-arms when the address changes.
+	{
+		static Common::DebugFlags::CachedValue dump_ud_ps("debug.capy.dump_ud_ps", 0);
+		static Common::DebugFlags::CachedValue dump_ud_ptr("debug.capy.dump_ud_ptr", 2);
+		static Common::DebugFlags::CachedValue dump_ud_off("debug.capy.dump_ud_off", 0);
+		static Common::DebugFlags::CachedValue dump_ud_len("debug.capy.dump_ud_len", 64);
+		static int64_t armed_for = 0;
+		static int     left      = 0;
+		const auto     wanted    = dump_ud_ps.Get();
+		if (wanted != armed_for) {
+			armed_for = wanted;
+			left      = 32;
+		}
+		const auto& ps = buffer.GetShaders().GetPs();
+		if (wanted != 0 && left > 0 && static_cast<uint64_t>(wanted) == ps.ps_regs.data_addr) {
+			left--;
+			const auto& ud  = ps.ps_user_sgpr;
+			std::string sgprs;
+			for (uint32_t i = 0; i < ud.count && i < 16; i++) {
+				sgprs += fmt::format(" s{}={:08x}", i, ud.value[i]);
+			}
+			const auto reg = static_cast<uint32_t>(std::clamp<int64_t>(dump_ud_ptr.Get(), 0, 14));
+			const auto ptr = (static_cast<uint64_t>(ud.value[reg + 1] & 0xffffu) << 32u) | ud.value[reg];
+			std::array<uint32_t, 64> words {};
+			const auto len  = static_cast<size_t>(std::clamp<int64_t>(dump_ud_len.Get(), 4, 256)) & ~size_t {3};
+			const bool ok   = ptr != 0 && Libs::LibKernel::Memory::ReadGuestMemory(
+			                                   ptr + static_cast<uint64_t>(dump_ud_off.Get()), words.data(), len);
+			std::string data;
+			for (size_t i = 0; ok && i < len / 4; i++) {
+				data += fmt::format(" {:08x}", words[i]);
+			}
+			__android_log_print(ANDROID_LOG_WARN, "CapyPS5-UserData", "ps=0x%llx%s | [s%u+%lld]%s",
+			                    static_cast<unsigned long long>(wanted), sgprs.c_str(), reg,
+			                    static_cast<long long>(dump_ud_off.Get()), data.c_str());
+		}
+	}
 	// `debug.capy.watch_dump N` with watch_ps: save the first color target of the next N draws of
 	// that pixel shader linearly to <files>/watch/<game frame>_<n>.img (no frame trace needed).
 	static Common::DebugFlags::CachedValue watch_ps_dump("debug.capy.watch_ps", 0);

@@ -2216,10 +2216,12 @@ bool TextureCache::DebugSaveImageLinear(ImageId id, const std::string& path) {
 	if (image.depth_id || image.backing.image == nullptr || image.info.samples != 1) {
 		return false;
 	}
-	const uint32_t width  = image.info.extent.width;
+	// A scaled image is saved at its host size (backing.extent).
+	const auto     extent = image.IsScaled() ? image.backing.extent : image.info.extent;
+	const uint32_t width  = extent.width;
 	// Layers and volume slices follow one another in the dump, as extra rows.
 	const uint32_t slices = image.info.TransferLayers();
-	const uint32_t height = image.info.extent.height * slices;
+	const uint32_t height = extent.height * slices;
 	const bool     is_depth = image.backing.format == vk::Format::eD32Sfloat ||
 	                      image.backing.format == vk::Format::eD32SfloatS8Uint;
 	const uint32_t bpp    = is_depth ? 4u : image.info.bytes_per_block;
@@ -2237,8 +2239,8 @@ bool TextureCache::DebugSaveImageLinear(ImageId id, const std::string& path) {
 	copy.bufferOffset      = offset;
 	copy.imageSubresource  = {is_depth ? vk::ImageAspectFlagBits::eDepth : vk::ImageAspectFlagBits::eColor, 0, 0,
 	                          image.info.IsVolume() ? 1u : slices};
-	copy.imageExtent       = vk::Extent3D {width, image.info.extent.height, image.info.IsVolume() ? slices : 1u};
-	image.Download(std::span {&copy, 1}, download.Handle(), offset, size);
+	copy.imageExtent       = vk::Extent3D {width, extent.height, image.info.IsVolume() ? slices : 1u};
+	image.DownloadBacking(std::span {&copy, 1}, download.Handle(), offset, size);
 	const auto format = static_cast<uint32_t>(image.backing.format);
 	m_scheduler.DeferPriorityOperation([&download, mapped, offset, size, width, height, format, bpp,
 	                                    path] {

@@ -111,6 +111,14 @@ struct EmitterState {
 
 	uint32_t                                         lane_count              = 1;
 	uint32_t                                         lane_half               = 0;
+	// The host has no subgroup operations in this stage: each invocation is a wave of one lane.
+	// The lane id is constant, ballots hold only the invocation's own bit and shuffles return
+	// the invocation's own value, so EXEC/VCC/SGPR lane masks stay per invocation. (Using the
+	// subgroup operations there made the stock Adreno driver apply one pixel's kill decision to a
+	// whole 8x8 block: God of War Ragnarok's dithered foliage left 8x8 holes in the depth.)
+	bool                                             single_lane             = false;
+	// Pixel shaders that kill write gl_FragDepth = gl_FragCoord.z at return (see DefineModule).
+	uint32_t                                         kill_depth_frag_coord   = 0;
 	std::array<BufferDefinition, 4>                  storage_buffers {};
 	std::array<uint32_t, IR::ShaderInfo::MaxBuffers> memory_byte_offsets {};
 	uint32_t                                         bda_pagetable_variable  = 0;
@@ -389,6 +397,12 @@ DppTargetLane EmitDppMirrorTargetLane(EmitterState& state, uint32_t subid, bool 
 DppTargetLane EmitDppTargetLane(EmitterState& state, const IR::DppMoveFlags& flags);
 
 uint32_t EmitSubgroupLocalInvocationId(EmitterState& state);
+// OpGroupNonUniformBallot, or the invocation's own bit when single_lane.
+uint32_t EmitSubgroupBallot(EmitterState& state, uint32_t predicate);
+// OpGroupNonUniformShuffle, or `value` itself when single_lane.
+uint32_t EmitSubgroupShuffle(EmitterState& state, uint32_t type, uint32_t value, uint32_t lane);
+// Whether bit `lane` of a ballot is set, without subgroup operations.
+uint32_t EmitBallotBit(EmitterState& state, uint32_t ballot, uint32_t lane);
 
 uint32_t InputVariableForKind(const EmitterState& state, IR::StageInputKind kind);
 

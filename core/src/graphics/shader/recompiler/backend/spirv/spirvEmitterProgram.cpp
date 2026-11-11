@@ -44,7 +44,9 @@ void EmitKillIfBoolFalse(EmitterState& state, uint32_t active) {
 }
 
 void EmitKillIfPixelValidMaskInactive(EmitterState& state) {
-	if (state.pixel_valid_mask_variable == 0) {
+	// `debug.capy.no_kill 1` (before shaders compile): never discard (diagnosis).
+	static Common::DebugFlags::CachedValue no_kill("debug.capy.no_kill", 0);
+	if (state.pixel_valid_mask_variable == 0 || no_kill.Get() != 0) {
 		return;
 	}
 
@@ -103,6 +105,16 @@ void StoreDispatcherPhiEdge(ValueEmitContext& ctx, const DispatcherFunctionState
 
 void EmitReturn(ValueEmitContext& ctx) {
 	FlushBdaFault(ctx.state);
+	if (ctx.state.kill_depth_frag_coord != 0) {
+		auto&      state   = ctx.state;
+		const auto pointer = state.builder.AllocateId();
+		const auto depth   = state.builder.AllocateId();
+		state.builder.AddFunction(spv::OpAccessChain,
+		                          TypePointer(state, spv::StorageClassInput, TypeF32(state)), pointer,
+		                          state.kill_depth_frag_coord, ConstantU32(state, 2));
+		state.builder.AddFunction(spv::OpLoad, TypeF32(state), depth, pointer);
+		state.builder.AddFunction(spv::OpStore, state.depth_variable, depth);
+	}
 	EmitKillIfPixelValidMaskInactive(ctx.state);
 	ctx.state.builder.AddFunction(spv::OpReturn);
 }
@@ -610,13 +622,12 @@ uint32_t ValueEmitContext::HalfArg(const IR::Inst& inst, size_t index, uint32_t 
 uint32_t ValueEmitContext::Ballot(IR::Value predicate) {
 	const auto ballot_type = TypeU32Vector(state, 4);
 	const auto scope       = ConstantU32(state, spv::ScopeSubgroup);
+	if (other_half == nullptr) {
+		return EmitSubgroupBallot(state, Def(predicate));
+	}
 	const auto low         = state.builder.AllocateId();
 	state.builder.AddFunction(spv::OpGroupNonUniformBallot, ballot_type, low, scope,
-	                          other_half == nullptr || half == 0 ? Def(predicate)
-	                                                             : other_half->Def(predicate));
-	if (other_half == nullptr) {
-		return low;
-	}
+	                          half == 0 ? Def(predicate) : other_half->Def(predicate));
 	const auto high      = state.builder.AllocateId();
 	const auto low_word  = state.builder.AllocateId();
 	const auto high_word = state.builder.AllocateId();
@@ -654,12 +665,10 @@ uint32_t ValueEmitContext::FirstLane(uint32_t ballot) {
 uint32_t ValueEmitContext::Shuffle(const IR::Inst& inst, size_t index, uint32_t lane) {
 	const auto type  = TypeId(state, inst.Arg(index).GetType());
 	const auto scope = ConstantU32(state, spv::ScopeSubgroup);
-	const auto low   = state.builder.AllocateId();
 	if (other_half == nullptr) {
-		state.builder.AddFunction(spv::OpGroupNonUniformShuffle, type, low, scope, Arg(inst, index),
-		                          lane);
-		return low;
+		return EmitSubgroupShuffle(state, type, Arg(inst, index), lane);
 	}
+	const auto low   = state.builder.AllocateId();
 	const auto physical_lane =
 	    EmitBinaryU32(state, spv::OpBitwiseAnd, lane, ConstantU32(state, 31));
 	const auto high          = state.builder.AllocateId();

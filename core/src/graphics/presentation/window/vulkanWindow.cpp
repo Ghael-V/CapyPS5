@@ -643,8 +643,10 @@ static vk::Device VulkanCreateDevice(GraphicContext& graphics,
 
 	vk::PhysicalDeviceFloatControlsProperties float_controls {};
 	float_controls.pNext = &properties11;
+	vk::PhysicalDeviceDriverProperties driver_properties {};
+	driver_properties.pNext = &float_controls;
 	vk::PhysicalDeviceProperties2 properties2 {};
-	properties2.pNext = &float_controls;
+	properties2.pNext = &driver_properties;
 
 	if (graphics.mesh_shader_enabled) {
 		subgroup_size_control.pNext = &graphics.mesh_shader_properties;
@@ -652,6 +654,10 @@ static vk::Device VulkanCreateDevice(GraphicContext& graphics,
 	physical_device.getProperties2(&properties2);
 
 	graphics.subgroup_size                 = properties11.subgroupSize;
+	ShaderRecompiler::g_host_features.subgroup_stages =
+	    static_cast<uint32_t>(properties11.subgroupSupportedStages);
+	ShaderRecompiler::g_host_features.kill_exports_depth =
+	    driver_properties.driverID == vk::DriverId::eQualcommProprietary;
 	graphics.min_subgroup_size             = subgroup_size_control.minSubgroupSize;
 	graphics.max_subgroup_size             = subgroup_size_control.maxSubgroupSize;
 	graphics.required_subgroup_size_stages = subgroup_size_control.requiredSubgroupSizeStages;
@@ -668,11 +674,15 @@ static vk::Device VulkanCreateDevice(GraphicContext& graphics,
 	     graphics.SupportsComputeWave64() ? "true" : "false");
 #if defined(__ANDROID__)
 	__android_log_print(ANDROID_LOG_INFO, "CapyPS5-Gpu",
-	                    "subgroups: default=%u min=%u max=%u stages=0x%x compute wave64=%s",
+	                    "subgroups: default=%u min=%u max=%u size-control stages=0x%x compute wave64=%s "
+	                    "supported stages=0x%x operations=0x%x quad-in-all-stages=%d",
 	                    graphics.subgroup_size, graphics.min_subgroup_size, graphics.max_subgroup_size,
 	                    static_cast<unsigned>(static_cast<vk::ShaderStageFlags::MaskType>(
 	                        graphics.required_subgroup_size_stages)),
-	                    graphics.SupportsComputeWave64() ? "yes" : "no");
+	                    graphics.SupportsComputeWave64() ? "yes" : "no",
+	                    static_cast<unsigned>(static_cast<VkShaderStageFlags>(properties11.subgroupSupportedStages)),
+	                    static_cast<unsigned>(static_cast<VkSubgroupFeatureFlags>(properties11.subgroupSupportedOperations)),
+	                    properties11.subgroupQuadOperationsInAllStages ? 1 : 0);
 #endif
 	graphics.provoking_vertex_last_enabled = provoking_extension && provoking_vertex.provokingVertexLast;
 	graphics.attachment_feedback_loop_enabled =

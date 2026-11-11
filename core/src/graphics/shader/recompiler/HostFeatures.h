@@ -34,6 +34,14 @@ struct HostFeatures {
 	// are converted to and from their 64-bit IEEE patterns where they meet registers: less
 	// precision, but the pipelines link (they were rejected with "Failed to link shaders").
 	bool float64 = true;
+	// VkPhysicalDeviceSubgroupProperties::supportedStages. The stock Adreno driver lists compute
+	// only: in its other stages each invocation runs as a one-lane wave (see EmitterState::single_lane).
+	uint32_t subgroup_stages = 0xffffffffu;
+	// Pixel shaders that can kill export gl_FragCoord.z as their depth (the stock Adreno driver).
+	// Its low-resolution Z otherwise rejects later fragments of such draws in whole 8x8 blocks:
+	// God of War Ragnarok's dithered foliage left 8x8 holes in the depth, which its tiled lighting
+	// turned into white and black blocks. Exported depth keeps those draws out of that Z.
+	bool kill_exports_depth = false;
 };
 
 inline HostFeatures g_host_features;

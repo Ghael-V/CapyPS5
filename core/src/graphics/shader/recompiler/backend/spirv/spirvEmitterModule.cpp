@@ -877,6 +877,28 @@ void DefineModule(EmitterState& state) {
 		state.builder.AddExecutionMode(state.main_func, spv::ExecutionModeLocalSize, local_x,
 		                               local_y, local_z);
 	}
+	// Pixel shaders that can kill export their own depth (gl_FragCoord.z) where the host's
+	// low-resolution Z mishandles them (HostFeatures::kill_exports_depth).
+	// `debug.capy.kill_depth_export 0/1` (before shaders compile) overrides the driver default.
+	static Common::DebugFlags::CachedValue kill_depth_export("debug.capy.kill_depth_export", -1);
+	const bool export_kill_depth = kill_depth_export.Get() < 0 ? g_host_features.kill_exports_depth
+	                                                           : kill_depth_export.Get() != 0;
+	if (state.program.stage == ShaderType::Pixel && export_kill_depth &&
+	    state.input_info.pixel != nullptr && state.input_info.pixel->ps_pixel_kill_enable &&
+	    state.depth_variable == 0) {
+		state.depth_variable = DefineInterfaceVariable(state, TypeF32(state), spv::StorageClassOutput,
+		                                               "gl_FragDepth");
+		state.builder.AddAnnotation(spv::OpDecorate, state.depth_variable, spv::DecorationBuiltIn,
+		                            spv::BuiltInFragDepth);
+		auto frag_coord = InputVariableForKind(state, IR::StageInputKind::FragCoord);
+		if (frag_coord == 0) {
+			frag_coord = DefineInterfaceVariable(state, TypeF32Vector(state, 4), spv::StorageClassInput,
+			                                     "gl_FragCoord");
+			state.builder.AddAnnotation(spv::OpDecorate, frag_coord, spv::DecorationBuiltIn,
+			                            spv::BuiltInFragCoord);
+		}
+		state.kill_depth_frag_coord = frag_coord;
+	}
 	if (state.program.stage == ShaderType::Pixel) {
 		state.builder.AddExecutionMode(state.main_func, spv::ExecutionModeOriginUpperLeft);
 		if (state.depth_variable != 0) {

@@ -196,6 +196,9 @@ uint32_t EmitBuiltinU32Raw(EmitterState& state, IR::StageInputKind kind, uint32_
 uint32_t EmitSourceLaneActive(ValueEmitContext& ctx, uint32_t exec, uint32_t lane) {
 	auto&      state  = ctx.state;
 	const auto scope  = ConstantU32(state, spv::ScopeSubgroup);
+	if (state.single_lane) {
+		return EmitBallotBit(state, EmitSubgroupBallot(state, exec), lane);
+	}
 	const auto ballot = EmitNative<spv::OpGroupNonUniformBallot, IR::Type::U32x4>(state, scope, exec);
 	if (ctx.half != 0) {
 		lane = EmitAndConstant(state, lane, 31);
@@ -891,8 +894,7 @@ uint32_t EmitBallot(ValueEmitContext& ctx, IR::Value predicate) {
 uint32_t EmitLiveMask(EmitterState& state) {
 	const auto helper =
 	    EmitNative<spv::OpLoad, IR::Type::U1>(state, state.helper_invocation_variable);
-	return EmitNative<spv::OpGroupNonUniformBallot, IR::Type::U32x4>(
-	    state, ConstantU32(state, spv::ScopeSubgroup), EmitLogicalNotBool(state, helper));
+	return EmitSubgroupBallot(state, EmitLogicalNotBool(state, helper));
 }
 
 uint32_t EmitReadFirstLane(ValueEmitContext& ctx, const IR::Inst& inst) {
