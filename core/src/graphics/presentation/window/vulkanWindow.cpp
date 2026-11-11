@@ -15,6 +15,7 @@
 #include "common/stringUtils.h"
 #include "common/threads.h"
 #include "common/timer.h"
+#include "graphics/host_gpu/driverQuirks.h"
 #include "graphics/host_gpu/graphicContext.h"
 #include "graphics/host_gpu/renderer/render.h"
 #include "graphics/host_gpu/renderer/renderContext.h"
@@ -656,8 +657,16 @@ static vk::Device VulkanCreateDevice(GraphicContext& graphics,
 	graphics.subgroup_size                 = properties11.subgroupSize;
 	ShaderRecompiler::g_host_features.subgroup_stages =
 	    static_cast<uint32_t>(properties11.subgroupSupportedStages);
-	ShaderRecompiler::g_host_features.kill_exports_depth =
-	    driver_properties.driverID == vk::DriverId::eQualcommProprietary;
+	{
+		const auto& device = properties2.properties;
+		ApplyDriverQuirks({.vendor_id      = device.vendorID,
+		                   .device_id      = device.deviceID,
+		                   .driver_id      = static_cast<uint32_t>(driver_properties.driverID),
+		                   .driver_version = device.driverVersion,
+		                   .device_name    = device.deviceName.data(),
+		                   .driver_name    = driver_properties.driverName.data(),
+		                   .driver_info    = driver_properties.driverInfo.data()});
+	}
 	graphics.min_subgroup_size             = subgroup_size_control.minSubgroupSize;
 	graphics.max_subgroup_size             = subgroup_size_control.maxSubgroupSize;
 	graphics.required_subgroup_size_stages = subgroup_size_control.requiredSubgroupSizeStages;
