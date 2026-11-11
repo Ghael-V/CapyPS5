@@ -12,6 +12,7 @@
 #include <functional>
 #include <optional>
 #include <type_traits>
+#include <unordered_map>
 #include <unordered_set>
 #include <utility>
 
@@ -212,6 +213,38 @@ void EmitLoopBudget(ValueEmitContext& ctx) {
 	EmitLabel(state, stop);
 	EmitReturn(ctx);
 	EmitLabel(state, merge);
+}
+
+// Spends one unit like EmitLoopBudget but returns whether the budget is spent instead of
+// returning: a loop's continue construct may not hold a return (spirv-val rejects it and the stock
+// Adreno compiler then miscompiled God of War Ragnarok's tile classification shaders).
+uint32_t EmitLoopBudgetSpent(ValueEmitContext& ctx) {
+	auto& state = ctx.state;
+	const auto left = state.builder.AllocateId();
+	state.builder.AddFunction(spv::OpLoad, TypeU32(state), left, state.loop_budget_variable);
+	const auto next = EmitBinaryU32(state, spv::OpISub, left, ConstantU32(state, 1));
+	state.builder.AddFunction(spv::OpStore, state.loop_budget_variable, next);
+	const auto spent = state.builder.AllocateId();
+	state.builder.AddFunction(spv::OpIEqual, TypeBool(state), spent, next, ConstantU32(state, 0));
+	return spent;
+}
+
+// The back edge of a continue block whose budget is spent leaves the loop instead.
+void EmitBudgetedBackEdge(ValueEmitContext& ctx, const IR::Block* block, const IR::Block* header,
+                          uint32_t spent) {
+	auto&       state = ctx.state;
+	const auto& term  = block->terminator;
+	const auto  condition = ctx.Def(block->condition);
+	const auto  adjusted  = state.builder.AllocateId();
+	if (term.true_block == header) {
+		const auto stay = state.builder.AllocateId();
+		state.builder.AddFunction(spv::OpLogicalNot, TypeBool(state), stay, spent);
+		state.builder.AddFunction(spv::OpLogicalAnd, TypeBool(state), adjusted, condition, stay);
+	} else {
+		state.builder.AddFunction(spv::OpLogicalOr, TypeBool(state), adjusted, condition, spent);
+	}
+	state.builder.AddFunction(spv::OpBranchConditional, adjusted, term.true_block->Definition(),
+	                          term.false_block->Definition());
 }
 
 // The first block of a loop's body where the budget can be spent: not the header itself, the
@@ -473,14 +506,25 @@ void EmitStructuredFunction(ValueEmitContext& ctx) {
 	const auto& program = ctx.state.program;
 	StructuredFunctionState structured;
 	std::unordered_set<const IR::Block*> budget_blocks;
+	// Continue blocks that spend the budget of their loop (the header), on a conditional back edge.
+	std::unordered_map<const IR::Block*, const IR::Block*> continue_budget;
 	for (const auto* block: program.blocks) {
 		if (const auto* body = LoopBudgetBlock(block)) {
 			budget_blocks.insert(body);
 		} else if (block->terminator.loop_header && block->terminator.continue_block != nullptr &&
 		           block->terminator.continue_block != block &&
 		           !block->terminator.continue_block->terminator.loop_header) {
-			// No body block can hold it: spend the budget in the continue block instead.
-			budget_blocks.insert(block->terminator.continue_block);
+			// No body block can hold it: spend the budget in the continue block instead, leaving
+			// the loop through its back edge when spent. An unconditional back edge cannot leave
+			// without a new merge predecessor, so that loop goes without the guard.
+			const auto* cont = block->terminator.continue_block;
+			const auto& back = cont->terminator;
+			if (ctx.state.loop_budget_variable != 0 && back.kind == CFG::TerminatorKind::ConditionalBranch &&
+			    !cont->condition.IsEmpty() && back.true_block != nullptr &&
+			    back.false_block != nullptr &&
+			    (back.true_block == block || back.false_block == block)) {
+				continue_budget.emplace(cont, block);
+			}
 		}
 	}
 	ctx.state.builder.AddFunction(spv::OpBranch, program.blocks.front()->Definition());
@@ -489,11 +533,19 @@ void EmitStructuredFunction(ValueEmitContext& ctx) {
 		EmitBlock(ctx, block, [&](ValueEmitContext& lane, const IR::Inst& inst) {
 			EmitStructuredInstruction(lane, structured, inst);
 		});
+		uint32_t    spent  = 0;
+		const auto  budget = continue_budget.find(block);
 		if (budget_blocks.contains(block)) {
 			EmitLoopBudget(ctx);
+		} else if (budget != continue_budget.end()) {
+			spent = EmitLoopBudgetSpent(ctx);
 		}
 		structured.block_exit_labels.emplace(block, ctx.state.current_label);
-		EmitStructuredTerminator(ctx, block);
+		if (spent != 0) {
+			EmitBudgetedBackEdge(ctx, block, budget->second, spent);
+		} else {
+			EmitStructuredTerminator(ctx, block);
+		}
 	}
 	PatchStructuredPhis(ctx, structured);
 }
