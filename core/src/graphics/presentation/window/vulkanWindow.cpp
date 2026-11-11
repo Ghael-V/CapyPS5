@@ -766,6 +766,11 @@ static vk::Device VulkanCreateDevice(GraphicContext& graphics,
 	device_features.shaderFloat64 =
 	    supported_features2.features.shaderFloat64 &&
 	    float_controls.shaderSignedZeroInfNanPreserveFloat64;
+	ShaderRecompiler::g_host_features.float64 = device_features.shaderFloat64 == VK_TRUE;
+#if defined(__ANDROID__)
+	__android_log_print(ANDROID_LOG_INFO, "CapyPS5-Gpu", "shaderFloat64: %s",
+	                    device_features.shaderFloat64 == VK_TRUE ? "native" : "emulated with FP32");
+#endif
 	// if (device_features.shaderFloat64 && !float_controls.shaderDenormPreserveFloat64) {
 	// 	Log::WriteToConsoleAndLog(
 	// 	    "WARNING: Vulkan device does not guarantee FP64 denormal preservation; "

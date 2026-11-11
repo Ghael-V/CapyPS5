@@ -94,6 +94,9 @@ uint32_t TypeF32(EmitterState& state) {
 }
 
 uint32_t TypeF64(EmitterState& state) {
+	if (!g_host_features.float64) {
+		return TypeF32(state); // F64 emulated with F32 (see HostFeatures::float64)
+	}
 	if (state.f64_type == 0) {
 		state.f64_type = state.builder.Type(spv::OpTypeFloat, 64);
 	}
@@ -269,9 +272,8 @@ void DefineDescriptors(EmitterState& state) {
 	    IR::PushData::StartFor(bindings.push_data_start_dword, bindings.ShaderDataDwords());
 	counts[static_cast<size_t>(Kind::ShaderData)] =
 	    bindings.ShaderDataDwords() != 0 && !bindings.UsesPushData();
-	if (state.program.bindings.UsesPushData() || state.program.stage == ShaderType::Mesh ||
-	    (state.program.stage == ShaderType::Vertex && state.input_info.vertex != nullptr &&
-	     state.input_info.vertex->user_clip_planes != 0)) {
+	// Always declared: the scaled-image mask is read from it (see ScaledImageMask).
+	{
 		const auto type              = PushConstantBlockType(state);
 		state.push_constant_variable = state.builder.DefineGlobalVariable(
 		    TypePointer(state, spv::StorageClassPushConstant, type), spv::StorageClassPushConstant);
@@ -846,7 +848,7 @@ void DefineModule(EmitterState& state) {
 		state.builder.AddExecutionMode(state.main_func, spv::ExecutionModeSignedZeroInfNanPreserve,
 		                               32u);
 	}
-	if (state.program.info.float64) {
+	if (state.program.info.float64 && g_host_features.float64) {
 		EXIT_NOT_IMPLEMENTED(state.program.stage == ShaderType::Compute &&
 		                     state.input_info.compute->float_mode != 0xc0);
 		// Use native rounding for MODE=0xc0, consistent with ordinary FP32 arithmetic.

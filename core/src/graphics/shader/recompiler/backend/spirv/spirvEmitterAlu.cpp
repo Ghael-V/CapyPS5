@@ -2,6 +2,7 @@
 // SPDX-FileCopyrightText: Copyright KytyPS5 contributors; based on Kyty, Copyright (c) 2021 InoriRus (MIT)
 // SPDX-License-Identifier: GPL-2.0-only
 
+#include "graphics/shader/recompiler/HostFeatures.h"
 #include "graphics/shader/recompiler/backend/spirv/spirvEmitterInstructions.h"
 
 #include <array>
@@ -22,7 +23,7 @@ Pair ExtractPair(EmitterState& state, uint32_t value) {
 }
 
 uint32_t EmitMinMaxF64(EmitterState& state, uint32_t lhs, uint32_t rhs, bool max_value) {
-	const auto bits_type = TypeU32Vector(state, 2);
+	const auto bits_type = g_host_features.float64 ? TypeU32Vector(state, 2) : TypeU32(state);
 	const auto lhs_bits = Unary(state, spv::OpBitcast, bits_type, lhs);
 	const auto rhs_bits = Unary(state, spv::OpBitcast, bits_type, rhs);
 	const auto ordered = Binary(state, max_value ? spv::OpFOrdGreaterThan : spv::OpFOrdLessThan,
@@ -174,6 +175,9 @@ uint32_t EmitConvertU32F32(EmitterState& state, uint32_t arg0) {
 }
 
 uint32_t EmitConvertF32F64(EmitterState& state, uint32_t arg0) {
+	if (!g_host_features.float64) {
+		return EmitFlushF32DenormToSignedZero(state, arg0); // F64 is F32 here
+	}
 	const auto converted = Unary(state, spv::OpFConvert, TypeF32(state), arg0);
 	const auto source    = EmitNative<spv::OpCompositeExtract, IR::Type::U32>(
 	    state, Unary(state, spv::OpBitcast, TypeU32Vector(state, 2), arg0), 1u);
@@ -190,8 +194,86 @@ uint32_t EmitConvertF32F64(EmitterState& state, uint32_t arg0) {
 }
 
 uint32_t EmitConvertF64F32(EmitterState& state, uint32_t arg0) {
+	if (!g_host_features.float64) {
+		return EmitFlushF32DenormToSignedZero(state, arg0); // F64 is F32 here
+	}
 	return EmitNative<spv::OpFConvert, IR::Type::F64>(state,
 	                                                  EmitFlushF32DenormToSignedZero(state, arg0));
+}
+
+// FP64 emulated with FP32 (no shaderFloat64): an F64 value is an F32 in the shader; these turn it
+// into the IEEE double bit pattern registers and memory hold, and back.
+uint32_t EmitBitCastU64F64(EmitterState& state, uint32_t arg0) {
+	if (g_host_features.float64) {
+		return EmitNative<spv::OpBitcast, IR::Type::U64>(state, arg0);
+	}
+	const auto bits     = Unary(state, spv::OpBitcast, TypeU32(state), arg0);
+	const auto sign     = EmitAndConstant(state, bits, 0x80000000u);
+	const auto exponent = EmitAndConstant(state, Binary(state, spv::OpShiftRightLogical, TypeU32(state), bits,
+	                                                    ConstantU32(state, 23u)),
+	                                      0xffu);
+	const auto mantissa = EmitAndConstant(state, bits, 0x7fffffu);
+	// Normal numbers: rebias the exponent (+896) and widen the mantissa (23 -> 52 bits).
+	const auto rebiased = EmitAddU32(state, exponent, ConstantU32(state, 1023u - 127u));
+	auto       high     = EmitOrU32(state, sign,
+	                                EmitOrU32(state, Binary(state, spv::OpShiftLeftLogical, TypeU32(state), rebiased,
+	                                                        ConstantU32(state, 20u)),
+	                                          Binary(state, spv::OpShiftRightLogical, TypeU32(state), mantissa,
+	                                                 ConstantU32(state, 3u))));
+	auto       low      = Binary(state, spv::OpShiftLeftLogical, TypeU32(state), mantissa, ConstantU32(state, 29u));
+	// Infinity and NaN keep an all-ones exponent; zero and denormals become signed zero.
+	const auto special  = Binary(state, spv::OpIEqual, TypeBool(state), exponent, ConstantU32(state, 0xffu));
+	const auto special_high =
+	    EmitOrU32(state, EmitOrU32(state, sign, ConstantU32(state, 0x7ff00000u)),
+	              Binary(state, spv::OpShiftRightLogical, TypeU32(state), mantissa, ConstantU32(state, 3u)));
+	high = Select(state, TypeU32(state), special, special_high, high);
+	const auto zero = Binary(state, spv::OpIEqual, TypeBool(state), exponent, ConstantU32(state, 0u));
+	high = Select(state, TypeU32(state), zero, sign, high);
+	low  = Select(state, TypeU32(state), zero, ConstantU32(state, 0u), low);
+	const auto pair = state.builder.AllocateId();
+	state.builder.AddFunction(spv::OpCompositeConstruct, TypeU32Vector(state, 2), pair, low, high);
+	return Unary(state, spv::OpBitcast, TypeU64(state), pair);
+}
+
+uint32_t EmitBitCastF64U64(EmitterState& state, uint32_t arg0) {
+	if (g_host_features.float64) {
+		return EmitNative<spv::OpBitcast, IR::Type::F64>(state, arg0);
+	}
+	const auto pair = Unary(state, spv::OpBitcast, TypeU32Vector(state, 2), arg0);
+	const auto low  = state.builder.AllocateId();
+	const auto high = state.builder.AllocateId();
+	state.builder.AddFunction(spv::OpCompositeExtract, TypeU32(state), low, pair, 0);
+	state.builder.AddFunction(spv::OpCompositeExtract, TypeU32(state), high, pair, 1);
+	const auto sign     = EmitAndConstant(state, high, 0x80000000u);
+	const auto exponent = EmitAndConstant(state, Binary(state, spv::OpShiftRightLogical, TypeU32(state), high,
+	                                                    ConstantU32(state, 20u)),
+	                                      0x7ffu);
+	// The top 23 of the 52 mantissa bits (truncated).
+	const auto mantissa = EmitOrU32(
+	    state, Binary(state, spv::OpShiftLeftLogical, TypeU32(state), EmitAndConstant(state, high, 0xfffffu),
+	                  ConstantU32(state, 3u)),
+	    Binary(state, spv::OpShiftRightLogical, TypeU32(state), low, ConstantU32(state, 29u)));
+	// Rebias as a signed value: below 1 is a denormal or zero in F32, from 255 up infinity.
+	const auto rebiased = Binary(state, spv::OpISub, TypeU32(state), exponent, ConstantU32(state, 1023u - 127u));
+	const auto rebiased_signed = Unary(state, spv::OpBitcast, TypeU32(state), rebiased);
+	const auto too_small = Binary(state, spv::OpSLessThan, TypeBool(state), rebiased_signed, ConstantU32(state, 1u));
+	const auto too_large =
+	    Binary(state, spv::OpSGreaterThanEqual, TypeBool(state), rebiased_signed, ConstantU32(state, 0xffu));
+	auto bits = EmitOrU32(state, sign,
+	                      EmitOrU32(state, Binary(state, spv::OpShiftLeftLogical, TypeU32(state), rebiased,
+	                                              ConstantU32(state, 23u)),
+	                                mantissa));
+	bits = Select(state, TypeU32(state), too_large, EmitOrU32(state, sign, ConstantU32(state, 0x7f800000u)), bits);
+	bits = Select(state, TypeU32(state), too_small, sign, bits);
+	// Exponent 0x7ff: infinity, or a quiet NaN when any mantissa bit is set.
+	const auto special = Binary(state, spv::OpIEqual, TypeBool(state), exponent, ConstantU32(state, 0x7ffu));
+	const auto nan_bits = Select(
+	    state, TypeU32(state),
+	    Binary(state, spv::OpINotEqual, TypeBool(state),
+	           EmitOrU32(state, EmitAndConstant(state, high, 0xfffffu), low), ConstantU32(state, 0u)),
+	    ConstantU32(state, 0x7fc00000u), ConstantU32(state, 0x7f800000u));
+	bits = Select(state, TypeU32(state), special, EmitOrU32(state, sign, nan_bits), bits);
+	return Unary(state, spv::OpBitcast, TypeF32(state), bits);
 }
 
 uint32_t EmitCompositeConstructU64(ValueEmitContext& ctx, uint32_t arg0, IR::Value arg1) {
@@ -312,7 +394,9 @@ uint32_t EmitFPRecip32(EmitterState& state, uint32_t arg0) {
 }
 
 uint32_t EmitFPRecip64(EmitterState& state, uint32_t arg0) {
-	const auto one = state.builder.Constant(spv::OpConstant, TypeF64(state), 0u, 0x3ff00000u);
+	const auto one = g_host_features.float64
+	                     ? state.builder.Constant(spv::OpConstant, TypeF64(state), 0u, 0x3ff00000u)
+	                     : ConstantF32(state, 0x3f800000u);
 	return EmitNative<spv::OpFDiv, IR::Type::F64>(state, one, arg0);
 }
 

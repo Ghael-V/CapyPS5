@@ -254,6 +254,8 @@ private:
 	std::vector<ImageId>                  m_bound_images;
 	std::vector<vk::DescriptorImageInfo>  m_descriptor_images;
 	std::vector<vk::WriteDescriptorSet>   m_descriptor_writes;
+	// Scaled-image masks pushed by the next CommitBindings (IR::PushData::ScaledMaskDword).
+	std::array<uint32_t, 2>               m_scaled_push {};
 	// Vertex records and indices of emulated mesh (geometry) shaders. Outgrown buffers are kept
 	// because earlier, still executing command buffers may read them.
 	std::unique_ptr<Buffer>              m_mesh_output;
