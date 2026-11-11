@@ -631,7 +631,23 @@ bool BufferCache::SynchronizeBuffer(Buffer& buffer, uint64_t vaddr, uint64_t siz
 			    add_copy(cursor, address + bytes - cursor);
 		    }
 	    },
-	    [&]() noexcept { source = UploadCopies(buffer, copies, total_size); });
+	    [&]() noexcept {
+		    if (!m_upload_batch || is_written || is_texel_buffer) {
+			    source = UploadCopies(buffer, copies, total_size);
+			    return;
+		    }
+		    // Batched: EndUploadBatch reads and copies these with the other buffers' ranges.
+		    auto& batch = *m_upload_batch;
+		    if (copies.empty()) {
+			    return;
+		    }
+		    for (auto copy: copies) {
+			    copy.srcOffset += batch.total_size;
+			    batch.copies.push_back(copy);
+		    }
+		    batch.uploads.push_back({&buffer, batch.copies.size()});
+		    batch.total_size += total_size;
+	    });
 	if (source) {
 		auto& command = m_scheduler.Current();
 		command.EndRendering();
@@ -1085,6 +1101,71 @@ void BufferCache::RunGarbageCollector() {
 
 void BufferCache::ProcessFaultBuffer() {
 	m_fault_manager.ProcessFaultBuffer();
+}
+
+void BufferCache::BeginUploadBatch() {
+	m_upload_batch.emplace();
+}
+
+// Ported from KytyPS5 b510053 ("upload BDA sync ranges behind one barrier pair").
+void BufferCache::EndUploadBatch() {
+	auto batch = std::move(m_upload_batch);
+	m_upload_batch.reset();
+	if (!batch || batch->copies.empty()) {
+		return;
+	}
+	auto&       copies     = batch->copies;
+	const auto  total_size = batch->total_size;
+	const auto  read_all   = [&](uint8_t* mapped, uint64_t base_offset) {
+		size_t first = 0;
+		for (const auto& upload: batch->uploads) {
+			for (size_t i = first; i < upload.end; i++) {
+				auto&      copy    = copies[i];
+				const auto address = upload.buffer->CpuAddress() + copy.dstOffset;
+				if (!Libs::LibKernel::Memory::ReadGuestMemory(address, mapped + copy.srcOffset,
+				                                              copy.size)) {
+					std::memset(mapped + copy.srcOffset, 0, copy.size);
+				}
+				copy.srcOffset += base_offset;
+			}
+			first = upload.end;
+		}
+	};
+	vk::Buffer source;
+	if (auto [mapped, base_offset] = m_staging_buffer.Map(total_size, 4); mapped != nullptr) {
+		read_all(mapped, base_offset);
+		m_staging_buffer.Commit();
+		source = m_staging_buffer.Handle();
+	} else {
+		auto temporary = std::make_unique<Buffer>(m_graphics, m_scheduler, MemoryUsage::Upload, 0,
+		                                          vk::BufferUsageFlagBits::eTransferSrc, total_size);
+		read_all(temporary->Mapped().data(), 0);
+		temporary->Flush(0, total_size);
+		source = temporary->Handle();
+		m_scheduler.DeferOperation([owner = std::move(temporary)]() mutable { owner.reset(); });
+	}
+	auto& command = m_scheduler.Current();
+	command.EndRendering();
+	const auto        native = command.Handle();
+	vk::MemoryBarrier before {};
+	before.srcAccessMask = vk::AccessFlagBits::eMemoryRead | vk::AccessFlagBits::eMemoryWrite |
+	                       vk::AccessFlagBits::eTransferRead | vk::AccessFlagBits::eTransferWrite;
+	before.dstAccessMask = vk::AccessFlagBits::eTransferWrite;
+	native.pipelineBarrier(vk::PipelineStageFlagBits::eAllCommands,
+	                       vk::PipelineStageFlagBits::eTransfer, vk::DependencyFlagBits::eByRegion,
+	                       1, &before, 0, nullptr, 0, nullptr);
+	size_t first = 0;
+	for (const auto& upload: batch->uploads) {
+		native.copyBuffer(source, upload.buffer->Handle(), static_cast<uint32_t>(upload.end - first),
+		                  copies.data() + first);
+		first = upload.end;
+	}
+	vk::MemoryBarrier after {};
+	after.srcAccessMask = vk::AccessFlagBits::eTransferWrite;
+	after.dstAccessMask = vk::AccessFlagBits::eMemoryRead | vk::AccessFlagBits::eMemoryWrite;
+	native.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer,
+	                       vk::PipelineStageFlagBits::eAllCommands, vk::DependencyFlagBits::eByRegion,
+	                       1, &after, 0, nullptr, 0, nullptr);
 }
 
 void BufferCache::SynchronizeBuffersInRange(uint64_t vaddr, uint64_t size) {

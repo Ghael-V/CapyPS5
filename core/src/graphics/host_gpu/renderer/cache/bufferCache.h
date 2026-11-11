@@ -20,6 +20,7 @@
 #include <mutex>
 #include <span>
 #include <utility>
+#include <optional>
 #include <vector>
 
 namespace Libs::Graphics {
@@ -100,6 +101,10 @@ public:
 	bool               SyncForRead(uint64_t vaddr, uint64_t size);
 	void               ProcessFaultBuffer();
 	void               SynchronizeBuffersInRange(uint64_t vaddr, uint64_t size);
+	// Between these, SynchronizeBuffersInRange gathers its uploads, and the end copies them all
+	// behind one barrier pair (BDA synchronization covers many buffers).
+	void               BeginUploadBatch();
+	void               EndUploadBatch();
 	void               RunGarbageCollector();
 
 private:
@@ -135,6 +140,17 @@ private:
 	                                     bool is_written, bool is_texel_buffer);
 	[[nodiscard]] vk::Buffer UploadCopies(Buffer& buffer, std::span<vk::BufferCopy> copies,
 	                                      uint64_t total_size);
+	// Copies [previous upload's end, end) go to `buffer`.
+	struct BufferUpload {
+		Buffer* buffer;
+		size_t  end;
+	};
+	struct UploadBatch {
+		std::vector<vk::BufferCopy> copies;
+		std::vector<BufferUpload>   uploads;
+		uint64_t                    total_size = 0;
+	};
+	std::optional<UploadBatch> m_upload_batch;
 	[[nodiscard]] bool SynchronizeBufferFromImage(Buffer& buffer, uint64_t vaddr, uint64_t size);
 	// Synchronous downloads publish before returning; asynchronous callers wait before reuse.
 	template <bool async>
