@@ -55,6 +55,9 @@ public:
 		}
 		m_owner.store(thread, std::memory_order_relaxed);
 	}
+	[[nodiscard]] bool HeldByCurrentThread() const noexcept {
+		return m_owner.load(std::memory_order_relaxed) == CurrentThread();
+	}
 	void unlock() noexcept {
 		EXIT_NOT_IMPLEMENTED(m_owner.load(std::memory_order_relaxed) != CurrentThread());
 		m_owner.store(0, std::memory_order_relaxed);

@@ -31,6 +31,7 @@
 #include "gpu_tiler_shaders/gpu_tiler_displayable4_no8bit_spv.h"
 #include "gpu_tiler_shaders/gpu_tiler_standard64_spv.h"
 #include "gpu_tiler_shaders/gpu_tiler_color_transform_spv.h"
+#include "gpu_tiler_shaders/gpu_tiler_gfx7_htile_spv.h"
 #include "graphics/host_gpu/graphicContext.h"
 #include "graphics/host_gpu/renderer/cache/streamBuffer.h"
 #include "graphics/host_gpu/renderer/commandScheduler.h"
@@ -99,6 +100,9 @@ TileManager::~TileManager() {
 	}
 	if (m_d32_to_d16 != nullptr) {
 		m_graphics.device.destroyPipeline(m_d32_to_d16, nullptr);
+	}
+	if (m_gfx7_htile != nullptr) {
+		m_graphics.device.destroyPipeline(m_gfx7_htile, nullptr);
 	}
 	if (m_color_transform != nullptr) {
 		m_graphics.device.destroyPipeline(m_color_transform, nullptr);
@@ -630,6 +634,101 @@ void TileManager::ConvertD16(Result source, Result target, D16Direction directio
 	command.pipelineBarrier(vk::PipelineStageFlagBits::eComputeShader,
 	                        vk::PipelineStageFlagBits::eAllCommands, {}, 0, nullptr, 1,
 	                        &barriers[1], 0, nullptr);
+}
+
+void TileManager::GenerateGfx7Htile(Result depth, Result htile, const Gfx7HtileLayout& layout) {
+	if (m_gfx7_htile == nullptr) {
+		const auto module = CompileSPV({GPU_TILER_GFX7_HTILE_SPV, std::size(GPU_TILER_GFX7_HTILE_SPV)},
+		                               m_graphics.device);
+		vk::PipelineShaderStageCreateInfo stage {};
+		stage.stage  = vk::ShaderStageFlagBits::eCompute;
+		stage.module = module;
+		stage.pName  = "main";
+		vk::ComputePipelineCreateInfo create {};
+		create.stage  = stage;
+		create.layout = m_pipeline_layout;
+		const auto result =
+		    m_graphics.device.createComputePipelines(nullptr, 1, &create, nullptr, &m_gfx7_htile);
+		m_graphics.device.destroyShaderModule(module, nullptr);
+		RequireVulkanSuccess(result, "create gfx7 HTile pipeline");
+	}
+	const auto bytes = layout.encoding == 2u ? 2u : 4u;
+	EXIT_IF(layout.width == 0 || layout.height == 0 || layout.layers == 0 || layout.tiles_x == 0 ||
+	        layout.host_width == 0 || layout.host_height == 0 || layout.width > 0xffffu ||
+	        layout.height > 0xffffu || layout.host_width > 0xffffu || layout.host_height > 0xffffu ||
+	        layout.source_pitch < static_cast<uint64_t>(layout.host_width) * bytes ||
+	        layout.source_pitch > UINT32_MAX ||
+	        layout.source_slice < layout.source_pitch * layout.host_height || layout.htile_slice == 0);
+	const auto source_span = layout.source_slice * layout.layers;
+	EXIT_IF(depth.size < Common::AlignUp(source_span, 4) || htile.size < 4);
+
+	m_scheduler.EndRendering();
+	auto                    command = m_scheduler.Current().Handle();
+	vk::BufferMemoryBarrier barriers[2] {};
+	for (auto& barrier: barriers) {
+		barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+		barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+		barrier.srcAccessMask = vk::AccessFlagBits::eMemoryRead | vk::AccessFlagBits::eMemoryWrite |
+		                        vk::AccessFlagBits::eTransferWrite | vk::AccessFlagBits::eShaderWrite;
+	}
+	barriers[0].buffer        = depth.buffer;
+	barriers[0].offset        = depth.offset;
+	barriers[0].size          = Common::AlignUp(source_span, 4);
+	barriers[0].dstAccessMask = vk::AccessFlagBits::eShaderRead;
+	barriers[1].buffer        = htile.buffer;
+	barriers[1].offset        = htile.offset;
+	barriers[1].size          = Common::AlignDown(htile.size, 4);
+	barriers[1].dstAccessMask = vk::AccessFlagBits::eShaderRead | vk::AccessFlagBits::eShaderWrite;
+	command.pipelineBarrier(vk::PipelineStageFlagBits::eAllCommands,
+	                        vk::PipelineStageFlagBits::eComputeShader, {}, 0, nullptr, 2, barriers, 0,
+	                        nullptr);
+	command.bindPipeline(vk::PipelineBindPoint::eCompute, m_gfx7_htile);
+	const auto groups_x = (layout.width + 63u) / 64u;
+	const auto groups_y = (layout.height + 63u) / 64u;
+	for (uint32_t layer = 0; layer < layout.layers; layer++) {
+		const auto htile_relative = layout.htile_slice * layer;
+		if (htile_relative + 4 > htile.size) {
+			break;
+		}
+		const auto htile_span = std::min(layout.htile_slice, htile.size - htile_relative);
+		const auto source_binding =
+		    BindStorage({depth.buffer, depth.offset + layout.source_slice * layer,
+		                 depth.size - layout.source_slice * layer},
+		                layout.source_slice);
+		const auto target_binding = BindStorage(
+		    {htile.buffer, htile.offset + htile_relative, htile.size - htile_relative}, htile_span);
+		const vk::DescriptorBufferInfo        infos[] {source_binding.info, target_binding.info};
+		std::array<vk::WriteDescriptorSet, 2> writes {};
+		for (uint32_t index = 0; index < writes.size(); index++) {
+			writes[index].dstBinding      = index;
+			writes[index].descriptorCount = 1;
+			writes[index].descriptorType  = vk::DescriptorType::eStorageBuffer;
+			writes[index].pBufferInfo     = &infos[index];
+		}
+		command.pushDescriptorSetKHR(vk::PipelineBindPoint::eCompute, m_pipeline_layout, 0,
+		                             static_cast<uint32_t>(writes.size()), writes.data());
+		// Same push-constant block size as Conversion: eight 32-bit fields.
+		Conversion push {};
+		push.src_base        = source_binding.base;
+		push.dst_base        = target_binding.base;
+		push.width           = layout.width | (layout.height << 16u);
+		push.height          = layout.host_width | (layout.host_height << 16u);
+		push.source_pitch    = static_cast<uint32_t>(layout.source_pitch);
+		push.target_pitch    = static_cast<uint32_t>(htile_span & ~uint64_t {3});
+		push.color_transform = (layout.addressing & 7u) | ((layout.encoding & 3u) << 8u);
+		if (layout.fixed_z >= 0) {
+			push.color_transform |= 0x1000u | ((static_cast<uint32_t>(layout.fixed_z) & 0x3fffu) << 16u);
+		}
+		push.to_host         = layout.tiles_x;
+		command.pushConstants(m_pipeline_layout, vk::ShaderStageFlagBits::eCompute, 0, sizeof(push),
+		                      &push);
+		command.dispatch(groups_x, groups_y, 1);
+	}
+	barriers[1].srcAccessMask = vk::AccessFlagBits::eShaderWrite;
+	barriers[1].dstAccessMask = vk::AccessFlagBits::eMemoryRead | vk::AccessFlagBits::eMemoryWrite;
+	command.pipelineBarrier(vk::PipelineStageFlagBits::eComputeShader,
+	                        vk::PipelineStageFlagBits::eAllCommands, {}, 0, nullptr, 1, &barriers[1], 0,
+	                        nullptr);
 }
 
 void TileManager::TransformColor(Result input, Result output, ColorTransform transform,

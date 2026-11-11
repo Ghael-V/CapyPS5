@@ -5,6 +5,7 @@
 #include "graphics/host_gpu/renderer/depthRenderTarget.h"
 
 #include "common/assert.h"
+#include "common/alignment.h"
 #include "common/common.h"
 #include "common/debugFlags.h"
 #include "common/logging/log.h"
@@ -274,6 +275,24 @@ static TextureCache::ImageDesc MakeDepthTargetDesc(const CommandBuffer& buffer,
 	desc.info.metadata.range =
 	    has_htile ? GuestRange {z.htile_data_base_addr, htile_backing_size} : GuestRange {};
 	desc.info.metadata.kind   = has_htile ? ImageMetadataKind::Htile : ImageMetadataKind::None;
+	if (has_htile && gfx7_target && z.size.gfx7_pitch != 0 && z.size.gfx7_height != 0) {
+		// The base console's 8-pipe P8_32x32_16x16 layout (KernelIsNeoMode answers 0).
+		const bool     linear  = (z.gfx7_htile_surface & 1u) != 0;
+		const uint32_t tiles_x = z.size.gfx7_pitch / 8u;
+		const uint32_t tiles_y = z.size.gfx7_height / 8u;
+		uint64_t       slice   = 0;
+		if (linear) {
+			// Rows of 4x4-tile groups, two elements apart, spread over 8 pipes of 256 bytes.
+			const uint64_t per_pipe = (static_cast<uint64_t>(tiles_x / 4u) * ((tiles_y + 3u) / 4u) * 2u + 4u) * 4u;
+			slice                   = Common::AlignUp(per_pipe, 256) * 8u;
+		} else {
+			// 64x64-tile macro tiles of 2 KiB per pipe.
+			slice = static_cast<uint64_t>((tiles_x + 63u) / 64u) * ((tiles_y + 63u) / 64u) * 2048u * 8u;
+		}
+		desc.info.metadata.gfx7_htile         = static_cast<uint8_t>(1u + (linear ? 0u : 1u));
+		desc.info.metadata.gfx7_htile_tiles_x = tiles_x;
+		desc.info.metadata.gfx7_htile_slice   = slice;
+	}
 	desc.info.metadata.stencil_compressed =
 	    has_stencil && has_htile && !z.stencil_info.htile_stencil_disabled;
 	desc.view_info.format = format;

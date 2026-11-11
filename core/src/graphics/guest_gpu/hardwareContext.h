@@ -203,6 +203,8 @@ struct DepthRenderTarget {
 	uint64_t stencil_write_base_addr = 0;
 	uint64_t htile_data_base_addr    = 0;
 	uint8_t  shading_rate_encoding   = 0;
+	// gfx7 DB_HTILE_SURFACE (the register gfx10 reused for DB_SHADING_RATE_ENCODING); bit 0 LINEAR.
+	uint32_t gfx7_htile_surface      = 0;
 };
 
 struct RenderControl {

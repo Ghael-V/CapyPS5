@@ -59,6 +59,23 @@ public:
 	[[nodiscard]] Result TransformColor(Result input, ColorTransform transform, bool to_host);
 	void TransformColor(Result input, Result output, ColorTransform transform, bool to_host);
 
+	// PS4 (gfx7) depth-only HTile built from a linear depth plane (see gpu_tiler_gfx7_htile.comp).
+	struct Gfx7HtileLayout {
+		uint32_t width        = 0; // pixels
+		uint32_t height       = 0; // pixels
+		uint32_t host_width   = 0; // pixels of the (possibly scaled) host depth plane
+		uint32_t host_height  = 0;
+		uint32_t layers       = 1;
+		uint64_t source_pitch = 0; // bytes per row
+		uint64_t source_slice = 0; // bytes per layer
+		uint64_t htile_slice  = 0; // HTile bytes per layer
+		uint32_t tiles_x      = 0; // pitch in 8x8 tiles
+		uint32_t addressing   = 0; // bit 0 tiled, [2:1] pipe configuration
+		uint32_t encoding     = 0; // 0 float32, 1 unorm24 in 32 bits, 2 unorm16
+		int32_t  fixed_z      = -1; // diagnosis: 14-bit depth written everywhere when >= 0
+	};
+	void GenerateGfx7Htile(Result depth, Result htile, const Gfx7HtileLayout& layout);
+
 private:
 	friend struct TileManagerTestAccess;
 
@@ -134,6 +151,7 @@ private:
 	vk::Pipeline                            m_d24_to_d16      = nullptr;
 	vk::Pipeline                            m_d32_to_d16      = nullptr;
 	vk::Pipeline                            m_color_transform = nullptr;
+	vk::Pipeline                            m_gfx7_htile      = nullptr;
 };
 
 } // namespace Libs::Graphics

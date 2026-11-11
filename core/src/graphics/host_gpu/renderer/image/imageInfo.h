@@ -43,6 +43,11 @@ struct ImageMetadataInfo {
 	bool                stencil_compressed   = false;
 	bool                clear_register_valid = false;
 	bool                dcc_alpha_msb        = true;
+	// PS4 (gfx7) depth HTile, rebuilt from the depth image when a shader reads it: 1 + its
+	// addressing (bit 0 tiled, [2:1] pipe configuration), 0 when not a PS4 HTile.
+	uint8_t             gfx7_htile           = 0;
+	uint32_t            gfx7_htile_tiles_x   = 0; // pitch in 8x8 tiles
+	uint64_t            gfx7_htile_slice     = 0; // bytes per slice in the gfx7 layout
 };
 
 struct ImageSubresources {

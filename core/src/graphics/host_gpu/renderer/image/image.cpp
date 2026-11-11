@@ -521,6 +521,13 @@ void Image::Download(std::span<const vk::BufferImageCopy> copies, vk::Buffer buf
 		DownloadScaled(copies, buffer, offset, size);
 		return;
 	}
+	DownloadBacking(copies, buffer, offset, size);
+}
+
+void Image::DownloadBacking(std::span<const vk::BufferImageCopy> copies, vk::Buffer buffer,
+                            uint64_t offset, uint64_t size) {
+	EXIT_IF(copies.empty() || buffer == nullptr || size == 0);
+	m_scheduler.EndRendering();
 	vk::BufferMemoryBarrier2 buffer_barrier {};
 	buffer_barrier.srcStageMask = vk::PipelineStageFlagBits2::eAllCommands;
 	buffer_barrier.srcAccessMask =

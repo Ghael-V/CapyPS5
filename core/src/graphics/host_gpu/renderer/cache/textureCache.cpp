@@ -1736,6 +1736,16 @@ vk::ImageView TextureCache::FindDepthTarget(ImageId id, const ImageDesc& desc) {
 		                            MetaDataInfo {.type       = MetaDataInfo::Type::HTile,
 		                                          .clear_mask = image.info.htile_clear_mask}).first;
 		metadata->second.owner = id;
+		if (desc.info.metadata.gfx7_htile != 0) {
+			m_has_gfx7_htile.store(true, std::memory_order_relaxed);
+			Common::DebugFlags::NoteOnce("CapyPS5-Htile", desc.info.metadata.range.address ^ 2u,
+			                             "PS4 depth 0x%llx %ux%u has HTile 0x%llx (%llu bytes/slice, addressing %u)",
+			                             static_cast<unsigned long long>(desc.info.data.address),
+			                             desc.info.extent.width, desc.info.extent.height,
+			                             static_cast<unsigned long long>(desc.info.metadata.range.address),
+			                             static_cast<unsigned long long>(desc.info.metadata.gfx7_htile_slice),
+			                             desc.info.metadata.gfx7_htile - 1u);
+		}
 	}
 	RefreshImage(id);
 	CommitGpuWrite(image);
@@ -2092,6 +2102,110 @@ bool BufferCache::SynchronizeBufferFromImage(Buffer& buffer, uint64_t vaddr, uin
 	}
 	m_texture_cache.DownloadImage(image, buffer, buf_offset, copy_size, levels);
 	return true;
+}
+
+bool BufferCache::SynchronizeGfx7Htile(Buffer* buffer, uint64_t vaddr, uint64_t size) {
+	if (ShaderRecompiler::Decoder::GetGuestIsa() != ShaderRecompiler::Decoder::GuestIsa::Gfx7) {
+		return false;
+	}
+	// `debug.capy.gfx7_htile_gen 0`: leave PS4 HTiles as the game's clears left them.
+	static Common::DebugFlags::CachedValue gfx7_htile_gen("debug.capy.gfx7_htile_gen", 1);
+	// `debug.capy.gfx7_htile_addr <1 + addressing>`: force the HTile layout (diagnosis).
+	static Common::DebugFlags::CachedValue gfx7_htile_addr("debug.capy.gfx7_htile_addr", 0);
+	// `debug.capy.gfx7_htile_z <1 + 14-bit depth>`: write that depth to every tile (diagnosis).
+	static Common::DebugFlags::CachedValue gfx7_htile_z("debug.capy.gfx7_htile_z", 0);
+	if (gfx7_htile_gen.Get() == 0) {
+		return false;
+	}
+	// Texture-cache paths that obtain buffers (CopyToImage) already hold its lock.
+	if (!m_texture_cache.m_has_gfx7_htile.load(std::memory_order_relaxed) ||
+	    m_texture_cache.m_lock.HeldByCurrentThread()) {
+		return false;
+	}
+	std::scoped_lock lock {m_texture_cache.m_lock};
+	auto&            metas = m_texture_cache.m_surface_metas;
+	if (metas.empty()) {
+		return false;
+	}
+	bool found = false;
+	auto it    = metas.upper_bound(vaddr);
+	if (it != metas.begin()) {
+		--it;
+	}
+	for (; it != metas.end() && it->first < vaddr + size; ++it) {
+		const auto& meta = it->second;
+		if (meta.type != TextureCache::MetaDataInfo::Type::HTile || !meta.owner) {
+			continue;
+		}
+		auto&       image = m_texture_cache.m_slot_images[meta.owner];
+		const auto& info  = image.info;
+		if (!image.registered || image.depth_id || info.metadata.gfx7_htile == 0 ||
+		    info.metadata.range.address != it->first) {
+			continue;
+		}
+		const auto htile_size = info.metadata.gfx7_htile_slice * info.resources.layers;
+		if (it->first + htile_size <= vaddr) {
+			continue;
+		}
+		// A binding of a whole heap that only contains the HTile does not read it.
+		if (size > htile_size * 2 + 0x10000) {
+			Common::DebugFlags::NoteOnce("CapyPS5-Htile", it->first ^ 1u,
+			                             "HTile 0x%llx inside a %llu-byte binding: not rebuilt",
+			                             static_cast<unsigned long long>(it->first),
+			                             static_cast<unsigned long long>(size));
+			continue;
+		}
+		const auto transfer_bytes = DepthAspectTransferBytes(info.pixel_format);
+		if (!image.IsGpuModified() || info.samples != 1 ||
+		    image.backing.samples != 1 || image.backing.image == nullptr || transfer_bytes == 0) {
+			continue;
+		}
+		found = true;
+		if (buffer == nullptr) {
+			break;
+		}
+		if (!buffer->IsInBounds(it->first, 4)) {
+			continue;
+		}
+		// The host image may be scaled (debug.capy.res_scale): read it at its own size.
+		const auto layers       = info.resources.layers;
+		const auto host_extent  = image.backing.extent;
+		const auto host_pitch   = image.IsScaled() ? host_extent.width : info.pitch;
+		const auto source_pitch = static_cast<uint64_t>(host_pitch) * transfer_bytes;
+		const auto source_slice = source_pitch * host_extent.height;
+		auto       scratch      = m_texture_cache.m_tiler.GetScratchBuffer(source_slice * layers);
+		const std::array copies {vk::BufferImageCopy {scratch.offset,
+		                                              host_pitch,
+		                                              host_extent.height,
+		                                              {vk::ImageAspectFlagBits::eDepth, 0, 0, layers},
+		                                              {},
+		                                              {host_extent.width, host_extent.height, 1}}};
+		image.DownloadBacking(copies, scratch.buffer, scratch.offset, scratch.size);
+		const auto format   = DepthAspectTransferFormat(info.pixel_format);
+		const auto encoding = transfer_bytes == 2 ? 2u : (format == vk::Format::eD32Sfloat ? 0u : 1u);
+		const auto offset   = buffer->Offset(it->first);
+		m_texture_cache.m_tiler.GenerateGfx7Htile(
+		    scratch, {buffer->Handle(), offset, std::min(htile_size, buffer->Size() - offset)},
+		    {.width        = info.extent.width,
+		     .height       = info.extent.height,
+		     .host_width   = host_extent.width,
+		     .host_height  = host_extent.height,
+		     .layers       = layers,
+		     .source_pitch = source_pitch,
+		     .source_slice = source_slice,
+		     .htile_slice  = info.metadata.gfx7_htile_slice,
+		     .tiles_x      = info.metadata.gfx7_htile_tiles_x,
+		     .addressing   = gfx7_htile_addr.Get() > 0 ? static_cast<uint32_t>(gfx7_htile_addr.Get() - 1)
+		                                                : info.metadata.gfx7_htile - 1u,
+		     .encoding     = encoding,
+		     .fixed_z      = static_cast<int32_t>(gfx7_htile_z.Get()) - 1});
+		Common::DebugFlags::NoteOnce("CapyPS5-Htile", it->first,
+		                             "rebuilt HTile 0x%llx (%llu bytes, %ux%u depth, addressing %u)",
+		                             static_cast<unsigned long long>(it->first),
+		                             static_cast<unsigned long long>(htile_size), info.extent.width,
+		                             info.extent.height, info.metadata.gfx7_htile - 1u);
+	}
+	return found;
 }
 
 bool TextureCache::DebugSaveImageLinear(ImageId id, const std::string& path) {

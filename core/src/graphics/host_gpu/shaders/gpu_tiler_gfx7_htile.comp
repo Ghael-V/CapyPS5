@@ -1,0 +1,126 @@
+// SPDX-FileCopyrightText: Copyright 2026 CapyPS5 Project
+// SPDX-License-Identifier: GPL-2.0-only
+
+// Builds a PS4 (gfx7) depth-only HTile from the host depth image, for games whose shaders read the
+// HTile themselves (min-Z maps, depth pyramids). One invocation per 8x8 tile writes
+// MAXZ[31:18] | MINZ[17:4] | ZMASK[3:0] = 0xF (expanded): the range of the depth values in the tile
+// as 14-bit unorms, rounded outwards.
+//
+// The address is the GCN HTile layout. The 8-pipe P8_32x32_16x16 pipe bits are x3^y3^x4, x4^y4 and
+// x5^y5 (pixel coordinates), as in AMD addrlib; the 16-pipe ones add x6^y5. Tiled HTiles are
+// arranged in macro tiles of 64x64 (8 pipes) or 128x64 (16 pipes) tiles, linear ones by rows.
+
+#version 450
+
+layout(local_size_x = 8, local_size_y = 8) in;
+
+layout(set = 0, binding = 0, std430) readonly buffer Input { uint data[]; } depth_buffer;
+layout(set = 0, binding = 1, std430) buffer Output { uint data[]; } htile_buffer;
+
+layout(push_constant, std430) uniform Params {
+	uint src_base;     // byte offset of the linear depth plane in binding 0
+	uint dst_base;     // byte offset of the HTile in binding 1
+	uint size;         // guest extent in pixels: width | height << 16
+	uint host_size;    // host depth plane extent (scaled targets): width | height << 16
+	uint source_pitch; // bytes per depth row
+	uint dst_limit;    // HTile bytes that may be written from dst_base
+	uint mode;         // [2:0] addressing (bit 0 tiled, [2:1] pipe config), [9:8] depth encoding
+	uint tiles_x;      // pitch in 8x8 tiles
+} params;
+
+const uint DepthF32     = 0u;
+const uint DepthUnorm24 = 1u;
+const uint DepthUnorm16 = 2u;
+
+float read_depth(uint x, uint y, uint encoding) {
+	uint bytes  = encoding == DepthUnorm16 ? 2u : 4u;
+	uint offset = params.src_base + y * params.source_pitch + x * bytes;
+	uint word   = depth_buffer.data[offset >> 2u];
+	if (encoding == DepthUnorm16) {
+		return float((word >> ((offset & 2u) * 8u)) & 0xffffu) / 65535.0;
+	}
+	if (encoding == DepthUnorm24) {
+		return float(word & 0x00ffffffu) / 16777215.0;
+	}
+	return clamp(uintBitsToFloat(word), 0.0, 1.0);
+}
+
+// Byte offset of tile (x, y) in the HTile.
+uint htile_offset(uint x, uint y, uint config) {
+	bool tiled         = (config & 1u) != 0u;
+	bool pipes16       = config >= 2u;
+	bool pipes16_16x16 = config >= 4u;
+
+	uint macro_width = pipes16 ? 128u : 64u;
+	uint group_rows  = pipes16_16x16 ? 16u : 4u;
+	uint column      = tiled ? x % macro_width : x;
+	uint row         = tiled ? (y & 63u) : y;
+	uint row_pitch   = (tiled ? macro_width : params.tiles_x) >> 2u;
+	uint index       = row_pitch * (row / group_rows) + (column >> 2u);
+	index <<= (pipes16_16x16 ? 2u : 0u) + (pipes16 ? 0u : 1u);
+
+	uint macro = 0u;
+	if (tiled) {
+		uint macro_columns = (params.tiles_x + macro_width - 1u) / macro_width;
+		macro              = (macro_columns * (y >> 6u) + x / macro_width) << 9u;
+	}
+
+	uint element;
+	if (pipes16_16x16) {
+		element = (index & ~15u) | (((x >> 4u) ^ (y >> 3u)) & 1u) |
+		          ((((y >> 3u) ^ (x >> 5u) ^ (y >> 2u)) & 1u) << 1u) |
+		          ((((x >> 6u) ^ (y >> 1u)) & 1u) << 2u) | ((y & 1u) << 3u);
+	} else {
+		element = (index & ~3u) | (((x >> 1u) ^ y) & 1u) | (((x >> 1u) & 1u) << 1u);
+	}
+	uint offset = (element + macro) << 2u;
+
+	uint pipe = ((x ^ (x >> 1u) ^ y) & 1u) | ((((x >> 1u) ^ (y >> 1u)) & 1u) << 1u) |
+	            ((((x >> 2u) ^ (y >> 2u)) & 1u) << 2u);
+	uint pipe_bits = 3u;
+	if (pipes16) {
+		pipe |= (((x >> 3u) ^ (y >> 2u)) & 1u) << 3u;
+		pipe_bits = 4u;
+	}
+	// 256-byte pipe interleave.
+	return ((((offset >> 8u) << pipe_bits) + pipe) << 8u) + (offset & 0xfcu);
+}
+
+void main() {
+	uint tile_x = gl_GlobalInvocationID.x;
+	uint tile_y = gl_GlobalInvocationID.y;
+	uint width  = params.size & 0xffffu;
+	uint height = params.size >> 16u;
+	if (tile_x * 8u >= width || tile_y * 8u >= height) {
+		return;
+	}
+	// The host pixels covering the tile's guest pixels.
+	uint host_width  = params.host_size & 0xffffu;
+	uint host_height = params.host_size >> 16u;
+	uint x0          = tile_x * 8u * host_width / width;
+	uint y0          = tile_y * 8u * host_height / height;
+	uint x1 = clamp((min(tile_x * 8u + 8u, width) * host_width + width - 1u) / width, x0 + 1u, host_width);
+	uint y1 = clamp((min(tile_y * 8u + 8u, height) * host_height + height - 1u) / height, y0 + 1u, host_height);
+	uint  encoding = (params.mode >> 8u) & 3u;
+	float zmin     = 1.0;
+	float zmax     = 0.0;
+	for (uint y = y0; y < y1; y++) {
+		for (uint x = x0; x < x1; x++) {
+			float z = read_depth(x, y, encoding);
+			zmin    = min(zmin, z);
+			zmax    = max(zmax, z);
+		}
+	}
+	uint min14  = uint(floor(zmin * 16383.0));
+	uint max14  = min(uint(ceil(zmax * 16383.0)), 16383u);
+	if ((params.mode & 0x1000u) != 0u) {
+		// Diagnosis: one fixed depth everywhere.
+		min14 = (params.mode >> 16u) & 0x3fffu;
+		max14 = min14;
+	}
+	uint offset = htile_offset(tile_x, tile_y, params.mode & 7u);
+	if (offset + 4u > params.dst_limit) {
+		return;
+	}
+	htile_buffer.data[(params.dst_base + offset) >> 2u] = (max14 << 18u) | (min14 << 4u) | 0xfu;
+}
