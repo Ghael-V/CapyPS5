@@ -568,11 +568,24 @@ TextureBinding RenderExecutor::ResolveTexture(const ShaderRecompiler::IR::ImageR
 	const bool depth_tile = tile == Prospero::TileMode::kDepth;
 	const bool msaa_tile  = depth_tile || tile == Prospero::TileMode::kRenderTarget;
 	const bool msaa_array = type == Prospero::ImageType::kColor2DMsaaArray;
-	if ((!multisampled && base_level > last_level) ||
-	    (multisampled &&
-	     (base_level != 0 || last_level == 0 || last_level > 3 || max_mip != last_level ||
-	      !msaa_tile || (descriptor.MsaaDepth() && !depth_tile) ||
-	      (!msaa_array && (descriptor.Depth() != 0 || descriptor.BaseArray5() != 0))))) {
+	if (!multisampled && base_level > last_level) {
+		// No valid view: memory that is not a T# (GOW Ragnarok reads one holding floats on a path
+		// it does not use). The GPU would not stop for it; bind the null image instead.
+		Common::DebugFlags::NoteOnce("CapyPS5-Tex", (static_cast<uint64_t>(descriptor.fields[0]) << 32u) |
+		                                                descriptor.fields[3],
+		                             "texture with BASE_LEVEL %u > LAST_LEVEL %u bound as null "
+		                             "(dwords %08x,%08x,%08x,%08x)",
+		                             base_level, last_level, descriptor.fields[0], descriptor.fields[1],
+		                             descriptor.fields[2], descriptor.fields[3]);
+		auto       desc = NullTextureDesc(resource, storage ? TextureCache::BindingType::Storage
+		                                                    : TextureCache::BindingType::Texture);
+		const auto id   = texture_cache.FindImage(desc);
+		return {id, nullptr, std::move(desc)};
+	}
+	if (multisampled &&
+	    (base_level != 0 || last_level == 0 || last_level > 3 || max_mip != last_level ||
+	     !msaa_tile || (descriptor.MsaaDepth() && !depth_tile) ||
+	     (!msaa_array && (descriptor.Depth() != 0 || descriptor.BaseArray5() != 0)))) {
 		EXIT("unsupported texture mip view: base=%u last=%u levels=%u max=%u type=%u tile=%u "
 		     "class=%u numeric=%u dimension=%u mip_mode=%u read=%d written=%d "
 		     "dwords=%08x,%08x,%08x,%08x,%08x,%08x,%08x,%08x\n",
