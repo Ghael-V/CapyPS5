@@ -1361,8 +1361,25 @@ PipelineCache::GetComputePipeline(const ShaderComputeInputInfo& input_info,
 #endif
 	auto cached = std::make_unique<Pipeline>();
 	m_pipelines_since_save++;
+	const auto compile_begin = std::chrono::steady_clock::now();
 	CreatePipelineInternal(m_graphics, *cached, input_info.stage, compute_program.module,
 	                       m_driver_cache, scaled_images);
+#if defined(__ANDROID__)
+	// Driver compiles run on the GPU thread: report the slow ones (the stock Adreno compiler can
+	// take seconds per big compute shader).
+	if (const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+	                        std::chrono::steady_clock::now() - compile_begin)
+	                        .count();
+	    ms >= 500) {
+		__android_log_print(ANDROID_LOG_WARN, "CapyPS5-Compile",
+		                    "slow compute pipeline: %lld ms, shader 0x%016llx, program=%llu",
+		                    static_cast<long long>(ms),
+		                    static_cast<unsigned long long>(
+		                        input_info.stage.program != nullptr ? input_info.stage.program->shader_hash
+		                                                            : 0),
+		                    static_cast<unsigned long long>(compute_program.id));
+	}
+#endif
 
 	if (cached->pipeline == nullptr) {
 		// Kept as a null entry so the dispatch is skipped instead of recompiled every time (Born
