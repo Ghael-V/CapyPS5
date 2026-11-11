@@ -658,7 +658,9 @@ void RenderExecutor::DispatchDirect(uint64_t submit_id, CommandBuffer& buffer,
 		const auto dir = AndroidGetFilesDir() + "/watch";
 		Common::File::CreateDirectories(dir);
 		for (uint32_t i = 0; i < bindings.images.size() && i < program.info.images.size(); i++) {
-			if (!program.info.images[i].written || !bindings.images[i].image_id) {
+			// `debug.capy.watch_reads 1`: save the images the dispatch reads too.
+			static Common::DebugFlags::CachedValue watch_reads("debug.capy.watch_reads", 0);
+			if ((!program.info.images[i].written && watch_reads.Get() == 0) || !bindings.images[i].image_id) {
 				continue;
 			}
 			char name[80];
