@@ -9,6 +9,11 @@
 #include "graphics/host_gpu/vulkanCommon.h"
 
 #include <atomic>
+#include <condition_variable>
+#include <deque>
+#include <mutex>
+#include <thread>
+#include <vector>
 
 namespace Libs::Graphics {
 
@@ -32,12 +37,30 @@ public:
 	}
 	[[nodiscard]] vk::Semaphore Handle() const noexcept { return m_semaphore; }
 
-	void Refresh();
+	// `force` queries the driver now; otherwise at most every RefreshIntervalNs (see .cpp).
+	void Refresh(bool force = false);
 	void Wait(uint64_t tick);
 
+	// Fence tracking (see the .cpp): a fence for the submission of `tick`, or null when the
+	// timeline semaphore tracks progress instead. Call under the queue lock; after a successful
+	// submit pass the fence to Track.
+	[[nodiscard]] vk::Fence AcquireFence();
+	void                    Track(uint64_t tick, vk::Fence fence);
+	[[nodiscard]] bool      UsesFences() const noexcept { return m_use_fences; }
+
 private:
+	void WaiterRun();
+
 	GraphicContext&       m_graphics;
 	vk::Semaphore         m_semaphore = nullptr;
+	bool                  m_use_fences = false;
+	std::mutex            m_fence_mutex;
+	std::condition_variable m_fence_cv;
+	std::deque<std::pair<uint64_t, vk::Fence>> m_pending_fences;
+	std::vector<vk::Fence> m_free_fences;
+	bool                  m_stop = false;
+	std::thread           m_waiter;
+	std::atomic<int64_t>  m_last_refresh_ns {0};
 	std::atomic<uint64_t> m_gpu_tick {0};
 	std::atomic<uint64_t> m_current_tick {1};
 };
