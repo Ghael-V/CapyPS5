@@ -4,6 +4,7 @@
 
 #include "graphics/shader/recompiler/backend/spirv/spirvEmitterInstructions.h"
 
+#include "common/debugFlags.h"
 #include "graphics/host_gpu/renderer/cache/bufferCache.h"
 #include "graphics/shader/recompiler/frontend/decode/ShaderDecoder.h"
 #include "graphics/shader/recompiler/HostFeatures.h"
@@ -1202,7 +1203,40 @@ void StoreWideShared(ValueEmitContext& ctx, const IR::Inst& inst, uint32_t compo
 
 } // namespace
 
+// The page-table lookup of get_bda_pointer emitted at the call site.
+static uint32_t EmitBdaPointerInline(EmitterState& state, uint32_t address) {
+	const auto type     = TypeU64(state);
+	const auto extended = Binary(state, spv::OpUGreaterThanEqual, TypeBool(state), address,
+	                             ConstantU64(state, LibKernel::Memory::kExtendedMemoryBase));
+	const auto packed   = Select(
+	    state, type, extended,
+	    Binary(state, spv::OpISub, type, address,
+	           ConstantU64(state, LibKernel::Memory::kExtendedMemoryBase - LOWER_ADDRESS_SIZE)),
+	    address);
+	const auto page          = Unary(state, spv::OpUConvert, TypeU32(state),
+	                                 Binary(state, spv::OpShiftRightLogical, type, packed,
+	                                        ConstantU32(state, BufferCache::CACHING_PAGEBITS)));
+	const auto entry_pointer = state.builder.AllocateId();
+	state.builder.AddFunction(spv::OpAccessChain, TypeStorageBufferElementPointer(state, 64),
+	                          entry_pointer, state.bda_pagetable_variable, ConstantU32(state, 0),
+	                          page);
+	const auto base = state.builder.AllocateId();
+	state.builder.AddFunction(spv::OpLoad, type, base, entry_pointer);
+	const auto missing = Binary(state, spv::OpIEqual, TypeBool(state), base, ConstantU64(state, 0));
+	EmitIfCondition(state, missing, [&]() { RecordBdaFault(state, page); });
+	const auto offset = Binary(state, spv::OpBitwiseAnd, type, address,
+	                           ConstantU64(state, BufferCache::CACHING_PAGESIZE - 1));
+	return Select(state, type, missing, ConstantU64(state, 0),
+	              Binary(state, spv::OpIAdd, type, base, offset));
+}
+
 uint32_t GetBdaPointer(EmitterState& state, uint32_t address) {
+	// `setprop debug.capy.bda_inline 1` (read when shaders compile): emit the lookup at each
+	// access instead of calling get_bda_pointer (testing how drivers handle many calls).
+	static Common::DebugFlags::CachedValue bda_inline("debug.capy.bda_inline", 0);
+	if (bda_inline.Get() != 0) {
+		return EmitBdaPointerInline(state, address);
+	}
 	const auto result = state.builder.AllocateId();
 	state.builder.AddFunction(spv::OpFunctionCall, TypeU64(state), result,
 	                          state.bda_pointer_function, address);
