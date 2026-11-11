@@ -3539,6 +3539,14 @@ void GraphicsInitJmpTablesCxIndirect() {
 	};
 
 	g_hw_ctx_indirect_func[Pm4::DB_SHADING_RATE_ENCODING] = [](KYTY_HW_CTX_INDIRECT_ARGS) {
+		if (IsGfx7()) {
+			// gfx7 DB_HTILE_SURFACE: LINEAR, FULL_CACHE and prefetch hints.
+			auto& ctx                 = cp.GetCtx();
+			auto  target              = ctx.GetDepthRenderTarget();
+			target.gfx7_htile_surface = value;
+			ctx.SetDepthRenderTarget(target);
+			return;
+		}
 		HwCtxSetDepthShadingRateEncodingRegister(cp, value);
 	};
 

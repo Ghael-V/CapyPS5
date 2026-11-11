@@ -152,6 +152,9 @@ private:
 	};
 	std::optional<UploadBatch> m_upload_batch;
 	[[nodiscard]] bool SynchronizeBufferFromImage(Buffer& buffer, uint64_t vaddr, uint64_t size);
+	// PS4: rebuilds the depth HTiles a shader reads from [vaddr, vaddr + size) (see
+	// gpu_tiler_gfx7_htile.comp). With `buffer` null it only tells whether one would be.
+	bool SynchronizeGfx7Htile(Buffer* buffer, uint64_t vaddr, uint64_t size);
 	// Synchronous downloads publish before returning; asynchronous callers wait before reuse.
 	template <bool async>
 	[[nodiscard]] bool DownloadBufferMemory(Buffer& buffer, uint64_t vaddr, uint64_t size);

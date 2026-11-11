@@ -788,7 +788,9 @@ std::pair<Buffer*, uint64_t> BufferCache::ObtainBuffer(uint64_t vaddr, uint64_t 
 		std::scoped_lock lock {m_async_download_lock};
 		return m_async_download_ranges.Intersects(vaddr, size);
 	}();
-	const bool fresh_copy = !is_written && !async_pending &&
+	// A PS4 depth HTile read by a shader is rebuilt in the cached buffer (never a fresh copy).
+	const bool gfx7_htile = !is_written && SynchronizeGfx7Htile(nullptr, vaddr, size);
+	const bool fresh_copy = !is_written && !async_pending && !gfx7_htile &&
 	                        ((stream_max.Get() > 0 && size <= static_cast<uint64_t>(stream_max.Get())) ||
 	                         in_window || in_pass_fresh) &&
 	                        !m_memory_tracker.IsRegionGpuModified(vaddr, size);
@@ -810,7 +812,7 @@ std::pair<Buffer*, uint64_t> BufferCache::ObtainBuffer(uint64_t vaddr, uint64_t 
 			return {&m_stream_buffer, it->second.offset};
 		}
 	}
-	if (fresh_copy || (!is_written && !async_pending && size <= CACHING_PAGESIZE &&
+	if (fresh_copy || (!is_written && !async_pending && !gfx7_htile && size <= CACHING_PAGESIZE &&
 	    !Common::DebugFlags::Enabled(Common::DebugFlags::NoStreamBuffer) &&
 	    !m_memory_tracker.IsRegionGpuModified(vaddr, size) &&
 	    m_memory_tracker.IsRegionCpuModified(vaddr, size))) {
@@ -860,6 +862,9 @@ std::pair<Buffer*, uint64_t> BufferCache::ObtainBuffer(uint64_t vaddr, uint64_t 
 		probe_dirty = m_memory_tracker.IsRegionCpuModified(vaddr, size);
 	}
 	(void)SynchronizeBuffer(buffer, vaddr, size, is_written, is_texel_buffer);
+	if (gfx7_htile) {
+		(void)SynchronizeGfx7Htile(&buffer, vaddr, size);
+	}
 	if (probe) {
 		static uint64_t last_hash = 0;
 		__android_log_print(ANDROID_LOG_WARN, "CapyPS5-Probe",

@@ -18,6 +18,7 @@
 #include "graphics/host_gpu/renderer/image/tiler.h"
 
 #include <map>
+#include <atomic>
 #include <type_traits>
 #include <unordered_map>
 #include <unordered_set>
@@ -212,6 +213,8 @@ private:
 	Common::LeastRecentlyUsedCache<ImageId, uint64_t> m_lru_cache;
 	std::unordered_set<ImageId>                       m_download_images;
 	std::map<uint64_t, MetaDataInfo>                  m_surface_metas;
+	// Set once a PS4 depth target with an HTile is bound (BufferCache::SynchronizeGfx7Htile).
+	std::atomic_bool                                  m_has_gfx7_htile {false};
 	uint64_t                                          m_total_used_memory  = 0;
 	uint64_t                                          m_trigger_gc_memory  = 0;
 	uint64_t                                          m_pressure_gc_memory = 1536ull * 1024 * 1024;
