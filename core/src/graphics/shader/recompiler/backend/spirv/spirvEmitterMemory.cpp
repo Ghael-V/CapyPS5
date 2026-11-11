@@ -188,6 +188,13 @@ void RecordBdaFault(EmitterState& state, uint32_t page) {
 
 uint32_t LoadBdaDword(ValueEmitContext& ctx, uint32_t address, bool coherent = false) {
 	auto&      state   = ctx.state;
+	// `setprop debug.capy.strip_bda_top 0x<top 32 bits of a shader hash>` (read when shaders
+	// compile): that shader's BDA loads read zero (bisects driver failures; breaks rendering).
+	static Common::DebugFlags::CachedValue strip_top("debug.capy.strip_bda_top", 0);
+	if (strip_top.Get() != 0 &&
+	    static_cast<int64_t>(state.program.shader_hash >> 32u) == strip_top.Get()) {
+		return ConstantU32(state, 0);
+	}
 	const auto bda     = GetBdaPointer(state, address);
 	const auto present =
 	    Binary(state, spv::OpINotEqual, TypeBool(state), bda, ConstantU64(state, 0));
@@ -1203,49 +1210,52 @@ void StoreWideShared(ValueEmitContext& ctx, const IR::Inst& inst, uint32_t compo
 
 } // namespace
 
-// The page-table lookup of get_bda_pointer emitted at the call site.
-static uint32_t EmitBdaPointerInline(EmitterState& state, uint32_t address) {
-	const auto type     = TypeU64(state);
-	const auto extended = Binary(state, spv::OpUGreaterThanEqual, TypeBool(state), address,
-	                             ConstantU64(state, LibKernel::Memory::kExtendedMemoryBase));
-	const auto packed   = Select(
-	    state, type, extended,
-	    Binary(state, spv::OpISub, type, address,
-	           ConstantU64(state, LibKernel::Memory::kExtendedMemoryBase - LOWER_ADDRESS_SIZE)),
-	    address);
-	const auto page          = Unary(state, spv::OpUConvert, TypeU32(state),
-	                                 Binary(state, spv::OpShiftRightLogical, type, packed,
-	                                        ConstantU32(state, BufferCache::CACHING_PAGEBITS)));
-	const auto entry_pointer = state.builder.AllocateId();
-	state.builder.AddFunction(spv::OpAccessChain, TypeStorageBufferElementPointer(state, 64),
-	                          entry_pointer, state.bda_pagetable_variable, ConstantU32(state, 0),
-	                          page);
-	const auto base = state.builder.AllocateId();
-	state.builder.AddFunction(spv::OpLoad, type, base, entry_pointer);
-	const auto missing = Binary(state, spv::OpIEqual, TypeBool(state), base, ConstantU64(state, 0));
-	EmitIfCondition(state, missing, [&]() { RecordBdaFault(state, page); });
-	const auto offset = Binary(state, spv::OpBitwiseAnd, type, address,
-	                           ConstantU64(state, BufferCache::CACHING_PAGESIZE - 1));
-	return Select(state, type, missing, ConstantU64(state, 0),
-	              Binary(state, spv::OpIAdd, type, base, offset));
-}
-
 uint32_t GetBdaPointer(EmitterState& state, uint32_t address) {
-	// `setprop debug.capy.bda_inline 1` (read when shaders compile): emit the lookup at each
-	// access instead of calling get_bda_pointer (testing how drivers handle many calls).
-	static Common::DebugFlags::CachedValue bda_inline("debug.capy.bda_inline", 0);
-	if (bda_inline.Get() != 0) {
-		return EmitBdaPointerInline(state, address);
-	}
 	const auto result = state.builder.AllocateId();
 	state.builder.AddFunction(spv::OpFunctionCall, TypeU64(state), result,
 	                          state.bda_pointer_function, address);
 	return result;
 }
 
+// Lookups of unbacked pages used to report each fault with a load, an or and a store into the
+// fault buffer at every access; hundreds of those made the stock Adreno compiler fail big PS4
+// material shaders ("Failed to link shaders"). Now a lookup only records the page in a private
+// variable and the invocation reports it once when it returns: one page per invocation and
+// frame, and the scans run every frame. `setprop debug.capy.bda_fault_deferred 0` (read when
+// shaders compile) reports at every access again.
+static bool DeferredBdaFaults() {
+	static Common::DebugFlags::CachedValue deferred("debug.capy.bda_fault_deferred", 1);
+	return deferred.Get() != 0;
+}
+
+void InitializeBdaFault(EmitterState& state) {
+	if (state.bda_fault_variable != 0) {
+		state.builder.AddFunction(spv::OpStore, state.bda_fault_variable, ConstantU32(state, ~0u));
+	}
+}
+
+void FlushBdaFault(EmitterState& state) {
+	if (state.bda_fault_variable == 0) {
+		return;
+	}
+	const auto page = state.builder.AllocateId();
+	state.builder.AddFunction(spv::OpLoad, TypeU32(state), page, state.bda_fault_variable);
+	EmitIfCondition(state,
+	                Binary(state, spv::OpINotEqual, TypeBool(state), page, ConstantU32(state, ~0u)),
+	                [&]() { RecordBdaFault(state, page); });
+}
+
 void DefineGetBdaPointer(EmitterState& state) {
 	if (!state.program.info.uses_dma) {
 		return;
+	}
+	if (DeferredBdaFaults()) {
+		state.bda_fault_variable = state.builder.DefineGlobalVariable(
+		    TypePointer(state, spv::StorageClassPrivate, TypeU32(state)), spv::StorageClassPrivate);
+		// SPIR-V 1.4 modules (mesh) list every global the entry point uses.
+		if (state.program.stage == ShaderType::Mesh) {
+			state.interface_variables.push_back(state.bda_fault_variable);
+		}
 	}
 	const auto type            = TypeU64(state);
 	const auto function_type   = state.builder.Type(spv::OpTypeFunction, type, type);
@@ -1282,7 +1292,11 @@ void DefineGetBdaPointer(EmitterState& state) {
 	state.builder.AddFunction(spv::OpBranchConditional, missing, fault_label, available_label);
 
 	EmitLabel(state, fault_label);
-	RecordBdaFault(state, page);
+	if (state.bda_fault_variable != 0) {
+		state.builder.AddFunction(spv::OpStore, state.bda_fault_variable, page);
+	} else {
+		RecordBdaFault(state, page);
+	}
 	state.builder.AddFunction(spv::OpBranch, merge_label);
 
 	EmitLabel(state, available_label);
