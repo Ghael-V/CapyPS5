@@ -536,7 +536,8 @@ void RenderExecutor::DispatchDirect(uint64_t submit_id, CommandBuffer& buffer,
 		Common::DebugFlags::FrameTrace("    -> downscaled grid %ux%u", thread_group_x, thread_group_y);
 	}
 	auto& pipeline = m_context.GetPipelineCache().GetComputePipeline(
-	    input_info, compute_program, scaled_mask);
+	    input_info, compute_program, scaled_mask & ShaderRecompiler::IR::ShadowScaleBit);
+	m_scaled_push = {scaled_mask, 0u};
 	if (pipeline.pipeline == nullptr) {
 		// The driver rejected this shader (logged once by the pipeline cache): skip the dispatch.
 		ResetBindings();
@@ -700,8 +701,10 @@ void RenderExecutor::DispatchIndirect(uint64_t submit_id, CommandBuffer& buffer,
 	}
 	BindSharedMemory(m_context, input_info, bindings, args_addr);
 	RebindImages(bindings);
-	auto& pipeline = m_context.GetPipelineCache().GetComputePipeline(
-	    input_info, compute_program, ScaledImageMask(bindings));
+	const auto indirect_scaled_mask = ScaledImageMask(bindings);
+	auto&      pipeline             = m_context.GetPipelineCache().GetComputePipeline(
+	    input_info, compute_program, indirect_scaled_mask & ShaderRecompiler::IR::ShadowScaleBit);
+	m_scaled_push = {indirect_scaled_mask, 0u};
 	if (pipeline.pipeline == nullptr) {
 		// The driver rejected this shader (logged once by the pipeline cache): skip the dispatch.
 		ResetBindings();

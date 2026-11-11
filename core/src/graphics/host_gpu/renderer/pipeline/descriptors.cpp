@@ -1377,10 +1377,21 @@ void RenderExecutor::CommitBindings(CommandBuffer&                     buffer,
 		}
 	}
 
+	push_data.dwords[ShaderRecompiler::IR::PushData::ScaledMaskDword]      = m_scaled_push[0];
+	push_data.dwords[ShaderRecompiler::IR::PushData::PixelScaledMaskDword] = m_scaled_push[1];
+	if (pipeline_bind_point == vk::PipelineBindPoint::eCompute) {
+		push_stages = vk::ShaderStageFlagBits::eCompute;
+	}
 	if (has_push_data) {
 		vk_buffer.pushConstants(pipeline.pipeline_layout, push_stages, 0, sizeof(push_data),
 		                        push_data.dwords.data());
+	} else if (push_stages) {
+		vk_buffer.pushConstants(
+		    pipeline.pipeline_layout, push_stages,
+		    ShaderRecompiler::IR::PushData::ScaledMaskDword * sizeof(uint32_t), 2u * sizeof(uint32_t),
+		    push_data.dwords.data() + ShaderRecompiler::IR::PushData::ScaledMaskDword);
 	}
+	m_scaled_push = {};
 
 	if (!m_descriptor_writes.empty()) {
 		EXIT_IF(pipeline.descriptor_set_layout == nullptr);

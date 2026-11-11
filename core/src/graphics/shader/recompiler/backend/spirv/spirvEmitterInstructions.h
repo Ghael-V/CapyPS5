@@ -19,8 +19,8 @@ inline constexpr auto EmitConvertU32U16 = EmitBitCastU16F16;
 inline constexpr auto EmitConvertU32U8  = EmitBitCastU16F16;
 inline constexpr auto EmitBitCastU32F32 = EmitBitCastU16F16;
 EMIT_NATIVE(BitCastF32U32, OpBitcast, F32, uint32_t)
-EMIT_NATIVE(BitCastU64F64, OpBitcast, U64, uint32_t)
-EMIT_NATIVE(BitCastF64U64, OpBitcast, F64, uint32_t)
+uint32_t              EmitBitCastU64F64(EmitterState& state, uint32_t arg0);
+uint32_t              EmitBitCastF64U64(EmitterState& state, uint32_t arg0);
 uint32_t              EmitConvertU16U32(EmitterState& state, uint32_t arg0);
 uint32_t              EmitConvertU8U32(EmitterState& state, uint32_t arg0);
 uint32_t              EmitConvertF16F32(EmitterState& state, uint32_t arg0);

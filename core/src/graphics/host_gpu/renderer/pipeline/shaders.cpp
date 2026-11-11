@@ -694,6 +694,16 @@ void CreatePipelineInternal(GraphicContext& graphics, PipelineCache::Pipeline& p
 		LOGF("PipelineTrace: vkCreateGraphicsPipelines done result=%s pipeline=%p\n",
 		     vk::to_string(result).c_str(), static_cast<void*>(pipeline.pipeline));
 	}
+#if defined(__ANDROID__)
+	if (result != vk::Result::eSuccess || pipeline.pipeline == nullptr) {
+		// Which shaders the driver rejected (dump them with debug.capy.dump_spirv to see why).
+		__android_log_print(ANDROID_LOG_ERROR, "CapyPS5-Compile",
+		                    "graphics pipeline rejected by the driver (%s): vs=0x%016llx ps=0x%016llx",
+		                    vk::to_string(result).c_str(),
+		                    static_cast<unsigned long long>(vs_input_info.stage.program->shader_hash),
+		                    static_cast<unsigned long long>(ps_active ? ps_input_info->stage.program->shader_hash : 0));
+	}
+#endif
 	EXIT_NOT_IMPLEMENTED(result != vk::Result::eSuccess);
 
 	EXIT_NOT_IMPLEMENTED(pipeline.pipeline == nullptr);

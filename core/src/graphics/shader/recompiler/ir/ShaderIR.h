@@ -334,11 +334,16 @@ struct PushData {
 	static constexpr uint32_t MeshDrawDwordCount = 10;
 	// User clip planes 0..N follow the mesh draw parameters, four dwords each.
 	static constexpr uint32_t UserClipPlaneDword = MeshDrawDwordCount;
+	// The last two dwords carry the scaled-image masks at run time (see ScaledImageMaskSpecId):
+	// vertex, mesh and compute stages read the first, pixel shaders the second.
+	static constexpr uint32_t ScaledMaskDword      = DwordCount - 2u;
+	static constexpr uint32_t PixelScaledMaskDword = DwordCount - 1u;
+	static constexpr uint32_t AllocatableDwords    = ScaledMaskDword;
 	static constexpr uint32_t NoStart    = UINT32_MAX;
 	std::array<uint32_t, DwordCount> dwords {};
 
 	[[nodiscard]] static constexpr bool CanFit(uint32_t start, uint32_t size) {
-		return size != 0 && start <= DwordCount && size <= DwordCount - start;
+		return size != 0 && start <= AllocatableDwords && size <= AllocatableDwords - start;
 	}
 	[[nodiscard]] static constexpr uint32_t StartFor(uint32_t cursor, uint32_t size) {
 		return CanFit(cursor, size) ? cursor : NoStart;

@@ -186,12 +186,25 @@ uint32_t ResolutionScale(EmitterState& state) {
 }
 
 uint32_t ScaledImageMask(EmitterState& state) {
-	if (state.scaled_image_mask == 0) {
-		state.scaled_image_mask = state.builder.Constant(spv::OpSpecConstant, TypeU32(state), 0u);
-		state.builder.AddAnnotation(spv::OpDecorate, state.scaled_image_mask, spv::DecorationSpecId,
-		                            IR::ScaledImageMaskSpecId);
+	// Read at run time from the push constants: as a specialization constant every combination
+	// of scaled images was another pipeline, compiled while the game waited (God of War at a
+	// reduced resolution compiled compute pipelines continuously).
+	if (state.push_constant_variable == 0) {
+		if (state.scaled_image_mask == 0) {
+			state.scaled_image_mask = state.builder.Constant(spv::OpSpecConstant, TypeU32(state), 0u);
+			state.builder.AddAnnotation(spv::OpDecorate, state.scaled_image_mask, spv::DecorationSpecId,
+			                            IR::ScaledImageMaskSpecId);
+		}
+		return state.scaled_image_mask;
 	}
-	return state.scaled_image_mask;
+	const auto dword   = state.program.stage == ShaderType::Pixel ? IR::PushData::PixelScaledMaskDword
+	                                                              : IR::PushData::ScaledMaskDword;
+	const auto pointer = state.builder.AllocateId();
+	const auto value   = state.builder.AllocateId();
+	state.builder.AddFunction(spv::OpAccessChain, TypePushConstantElementPointer(state), pointer,
+	                          state.push_constant_variable, ConstantU32(state, 0), ConstantU32(state, dword));
+	state.builder.AddFunction(spv::OpLoad, TypeU32(state), value, pointer);
+	return value;
 }
 
 bool MeshEmulated(const EmitterState& state) {

@@ -551,6 +551,9 @@ struct DrawRenderState {
 	std::array<ShaderVertexInputInfo, 3> vertex_info;
 	ShaderPixelInputInfo  ps_input_info;
 	PipelineCache::GraphicsPrograms programs;
+	// Scaled-image masks of the vertex and pixel stages, pushed with the draw's bindings.
+	uint32_t              vs_scaled_mask = 0;
+	uint32_t              ps_scaled_mask = 0;
 };
 
 struct DrawCallInfo {
@@ -1721,9 +1724,18 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 	auto* pipeline_ptr = m_context.GetPipelineCache().GetGraphicsPipeline(
 	    std::span {state.color_info, state.color_count}, state.depth_info, vertex_stages, buffer,
 	    state.ps_active ? &state.ps_input_info : nullptr, topology, primitive_restart_enable,
-	    state.programs, vs_scaled_images, ps_scaled_images, allow_async);
+	    state.programs, vs_scaled_images & ShaderRecompiler::IR::ShadowScaleBit,
+	    ps_scaled_images & ShaderRecompiler::IR::ShadowScaleBit, allow_async);
+	state.vs_scaled_mask = vs_scaled_images;
+	state.ps_scaled_mask = ps_scaled_images;
 	if (pipeline_ptr == nullptr) {
 		Common::DebugFlags::FrameTrace("    -> skipped: pipeline compiling in the background");
+		return;
+	}
+	if (pipeline_ptr->pipeline == nullptr) {
+		// The driver rejected the pipeline (the stock Adreno driver: "Failed to link shaders"):
+		// skip the draw instead of binding a null pipeline.
+		Common::DebugFlags::FrameTrace("    -> skipped: pipeline rejected by the driver");
 		return;
 	}
 	auto& pipeline = *pipeline_ptr;
@@ -1801,7 +1813,12 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 		mesh_output               = &MeshOutputBuffer(mesh_index_offset + index_bytes);
 		mesh_index_count          = static_cast<uint32_t>(groups * mesh.max_primitives * 3u);
 		auto& compute_pipeline    = m_context.GetPipelineCache().GetMeshComputePipeline(
-		    state.vertex_info[0], state.programs.vertex[0], ScaledImageMask(bindings.vertex[0]));
+		    state.vertex_info[0], state.programs.vertex[0],
+		    ScaledImageMask(bindings.vertex[0]) & ShaderRecompiler::IR::ShadowScaleBit);
+		m_scaled_push = {ScaledImageMask(bindings.vertex[0]), 0u};
+		if (compute_pipeline.pipeline == nullptr) {
+			return; // rejected by the driver
+		}
 		m_context.GetCommandScheduler().EndRendering();
 		vk::MemoryBarrier full {};
 		full.srcAccessMask = vk::AccessFlagBits::eMemoryRead | vk::AccessFlagBits::eMemoryWrite;
@@ -1846,8 +1863,10 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 		vk_buffer.bindVertexBuffers(0, 1, &output_handle, &zero);
 		vk_buffer.bindIndexBuffer(mesh_output->Handle(), mesh_index_offset, vk::IndexType::eUint32);
 		// The graphics pipeline has only the pixel shader's bindings.
+		m_scaled_push = {state.vs_scaled_mask, state.ps_scaled_mask};
 		CommitBindings(buffer, vk::PipelineBindPoint::eGraphics, pipeline, stages.subspan(1));
 	} else {
+		m_scaled_push = {state.vs_scaled_mask, state.ps_scaled_mask};
 		CommitBindings(buffer, vk::PipelineBindPoint::eGraphics, pipeline, stages);
 	}
 	if (mesh_active && !mesh_emulated) {

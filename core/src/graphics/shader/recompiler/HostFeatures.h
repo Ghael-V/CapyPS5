@@ -30,6 +30,10 @@ struct HostFeatures {
 	uint32_t device_clock_period_ps = 0;
 	// shaderResourceMinLod: image_sample _cl variants clamp their LOD with MinLod.
 	bool min_lod = false;
+	// shaderFloat64. Without it (the stock Adreno driver) F64 values live in shaders as F32 and
+	// are converted to and from their 64-bit IEEE patterns where they meet registers: less
+	// precision, but the pipelines link (they were rejected with "Failed to link shaders").
+	bool float64 = true;
 };
 
 inline HostFeatures g_host_features;
