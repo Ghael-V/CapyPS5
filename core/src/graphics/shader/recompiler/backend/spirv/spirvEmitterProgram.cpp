@@ -102,6 +102,7 @@ void StoreDispatcherPhiEdge(ValueEmitContext& ctx, const DispatcherFunctionState
 }
 
 void EmitReturn(ValueEmitContext& ctx) {
+	FlushBdaFault(ctx.state);
 	EmitKillIfPixelValidMaskInactive(ctx.state);
 	ctx.state.builder.AddFunction(spv::OpReturn);
 }
@@ -861,6 +862,7 @@ void EmitProgram(EmitterState& state) {
 			                          lane.scratch_u32_variable, spv::StorageClassFunction);
 		}
 	}
+	InitializeBdaFault(state);
 	if (state.gds_variable != 0) {
 		state.gds_length = state.builder.AllocateId();
 		state.builder.AddFunction(spv::OpArrayLength, TypeU32(state), state.gds_length,

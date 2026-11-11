@@ -116,6 +116,8 @@ struct EmitterState {
 	uint32_t                                         bda_pagetable_variable  = 0;
 	uint32_t                                         fault_buffer_variable   = 0;
 	uint32_t                                         bda_pointer_function    = 0;
+	// Private u32: the last unbacked page a BDA lookup met (~0: none), reported once at return.
+	uint32_t                                         bda_fault_variable      = 0;
 	uint32_t                                         resolution_scale        = 0;
 	uint32_t                                         scaled_image_mask       = 0;
 	uint32_t                                         bvh_intersect_function  = 0;
@@ -538,6 +540,8 @@ uint32_t EmitF16BitsToF32(EmitterState& state, uint32_t bits);
 void EmitProgram(EmitterState& state);
 
 void DefineGetBdaPointer(EmitterState& state);
+void InitializeBdaFault(EmitterState& state);
+void FlushBdaFault(EmitterState& state);
 void DefineBvhIntersect(EmitterState& state);
 uint32_t GetBdaPointer(EmitterState& state, uint32_t address);
 
