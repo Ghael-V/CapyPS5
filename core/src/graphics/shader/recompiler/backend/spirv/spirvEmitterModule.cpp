@@ -878,12 +878,8 @@ void DefineModule(EmitterState& state) {
 		                               local_y, local_z);
 	}
 	// Pixel shaders that can kill export their own depth (gl_FragCoord.z) where the host's
-	// low-resolution Z mishandles them (HostFeatures::kill_exports_depth).
-	// `debug.capy.kill_depth_export 0/1` (before shaders compile) overrides the driver default.
-	static Common::DebugFlags::CachedValue kill_depth_export("debug.capy.kill_depth_export", -1);
-	const bool export_kill_depth = kill_depth_export.Get() < 0 ? g_host_features.kill_exports_depth
-	                                                           : kill_depth_export.Get() != 0;
-	if (state.program.stage == ShaderType::Pixel && export_kill_depth &&
+	// low-resolution Z mishandles them (driver quirk kill_exports_depth, driverQuirks.cpp).
+	if (state.program.stage == ShaderType::Pixel && g_host_features.kill_exports_depth &&
 	    state.input_info.pixel != nullptr && state.input_info.pixel->ps_pixel_kill_enable &&
 	    state.depth_variable == 0) {
 		state.depth_variable = DefineInterfaceVariable(state, TypeF32(state), spv::StorageClassOutput,
