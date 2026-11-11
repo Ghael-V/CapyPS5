@@ -96,8 +96,16 @@ std::string DriverCacheSignature(const vk::PhysicalDeviceProperties& properties)
 		uuid[i * 2]     = hex[properties.pipelineCacheUUID[i] >> 4u];
 		uuid[i * 2 + 1] = hex[properties.pipelineCacheUUID[i] & 0xfu];
 	}
-	return fmt::format("KytyPC1:{}:{:08x}:{:08x}:{:08x}:{}\n", KYTY_GIT_REVISION,
-	                   properties.vendorID, properties.deviceID, properties.driverVersion, uuid);
+#if defined(__ANDROID__)
+	// No emulator revision on Android: the driver keys entries by shader contents and pipeline
+	// state, so a new build reuses every pipeline whose SPIR-V did not change (the stock Adreno
+	// compiler takes minutes for a big game, and the cache used to be dropped on every update).
+	constexpr std::string_view revision = "android";
+#else
+	constexpr std::string_view revision = KYTY_GIT_REVISION;
+#endif
+	return fmt::format("KytyPC1:{}:{:08x}:{:08x}:{:08x}:{}\n", revision, properties.vendorID,
+	                   properties.deviceID, properties.driverVersion, uuid);
 }
 
 std::string PipelineCacheTitleId() {
@@ -675,7 +683,10 @@ void PipelineCache::InitializeDriverCache() {
 		Common::File file(m_driver_cache_path, Common::File::Mode::Read);
 		const auto   file_size = file.IsInvalid() ? 0 : file.Size();
 		const auto   signature = DriverCacheSignature(m_graphics.GetPhysicalDeviceProperties());
-		if (file_size >= signature.size() + sizeof(uint64_t) &&
+		// Entries of shaders an older build emitted are never dropped by the driver: past this
+		// size the cache starts over.
+		constexpr uint64_t max_cache_size = uint64_t {512} << 20;
+		if (file_size >= signature.size() + sizeof(uint64_t) && file_size <= max_cache_size &&
 		    file_size <= std::numeric_limits<uint32_t>::max()) {
 			std::string cached_signature(signature.size(), '\0');
 			uint64_t    payload_hash = 0;
