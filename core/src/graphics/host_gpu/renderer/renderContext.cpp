@@ -211,6 +211,13 @@ void RenderContext::PrepareBda() {
 	}
 	m_bda_sync_requested = false;
 	auto modified = m_buffer_cache.TakeCpuModifiedRanges();
+	// All buffers' uploads go behind one barrier pair. `setprop debug.capy.bda_batch 0` restores
+	// a barrier pair per buffer.
+	static Common::DebugFlags::CachedValue batch("debug.capy.bda_batch", 1);
+	const bool                             batched = batch.Get() != 0;
+	if (batched) {
+		m_buffer_cache.BeginUploadBatch();
+	}
 	if (full_sync.Get() != 0 || !m_bda_synced_once) {
 		m_bda_synced_once = true;
 		std::shared_lock lock(m_mapped_ranges_mutex);
@@ -221,6 +228,9 @@ void RenderContext::PrepareBda() {
 		modified.ForEach([this](uint64_t start, uint64_t end) {
 			m_buffer_cache.SynchronizeBuffersInRange(start, end - start);
 		});
+	}
+	if (batched) {
+		m_buffer_cache.EndUploadBatch();
 	}
 	m_fault_process_pending = true;
 }
