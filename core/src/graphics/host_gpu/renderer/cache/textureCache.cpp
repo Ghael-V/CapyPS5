@@ -2102,6 +2102,16 @@ bool BufferCache::SynchronizeBufferFromImage(Buffer& buffer, uint64_t vaddr, uin
 	     copy_size != image.info.data.size)) {
 		return false;
 	}
+	Common::DebugFlags::NoteOnce("CapyPS5-BufImg", image.info.data.address ^ 7u,
+	                             "buffer read 0x%llx+%llu downloads image 0x%llx %ux%u fmt=%u tile=%u "
+	                             "gfx7size=%llu scaled=%d",
+	                             static_cast<unsigned long long>(vaddr), static_cast<unsigned long long>(size),
+	                             static_cast<unsigned long long>(image.info.data.address),
+	                             image.info.extent.width, image.info.extent.height,
+	                             static_cast<uint32_t>(image.info.guest_format),
+	                             static_cast<uint32_t>(image.info.tile_mode),
+	                             static_cast<unsigned long long>(image.info.gfx7_guest_size),
+	                             image.IsScaled() ? 1 : 0);
 	m_texture_cache.DownloadImage(image, buffer, buf_offset, copy_size, levels);
 	return true;
 }
