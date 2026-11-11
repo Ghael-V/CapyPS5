@@ -4,6 +4,7 @@
 
 #include "graphics/shader/recompiler/backend/spirv/spirvEmitterInstructions.h"
 
+#include "common/debugFlags.h"
 #include "common/logging/log.h"
 #include "graphics/shader/recompiler/HostFeatures.h"
 
@@ -668,6 +669,25 @@ void EmitSetAttribute(ValueEmitContext& ctx, const IR::Inst& inst) {
 		const auto vector_type = MrtOutputMode(state, exp) != 0u ? MrtOutputType(state, exp.index)
 		                                                         : TypeF32Vector(state, 4);
 		auto       value       = ExportVector(ctx, data, exp, vector_type);
+		// `debug.capy.export_nan_zero 1` (before shaders compile): pixel color exports write 0 for
+		// NaN and infinite components (tells NaNs trapped in temporal buffers apart).
+		static Common::DebugFlags::CachedValue export_nan_zero("debug.capy.export_nan_zero", 0);
+		if (export_nan_zero.Get() != 0 && state.program.stage == ShaderType::Pixel &&
+		    exp.kind == IR::ExportTargetKind::Mrt && vector_type == TypeF32Vector(state, 4)) {
+			const auto bool4 = TypeBoolVector(state, 4);
+			const auto nan   = state.builder.AllocateId();
+			const auto inf   = state.builder.AllocateId();
+			const auto bad   = state.builder.AllocateId();
+			const auto zero  = state.builder.AllocateId();
+			const auto clean = state.builder.AllocateId();
+			const auto z     = ConstantF32Value(state, 0.0f);
+			state.builder.AddFunction(spv::OpIsNan, bool4, nan, value);
+			state.builder.AddFunction(spv::OpIsInf, bool4, inf, value);
+			state.builder.AddFunction(spv::OpLogicalOr, bool4, bad, nan, inf);
+			state.builder.AddFunction(spv::OpCompositeConstruct, vector_type, zero, z, z, z, z);
+			state.builder.AddFunction(spv::OpSelect, vector_type, clean, bad, zero, value);
+			value = clean;
+		}
 		if (state.program.stage == ShaderType::Pixel && exp.kind == IR::ExportTargetKind::Mrt &&
 		    exp.index == 0 && vector_type == TypeF32Vector(state, 4) &&
 		    state.input_info.pixel->alpha_blend_source != ShaderAlphaBlendSource::None) {
