@@ -5,6 +5,8 @@
 #include "graphics/shader/recompiler/backend/spirv/SpirvEmitter.h"
 
 #include "common/assert.h"
+#include "common/debugFlags.h"
+#include "graphics/shader/recompiler/HostFeatures.h"
 #include "graphics/shader/recompiler/backend/spirv/spirvEmitterInternal.h"
 #include "graphics/shader/recompiler/ir/ShaderIR.h"
 
@@ -230,6 +232,21 @@ std::vector<uint32_t> EmitProgram(IR::Program& program, ShaderStageInputInfo inp
 	    workgroup != nullptr && program.wave_size == 64u && workgroup->host_subgroup_size == 32u
 	        ? 2u
 	        : 1u;
+	if (state.lane_count == 1 && !MeshEmulated(state)) {
+		uint32_t stage_bit = 0x1u; // VK_SHADER_STAGE_VERTEX_BIT
+		switch (program.stage) {
+			case ShaderType::Compute: stage_bit = 0x20u; break;
+			case ShaderType::Pixel: stage_bit = 0x10u; break;
+			case ShaderType::TessellationControl: stage_bit = 0x2u; break;
+			case ShaderType::TessellationEvaluation: stage_bit = 0x4u; break;
+			case ShaderType::Mesh: stage_bit = 0x80u; break;
+			default: break;
+		}
+		// `debug.capy.single_lane_ps 1`: one-lane waves in pixel shaders too (diagnosis).
+		static Common::DebugFlags::CachedValue single_lane_ps("debug.capy.single_lane_ps", 0);
+		state.single_lane = (ShaderRecompiler::g_host_features.subgroup_stages & stage_bit) == 0u ||
+		                    (program.stage == ShaderType::Pixel && single_lane_ps.Get() != 0);
+	}
 	DefineModule(state);
 	ValidateNativeProgram(program, program.stage == ShaderType::Compute &&
 	                                   input_info.compute != nullptr && input_info.compute->lds_storage);
