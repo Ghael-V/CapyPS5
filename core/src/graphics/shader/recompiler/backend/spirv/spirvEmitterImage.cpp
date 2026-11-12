@@ -843,7 +843,28 @@ void EmitImage(ValueEmitContext& ctx, const IR::Inst& inst) {
 			        ? LodU32(ctx, mem, *address, dimension)
 			        : 0u;
 			const auto coord = CoordU32(ctx, mem, *address, dimension);
-			const auto texel = StoreTexel(ctx, mem, ctx.Arg(inst, 2), uint_image);
+			auto texel = StoreTexel(ctx, mem, ctx.Arg(inst, 2), uint_image);
+			// `debug.capy.store_nan_zero 1` (before shaders compile): float image stores write 0
+			// for NaN and infinite components, to find the shader that starts a NaN spreading
+			// through blur and mip chains (debug.capy.export_nan_zero does pixel exports).
+			static Common::DebugFlags::CachedValue store_nan_zero("debug.capy.store_nan_zero", 0);
+			if (store_nan_zero.Get() != 0 &&
+			    image.numeric_class == Prospero::TextureNumericClass::Float) {
+				const auto vector_type = ImageVectorType(state, image.numeric_class, 4);
+				const auto bool4       = TypeBoolVector(state, 4);
+				const auto nan         = state.builder.AllocateId();
+				const auto inf         = state.builder.AllocateId();
+				const auto bad         = state.builder.AllocateId();
+				const auto zero        = state.builder.AllocateId();
+				const auto clean       = state.builder.AllocateId();
+				const auto z           = ConstantF32Value(state, 0.0f);
+				state.builder.AddFunction(spv::OpIsNan, bool4, nan, texel);
+				state.builder.AddFunction(spv::OpIsInf, bool4, inf, texel);
+				state.builder.AddFunction(spv::OpLogicalOr, bool4, bad, nan, inf);
+				state.builder.AddFunction(spv::OpCompositeConstruct, vector_type, zero, z, z, z, z);
+				state.builder.AddFunction(spv::OpSelect, vector_type, clean, bad, zero, texel);
+				texel = clean;
+			}
 			EmitStorageImageWrite(state, mem.resource, mip_lod, coord, texel);
 		});
 		return;
