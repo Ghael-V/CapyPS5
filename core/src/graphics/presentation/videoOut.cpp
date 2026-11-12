@@ -548,20 +548,23 @@ static int FrameLimitInterval() {
 	return interval;
 }
 
-// `debug.capy.fps_log N` (read once): every N seconds log the game's frame rate and the worst
-// frame time of that window (tag CapyPS5-Fps), for measurements without the overlay.
+// `debug.capy.fps_log N`: every N seconds log the game's frame rate and the worst frame time of
+// that window (tag CapyPS5-Fps), for measurements without the overlay. Can be switched on and off
+// while the game runs.
 static void LogFrameRate() {
-	static const int64_t period_ns = [] {
-		Common::DebugFlags::CachedValue period("debug.capy.fps_log", 0);
-		return static_cast<int64_t>(std::max<int64_t>(period.Get(), 0)) * 1000000000;
-	}();
-	if (period_ns == 0) {
-		return;
-	}
+	static Common::DebugFlags::CachedValue period("debug.capy.fps_log", 0);
 	static int64_t  window_start = 0;
 	static int64_t  last_frame   = 0;
 	static int64_t  worst        = 0;
 	static uint64_t frames       = 0;
+	const int64_t   period_ns    = std::max<int64_t>(period.Get(), 0) * 1000000000;
+	if (period_ns == 0) {
+		window_start = 0;
+		last_frame   = 0;
+		worst        = 0;
+		frames       = 0;
+		return;
+	}
 	const int64_t   now          = std::chrono::duration_cast<std::chrono::nanoseconds>(
                                   std::chrono::steady_clock::now().time_since_epoch())
                                   .count();
