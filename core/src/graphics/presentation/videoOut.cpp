@@ -548,6 +548,46 @@ static int FrameLimitInterval() {
 	return interval;
 }
 
+// `debug.capy.fps_log N` (read once): every N seconds log the game's frame rate and the worst
+// frame time of that window (tag CapyPS5-Fps), for measurements without the overlay.
+static void LogFrameRate() {
+	static const int64_t period_ns = [] {
+		Common::DebugFlags::CachedValue period("debug.capy.fps_log", 0);
+		return static_cast<int64_t>(std::max<int64_t>(period.Get(), 0)) * 1000000000;
+	}();
+	if (period_ns == 0) {
+		return;
+	}
+	static int64_t  window_start = 0;
+	static int64_t  last_frame   = 0;
+	static int64_t  worst        = 0;
+	static uint64_t frames       = 0;
+	const int64_t   now          = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                  std::chrono::steady_clock::now().time_since_epoch())
+                                  .count();
+	if (last_frame != 0) {
+		worst = std::max(worst, now - last_frame);
+	}
+	last_frame = now;
+	if (window_start == 0) {
+		window_start = now;
+		return;
+	}
+	frames++;
+	if (now - window_start >= period_ns) {
+		const double seconds = static_cast<double>(now - window_start) / 1e9;
+#if defined(__ANDROID__)
+		__android_log_print(ANDROID_LOG_INFO, "CapyPS5-Fps", "fps %.2f worst %.1f ms frames %llu",
+		                    static_cast<double>(frames) / seconds, static_cast<double>(worst) / 1e6,
+		                    static_cast<unsigned long long>(frames));
+#endif
+		LOGF("fps %.2f worst %.1f ms\n", static_cast<double>(frames) / seconds, static_cast<double>(worst) / 1e6);
+		window_start = now;
+		worst        = 0;
+		frames       = 0;
+	}
+}
+
 static bool IsFlipDueLocked(const VideoOutConfig& cfg, uint64_t generation) {
 	if (!cfg.opened || cfg.closing || cfg.generation != generation) {
 		return false;
@@ -1408,6 +1448,7 @@ bool FlipQueue::Flip(uint32_t micros) {
 	}
 	if (due) {
 		Common::Telemetry::RecordGameFrame();
+		LogFrameRate();
 		Common::PassInspector::OnFlip();
 		Graphics::RenderDocOnGuestFlip(m_presenter.Renderer());
 		if (Config::GraphicsDebugDumpEnabled() &&
