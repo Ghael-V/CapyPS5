@@ -59,3 +59,5 @@ AGENTS.md
 GEMINI.md
 .cursorrules
 .clinerules
+# RenderDoc capture layer for debug builds (tools/setup: from RenderDoc's Android APK)
+android/app/src/debug/jniLibs/

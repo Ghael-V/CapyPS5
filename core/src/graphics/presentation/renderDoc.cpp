@@ -13,6 +13,12 @@
 #include <chrono>
 #include <filesystem>
 #include <renderdoc_app.h>
+#if defined(__ANDROID__)
+#include "android/capyps5_jni.h"
+#include "common/debugFlags.h"
+#include <android/log.h>
+#include <sys/stat.h>
+#endif
 #include <string>
 
 #if KYTY_PLATFORM == KYTY_PLATFORM_WINDOWS
@@ -107,6 +113,16 @@ void RenderDocInit() {
 		return;
 	}
 
+#if defined(__ANDROID__)
+	// On Android RenderDoc is the Vulkan layer itself, loaded by the loader when
+	// `setprop debug.vulkan.layers VK_LAYER_RENDERDOC_Capture` is set for a debuggable app.
+	auto* module = ::dlopen("libVkLayer_GLES_RenderDoc.so", RTLD_NOW | RTLD_NOLOAD);
+	if (module == nullptr) {
+		__android_log_print(ANDROID_LOG_WARN, "CapyPS5-RenderDoc",
+		                    "the RenderDoc layer is not loaded (debug.vulkan.layers)");
+		return;
+	}
+#else
 	auto* module = ::dlopen("librenderdoc.so", RTLD_NOW | RTLD_NOLOAD);
 	if (module == nullptr) {
 		module = ::dlopen("librenderdoc.so", RTLD_NOW);
@@ -114,6 +130,7 @@ void RenderDocInit() {
 	if (module == nullptr) {
 		return;
 	}
+#endif
 
 	if (!BindRenderDocApi(module)) {
 		LOGF("RenderDoc: API 1.6.0 is unavailable\n");
@@ -147,7 +164,13 @@ static void StartCapture() {
 	const auto capture_id   = std::chrono::duration_cast<std::chrono::microseconds>(
 	                              std::chrono::system_clock::now().time_since_epoch())
 	                              .count();
+#if defined(__ANDROID__)
+	const auto capture_dir = AndroidGetFilesDir() + "/rdoc";
+	::mkdir(capture_dir.c_str(), 0700);
+	const auto capture_path = capture_dir + "/capy_" + std::to_string(capture_id);
+#else
 	const auto capture_path = "_RenderDoc/kyty_" + std::to_string(capture_id);
+#endif
 	g_api->SetCaptureFilePathTemplate(capture_path.c_str());
 	g_api->StartFrameCapture(nullptr, nullptr);
 	if (g_api->IsFrameCapturing() == 0) {
@@ -161,6 +184,22 @@ static void StartCapture() {
 }
 
 void RenderDocOnGuestFlip(RenderContext& renderer) {
+#if defined(__ANDROID__)
+	// `setprop debug.capy.renderdoc_capture N`: every new nonzero N captures the next two guest
+	// frames to <files>/rdoc (needs the RenderDoc layer, see RenderDocInit).
+	static Common::DebugFlags::CachedValue capture_request("debug.capy.renderdoc_capture", 0);
+	static int64_t                         last_request = 0;
+	if (const auto request = capture_request.Get(); request != last_request) {
+		last_request = request;
+		if (request != 0) {
+			RenderDocInit();
+			RenderDocRequestCapture();
+			__android_log_print(ANDROID_LOG_INFO, "CapyPS5-RenderDoc", "capture request %lld: %s",
+			                    static_cast<long long>(request),
+			                    g_api != nullptr ? "requested" : "RenderDoc unavailable");
+		}
+	}
+#endif
 	const auto state = g_state.load(std::memory_order_acquire);
 	if (g_api == nullptr || state == RenderDocState::Idle) {
 		return;
@@ -181,6 +220,10 @@ void RenderDocOnGuestFlip(RenderContext& renderer) {
 		const auto ok = g_api->EndFrameCapture(nullptr, nullptr);
 		g_state.store(RenderDocState::Idle, std::memory_order_release);
 		LOGF(ok != 0 ? "RenderDoc: capture finished\n" : "RenderDoc: capture failed\n");
+#if defined(__ANDROID__)
+		__android_log_print(ANDROID_LOG_INFO, "CapyPS5-RenderDoc", "capture %s",
+		                    ok != 0 ? "finished" : "failed");
+#endif
 	}
 }
 
