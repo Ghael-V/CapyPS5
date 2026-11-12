@@ -29,6 +29,9 @@ struct UniformFill {
 	std::array<uint32_t, 3> group_stride {};
 	uint32_t                 words        = 0;
 	uint32_t                 value        = 0;
+	// Buffer fills guarded by `index < limit` (the PS4 SDK's fill shader): the limit this
+	// dispatch evaluated, UINT32_MAX without such a guard.
+	uint32_t                 limit        = UINT32_MAX;
 
 	bool operator==(const UniformFill&) const = default;
 };

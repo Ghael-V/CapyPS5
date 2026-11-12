@@ -126,14 +126,21 @@ bool ResolveComputeBufferFill(const ShaderComputeInputInfo& input, uint32_t grou
 	}
 	if (input.threads_num[0] == 0 || input.threads_num[0] != fill.group_stride[0] ||
 	    input.threads_num[1] != 1 || input.threads_num[2] != 1 || group_x == 0 || group_y != 1 ||
-	    group_z != 1 || mode != (input.dispatch_thread_dimensions ? 0x61u : 0x41u)) {
+	    group_z != 1 ||
+	    // ORDER_MODE (0x40) only orders wave launches; PS4 dispatches leave it clear.
+	    (mode | 0x40u) != (input.dispatch_thread_dimensions ? 0x61u : 0x41u)) {
 		return false;
 	}
 	const uint64_t invocations = input.dispatch_thread_dimensions
 	                                 ? group_x
 	                                 : static_cast<uint64_t>(group_x) * input.threads_num[0];
-	const auto     size        = descriptor.GetSize();
-	if (invocations != descriptor.NumRecords() || size == 0 || size > UINT32_MAX ||
+	// A fill guarded by `index < limit` writes the first min(threads, limit) elements the buffer
+	// holds; one without a guard must cover the buffer exactly.
+	const bool     limited  = fill.limit != UINT32_MAX;
+	const uint64_t elements = limited ? std::min<uint64_t>({invocations, fill.limit, descriptor.NumRecords()})
+	                                  : invocations;
+	const auto     size     = limited ? elements * element_size : descriptor.GetSize();
+	if ((!limited && invocations != descriptor.NumRecords()) || size == 0 || size > UINT32_MAX ||
 	    (input.dispatch_thread_dimensions &&
 	     (group_x % input.threads_num[0] != 0 || input.dispatch_threads_num[0] != group_x ||
 	      input.dispatch_threads_num[1] != 1 || input.dispatch_threads_num[2] != 1))) {
@@ -227,7 +234,7 @@ bool RenderExecutor::TryConsumeComputeImageClear(const ShaderComputeInputInfo& i
 	const auto& fill      = resources.uniform_fill;
 	auto&       cache     = command.GetContext().GetTextureCache();
 	if (fill.kind == ShaderRecompiler::IR::UniformFillKind::Image) {
-		if (mode != 0x41u || input.dispatch_thread_dimensions || fill.value > 255 ||
+		if ((mode | 0x40u) != 0x41u || input.dispatch_thread_dimensions || fill.value > 255 ||
 		    input.threads_num[2] != 1)
 			return false;
 		const auto  descriptor = DecodeNativeDescriptor<ShaderTextureResource>(resources.images[0]);

@@ -837,6 +837,22 @@ static std::optional<std::array<uint64_t, 3>> FillIndex(Value value, uint32_t ax
 			return std::array<uint64_t, 3> {0, 0, 1};
 		}
 	}
+	// The sum of an add with carry out (PS4 V_ADD_I32): an ordinary add of the index terms.
+	if (op == ValueOpcode::CompositeExtractU32x2 && inst->Arg(1).Resolve() == Value(0u)) {
+		const auto* add = inst->Arg(0).Resolve().TryInstruction();
+		if (add != nullptr && add->GetOpcode() == ValueOpcode::IAddCarry32) {
+			auto left  = FillIndex(add->Arg(0), axis, guard, depth + 1);
+			auto right = FillIndex(add->Arg(1), axis, guard, depth + 1);
+			if (!left || !right) {
+				return {};
+			}
+			for (uint32_t i = 0; i < left->size(); ++i) {
+				(*left)[i] += (*right)[i];
+				if ((*left)[i] > UINT32_MAX) return {};
+			}
+			return left;
+		}
+	}
 	if (op != ValueOpcode::IAdd32 && op != ValueOpcode::IMul32 &&
 	    op != ValueOpcode::ShiftLeftLogical32) {
 		return {};
@@ -864,32 +880,117 @@ static std::optional<std::array<uint64_t, 3>> FillIndex(Value value, uint32_t ax
 	return left;
 }
 
+// A store guard made of full-dispatch terms and at most one `index < limit` (or `limit > index`)
+// term, `index` being the store's element index and `limit` a uniform runtime value: the PS4
+// SDK's fill shader skips the threads past its element count so.
+static bool MatchFillGuard(const Program& program, Value guard, Value index,
+                           std::array<Value, 2>& limits, uint32_t depth = 0) {
+	guard = guard.Resolve();
+	if (IsFullDispatchPredicate(guard)) return true;
+	const auto* inst = guard.TryInstruction();
+	if (inst == nullptr || depth > 32) return false;
+	if (inst->GetOpcode() == ValueOpcode::LogicalAnd) {
+		return MatchFillGuard(program, inst->Arg(0), index, limits, depth + 1) &&
+		       MatchFillGuard(program, inst->Arg(1), index, limits, depth + 1);
+	}
+	Value bound;
+	if (inst->GetOpcode() == ValueOpcode::ULessThan32 && inst->Arg(0).Resolve() == index) {
+		bound = inst->Arg(1).Resolve();
+	} else if (inst->GetOpcode() == ValueOpcode::UGreaterThan32 && inst->Arg(1).Resolve() == index) {
+		bound = inst->Arg(0).Resolve();
+	} else {
+		return false;
+	}
+	if (bound.GetType() != Type::U32 || !ValidateRuntimeValue(program, bound, RuntimeValueType::Integer))
+		return false;
+	// The PS4 fill shader tests its count twice (V_CMPX in VOP2 and VOP3 form, two reads).
+	for (auto& limit: limits) {
+		if (limit.IsEmpty() || limit == bound) {
+			limit = bound;
+			return true;
+		}
+	}
+	return false;
+}
+
+// `setprop debug.capy.fill_why 1` (before shaders compile): log once per shader and reason why
+// a compute shader is not taken as a uniform fill (tag CapyPS5-Fill, source line of the check).
+// An IR value as an expression tree, for the fill_why log.
+static std::string FillValueText(Value v, int depth = 0) {
+	v = v.Resolve();
+	if (v.IsImmediate()) {
+		return v.GetType() == Type::U1 ? (v == Value(true) ? "true" : "false") : fmt::format("{:#x}", v.U32());
+	}
+	const auto* i = v.TryInstruction();
+	if (i == nullptr) return "?";
+	std::string out(ValueOpcodeName(i->GetOpcode()));
+	if (depth >= 6) return out + "(..)";
+	out += "(";
+	for (size_t a = 0; a < i->NumArgs(); ++a) out += (a ? ", " : "") + FillValueText(i->Arg(a), depth + 1);
+	return out + ")";
+}
+
+static UniformFillPlan FillReject(const Program& program, int line, int opcode = -1) {
+	static Common::DebugFlags::CachedValue fill_why("debug.capy.fill_why", 0);
+	if (fill_why.Get() != 0 && program.stage == ShaderType::Compute) {
+		Common::DebugFlags::NoteOnce("CapyPS5-Fill", program.shader_hash ^ (static_cast<uint64_t>(line) << 48u),
+		                             "cs %016llx: not a uniform fill (check at line %d, opcode %d)",
+		                             static_cast<unsigned long long>(program.shader_hash), line, opcode);
+	}
+	return {};
+}
+
+// Whether `condition` is one of the terms the store guard ANDs together (true wherever it writes).
+static bool GuardImplies(Value guard, Value condition, uint32_t depth = 0) {
+	guard = guard.Resolve();
+	if (guard == condition.Resolve()) return true;
+	const auto* inst = guard.TryInstruction();
+	if (inst == nullptr || depth > 32 || inst->GetOpcode() != ValueOpcode::LogicalAnd) return false;
+	return GuardImplies(inst->Arg(0), condition, depth + 1) || GuardImplies(inst->Arg(1), condition, depth + 1);
+}
+
 static UniformFillPlan AnalyzeUniformFill(const Program& program) {
 	if (program.stage != ShaderType::Compute || program.blocks.empty() || program.info.uses_dma ||
 	    !program.info.samplers.empty()) {
-		return {};
+		return FillReject(program, __LINE__);
 	}
+	// Every block, without loops. Branches only skip work: the single store's own guard decides
+	// which threads write (an EXECZ branch around it skips the store when no lane would write).
 	std::unordered_set<const Block*> visited;
-	const auto*                      block = program.blocks.front();
+	std::vector<const Block*>        pending {program.blocks.front()};
 	const Inst*                      store = nullptr;
-	for (;;) {
-		if (block == nullptr || !visited.insert(block).second) return {};
+	while (!pending.empty()) {
+		const auto* block = pending.back();
+		pending.pop_back();
+		if (block == nullptr) return FillReject(program, __LINE__);
+		if (!visited.insert(block).second) continue;
 		for (const auto& inst: *block) {
-			if (AddressOpcodeInfoOf(inst.GetOpcode()).access != AddressAccess::None) return {};
-			if (!inst.MayHaveSideEffects()) continue;
+			if (AddressOpcodeInfoOf(inst.GetOpcode()).access != AddressAccess::None)
+				return FillReject(program, __LINE__, static_cast<int>(inst.GetOpcode()));
+			// References only keep a branch condition or target alive; they write nothing.
+			if (!inst.MayHaveSideEffects() || inst.GetOpcode() == ValueOpcode::Reference ||
+			    inst.GetOpcode() == ValueOpcode::ReferenceU32)
+				continue;
 			if (store != nullptr || (BufferAccessOf(inst.GetOpcode()) != BufferAccess::Write &&
 			                         inst.GetOpcode() != ValueOpcode::ImageWrite))
-				return {};
+				return FillReject(program, __LINE__, static_cast<int>(inst.GetOpcode()));
 			store = &inst;
 		}
 		const auto& term = block->terminator;
-		if (term.kind == CFG::TerminatorKind::Return) break;
-		if (term.kind != CFG::TerminatorKind::Branch) return {};
-		block = term.true_block;
+		if (term.loop_header) return FillReject(program, __LINE__);
+		if (term.kind == CFG::TerminatorKind::Return) continue;
+		if (term.kind == CFG::TerminatorKind::Branch) {
+			pending.push_back(term.true_block);
+		} else if (term.kind == CFG::TerminatorKind::ConditionalBranch) {
+			pending.push_back(term.true_block);
+			pending.push_back(term.false_block);
+		} else {
+			return FillReject(program, __LINE__);
+		}
 	}
-	if (store == nullptr || visited.size() != program.blocks.size()) return {};
+	if (store == nullptr || visited.size() != program.blocks.size()) return FillReject(program, __LINE__);
 	for (const auto& buffer: program.info.buffers) {
-		if (buffer.read && (!buffer.scalar || buffer.written)) return {};
+		if (buffer.read && (!buffer.scalar || buffer.written)) return FillReject(program, __LINE__);
 	}
 	const auto& memory = program.memory_info.at(store->Flags<MemoryFlags>().index);
 	UniformFillPlan result;
@@ -900,44 +1001,55 @@ static UniformFillPlan AnalyzeUniformFill(const Program& program) {
 		if (program.info.images.size() != 1 || memory.dmask != 1 || memory.data_bits != 32 ||
 		    memory.image_has_mip || memory.image_sample_flags != 0 || memory.image_r128 ||
 		    memory.image_dimension != Decoder::ImageDimension::Dim2DArray ||
-		    store->Arg(3).Resolve() != Value(true)) return {};
+		    store->Arg(3).Resolve() != Value(true)) return FillReject(program, __LINE__);
 		const auto& image = program.info.images[memory.resource];
-		if (image.read || image.atomic || image.mip_mode != ImageMipMode::None) return {};
+		if (image.read || image.atomic || image.mip_mode != ImageMipMode::None) return FillReject(program, __LINE__);
 		const auto* address = store->Arg(1).ResolveInstruction();
-		if (address == nullptr || address->GetOpcode() != ValueOpcode::MakeImageAddress) return {};
+		if (address == nullptr || address->GetOpcode() != ValueOpcode::MakeImageAddress) return FillReject(program, __LINE__);
 		for (uint32_t axis = 0; axis < 3; ++axis) {
 			const auto index = FillIndex(address->Arg(axis), axis, guard);
-			if (!index || (*index)[0] != 0) return {};
+			if (!index || (*index)[0] != 0) return FillReject(program, __LINE__);
 			if (axis < 2) {
-				if ((*index)[1] != 1 || (*index)[2] == 0) return {};
+				if ((*index)[1] != 1 || (*index)[2] == 0) return FillReject(program, __LINE__);
 			} else if ((*index)[1] != 0 || (*index)[2] != 1) {
-				return {};
+				return FillReject(program, __LINE__);
 			}
 			result.fill.group_stride[axis] = static_cast<uint32_t>((*index)[2]);
 		}
 		const auto* values = store->Arg(2).ResolveInstruction();
 		if (values == nullptr || values->GetOpcode() != ValueOpcode::CompositeConstructU32x4)
-			return {};
+			return FillReject(program, __LINE__);
 		result.fill.kind  = UniformFillKind::Image;
 		result.fill.words = 1;
 		data = values->Arg(0);
 	} else {
-		if (!program.info.images.empty()) return {};
+		if (!program.info.images.empty()) return FillReject(program, __LINE__);
 		const auto           op = store->GetOpcode();
 		constexpr std::array stores {ValueOpcode::StoreBufferU32, ValueOpcode::StoreBufferU32x2,
 		                             ValueOpcode::StoreBufferU32x3, ValueOpcode::StoreBufferU32x4};
 		const auto           store_op = std::ranges::find(stores, op);
 		if (store_op == stores.end() || store->Arg(2).Resolve() != Value(0u) ||
 		    store->Arg(3).Resolve() != Value(0u))
-			return {};
+			return FillReject(program, __LINE__);
 		guard = store->Arg(5).Resolve();
-		if (!IsFullDispatchPredicate(guard)) return {};
+		if (!IsFullDispatchPredicate(guard) &&
+		    !MatchFillGuard(program, guard, store->Arg(1).Resolve(), result.limits)) {
+			static Common::DebugFlags::CachedValue fill_why("debug.capy.fill_why", 0);
+			if (fill_why.Get() != 0) {
+				// The guard and the index as expression trees, to extend MatchFillGuard.
+				Common::DebugFlags::NoteOnce("CapyPS5-Fill", program.shader_hash ^ 0x6775617264ull,
+				                             "cs %016llx guard %s | index %s",
+				                             static_cast<unsigned long long>(program.shader_hash),
+				                             FillValueText(guard).c_str(), FillValueText(store->Arg(1)).c_str());
+			}
+			return FillReject(program, __LINE__);
+		}
 		if (!memory.formatted || memory.typed || !memory.idxen || memory.offen || memory.offset != 0 ||
 		    memory.data_bits != 32 ||
 		    memory.data_dwords != static_cast<uint32_t>(store_op - stores.begin() + 1))
-			return {};
+			return FillReject(program, __LINE__);
 		const auto address = FillIndex(store->Arg(1), 0, guard);
-		if (!address || (*address)[0] != 0 || (*address)[1] != 1 || (*address)[2] == 0) return {};
+		if (!address || (*address)[0] != 0 || (*address)[1] != 1 || (*address)[2] == 0) return FillReject(program, __LINE__);
 		result.fill.kind = UniformFillKind::Buffer;
 		result.fill.group_stride[0] = static_cast<uint32_t>((*address)[2]);
 		result.fill.words = memory.data_dwords;
@@ -950,12 +1062,29 @@ static UniformFillPlan AnalyzeUniformFill(const Program& program) {
 	                                 ValueOpcode::CompositeConstructU32x4};
 	if (result.fill.words > 1 &&
 	    (vector == nullptr || vector->GetOpcode() != composites[result.fill.words - 2]))
-		return {};
+		return FillReject(program, __LINE__);
 	for (uint32_t i = 0; i < result.fill.words; ++i) {
-		const auto word = ResolveActiveU32(result.fill.words == 1 ? data : vector->Arg(i), guard);
+		auto word = ResolveActiveU32(result.fill.words == 1 ? data : vector->Arg(i), guard);
+		// A register written only behind a branch reaches the store as Select(cond, value, old);
+		// where the guard implies cond, the store writes value.
+		for (uint32_t depth = 0; depth < 8; ++depth) {
+			const auto* select = word.Resolve().TryInstruction();
+			if (select == nullptr || select->GetOpcode() != ValueOpcode::SelectU32 ||
+			    !GuardImplies(guard, select->Arg(0)))
+				break;
+			word = select->Arg(1).Resolve();
+		}
 		if (word.GetType() != Type::U32 ||
-		    !ValidateRuntimeValue(program, word, RuntimeValueType::Integer))
-			return {};
+		    !ValidateRuntimeValue(program, word, RuntimeValueType::Integer)) {
+			static Common::DebugFlags::CachedValue fill_why("debug.capy.fill_why", 0);
+			if (fill_why.Get() != 0) {
+				Common::DebugFlags::NoteOnce("CapyPS5-Fill", program.shader_hash ^ 0x76616c7565ull,
+				                             "cs %016llx value %s",
+				                             static_cast<unsigned long long>(program.shader_hash),
+				                             FillValueText(word).c_str());
+			}
+			return FillReject(program, __LINE__);
+		}
 		result.values[i] = word;
 	}
 	return result;
@@ -1088,6 +1217,11 @@ ResourcePlan ExtractResourcePlan(const Program& program) {
 	for (uint32_t i = 0; i < plan.uniform_fill.fill.words; ++i) {
 		plan.uniform_fill.values[i] = Clone(plan.uniform_fill.values[i]);
 	}
+	for (auto& limit: plan.uniform_fill.limits) {
+		if (!limit.IsEmpty()) {
+			limit = Clone(limit);
+		}
+	}
 	plan.capture_specialization_reads |=
 	    capture_indirect_reads || capture_control_reads || !plan.source_reads.empty();
 	if (plan.capture_specialization_reads) {
@@ -1171,9 +1305,18 @@ bool MaterializeResources(const ResourcePlan& program, const SrtRuntime& runtime
 	for (uint32_t i = 0; i < words && uniform_fill; ++i) {
 		uniform_fill = clean.Evaluate(fill.values[i], stored[i]) && stored[i] == stored[0];
 	}
+	uint32_t limit = UINT32_MAX;
+	for (const auto& limit_value: fill.limits) {
+		uint32_t evaluated = 0;
+		if (uniform_fill && !limit_value.IsEmpty()) {
+			uniform_fill = clean.Evaluate(limit_value, evaluated);
+			limit        = std::min(limit, evaluated);
+		}
+	}
 	if (uniform_fill) {
 		snapshot.uniform_fill = fill.fill;
 		snapshot.uniform_fill.value = stored[0];
+		snapshot.uniform_fill.limit = limit;
 	}
 	const auto evaluate = [&](uint32_t source, DescriptorValue& value, bool written = false) {
 		if (source >= program.descriptor_sources.size()) {

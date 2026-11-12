@@ -620,6 +620,8 @@ struct CompiledShaderInfo {
 struct UniformFillPlan {
 	UniformFill          fill;
 	std::array<Value, 4> values;
+	// The runtime limits of `index < limit` guards (the smallest applies), empty without them.
+	std::array<Value, 2> limits;
 };
 
 // Resource analysis retained by the shader cache. It owns immutable descriptor/SRT,

@@ -1789,6 +1789,23 @@ void TextureCache::CommitGpuWrite(Image& image) {
 	image.MarkGpuModified();
 }
 
+// Whether a buffer fill of `size` bytes at an image's address clears the whole image. PS4 (gfx7)
+// images are laid out here with gfx10 sizes, larger than the guest's: a fill of the guest's real
+// footprint covers every texel without reaching data.size. God of War Ragnarok clears its stencil
+// plane so; as a buffer write it was then uploaded into the depth/stencil image by a transfer,
+// which left the stock Adreno driver's LRZ stale and dropped later fragments in 8x8 blocks.
+static bool FillCoversImage(const ImageInfo& info, uint64_t size) {
+	if (size == info.data.size) {
+		return true;
+	}
+	if (ShaderRecompiler::Decoder::GetGuestIsa() != ShaderRecompiler::Decoder::GuestIsa::Gfx7 ||
+	    size > info.data.size || info.resources.levels != 1 || info.resources.layers != 1) {
+		return false;
+	}
+	const uint64_t texels = uint64_t {info.extent.width} * info.extent.height * info.extent.depth;
+	return size >= texels * info.bytes_per_block;
+}
+
 bool TextureCache::ClearImageFromBuffer(CommandBuffer& command, uint64_t address, uint64_t size,
                                         uint32_t packed_clear) {
 	if (command.IsInvalid() || !GuestRange {address, size}.Valid()) {
@@ -1817,7 +1834,7 @@ bool TextureCache::ClearImageFromBuffer(CommandBuffer& command, uint64_t address
 		ImageSubresourceRange candidate_subresources {
 		    0, owner->info.resources.levels, 0, owner->info.TransferLayers()};
 		if (owner->depth_id && owner->info.data.address == address &&
-		    owner->info.data.size == size) {
+		    FillCoversImage(owner->info, size)) {
 			candidate              = vk::ImageAspectFlagBits::eStencil;
 			candidate_id           = owner->depth_id;
 			candidate_subresources = owner->stencil_subresources;
@@ -1826,7 +1843,7 @@ bool TextureCache::ClearImageFromBuffer(CommandBuffer& command, uint64_t address
 				continue;
 			}
 		} else if (!owner->depth_id && owner->info.data.address == address &&
-		           owner->info.data.size == size) {
+		           FillCoversImage(owner->info, size)) {
 			candidate = owner->info.IsDepth() ? vk::ImageAspectFlagBits::eDepth
 			                                  : vk::ImageAspectFlagBits::eColor;
 		}
