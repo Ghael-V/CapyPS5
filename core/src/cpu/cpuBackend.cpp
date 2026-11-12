@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-2.0-only
 
 #include "cpu/cpuBackend.h"
+#include "cpu/hostCpuFeatures.h"
 #include "common/debugFlags.h"
 #include "common/logging/log.h"
 #include "common/threads.h"
@@ -930,16 +931,7 @@ public:
 		}
 
 		FEXCore::HostFeatures features {};
-		features.DCacheLineLog2 = 6;
-		features.SupportsCacheMaintenanceOps = 1;
-		features.SupportsAES = 1;
-		// PS5 games use SHA-NI unconditionally (Guri: sha1msg1); FEX translates it to the ARMv8
-		// SHA1/SHA256 instructions every supported Snapdragon has.
-		features.SupportsSHA = 1;
-		features.SupportsCRC = 1;
-		features.SupportsAtomics = 1;
-		features.SupportsRCPC = 1;
-		features.SupportsAVX = 1; // AVX 128-bit vector support for Celeste PICO-8
+		Cpu::DetectFexHostFeatures(features);
 		features.HostType = FEXCore::HostFeatures::HostTypeEnum::Linux;
 		features.ProcessPID = ::getpid();
 

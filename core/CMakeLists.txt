@@ -882,6 +882,8 @@ endif()
 if (ANDROID)
 	target_sources(kyty_emulator PRIVATE "${KYTY_SOURCE_DIR}/common/platform/glibcCompatAndroid.cpp")
 	target_link_libraries(kyty_emulator log android FEXCore)
+	# FEXCore's fallback handlers use clang's preserve_all when FEX's configure found it.
+	target_compile_definitions(kyty_emulator PRIVATE "CAPY_FEX_PRESERVE_ALL=$<BOOL:${HAS_CLANG_PRESERVE_ALL}>")
 	target_include_directories(kyty_emulator PRIVATE
 		"${KYTY_THIRD_PARTY_DIR}/FEX/FEXCore/include"
 		"${KYTY_THIRD_PARTY_DIR}/FEX/FEXHeaderUtils"
@@ -896,6 +898,7 @@ if (ANDROID)
 	)
 	target_link_options(capyps5 PRIVATE "-Wl,-Bsymbolic" "-Wl,-Bsymbolic-functions")
 	target_link_libraries(capyps5 ${kyty_emulator_link_libraries} FEXCore JemallocLibs log android ${CMAKE_DL_LIBS})
+	target_compile_definitions(capyps5 PRIVATE "CAPY_FEX_PRESERVE_ALL=$<BOOL:${HAS_CLANG_PRESERVE_ALL}>")
 	# Custom Vulkan drivers (Turnip, PanVK): libadrenotools loads them past the linker namespaces.
 	# Its hook libraries are packaged next to libcapyps5.so (tools/build_android.ps1).
 	add_subdirectory("${KYTY_THIRD_PARTY_DIR}/libadrenotools" EXCLUDE_FROM_ALL)
