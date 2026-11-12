@@ -95,6 +95,13 @@ public:
 	// Debug aid: copies mip 0 / layer 0 of an image linearly (as the host stores it) to `path`
 	// once the GPU has run it. File: "CAPYIMG1", width, height, vk format, bytes per texel, data.
 	bool DebugSaveImageLinear(ImageId id, const std::string& path);
+	// `setprop debug.capy.nan_hunt N` (every new nonzero N arms it): during the next whole game
+	// frame, returns N (1: check what compute shaders write, 2: also every draw's color targets);
+	// 0 otherwise.
+	[[nodiscard]] static int64_t NanHuntMode();
+	// Debug aid (nan_hunt): once the GPU has run it, counts the NaN and infinite components of
+	// mip 0 / layer 0 of a float image and logs them with `label` (tag CapyPS5-NanHunt).
+	void DebugScanImageNan(ImageId id, const std::string& label);
 
 private:
 	struct MetaDataInfo {

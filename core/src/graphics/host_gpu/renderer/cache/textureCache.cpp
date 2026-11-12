@@ -10,6 +10,7 @@
 #include "common/emulatorConfig.h"
 #include "common/logging/log.h"
 #include "common/profiler.h"
+#include "common/telemetry.h"
 #include "graphics/guest_gpu/gpu_format.h"
 #include "graphics/guest_gpu/tile.h"
 #include "graphics/host_gpu/graphicContext.h"
@@ -2264,6 +2265,145 @@ bool TextureCache::DebugSaveImageLinear(ImageId id, const std::string& path) {
 		}
 	});
 	return true;
+}
+
+int64_t TextureCache::NanHuntMode() {
+	static Common::DebugFlags::CachedValue nan_hunt("debug.capy.nan_hunt", 0);
+	static int64_t                         armed_value = 0;
+	static uint64_t                        hunt_frame  = 0;
+	const auto                             value       = nan_hunt.Get();
+	const auto frame = Common::Telemetry::g_game_frames.load(std::memory_order_relaxed);
+	if (value != armed_value) {
+		armed_value = value;
+		// The frame after the current one, so the hunt covers a whole frame from its start.
+		hunt_frame = value != 0 ? frame + 1 : 0;
+		if (value != 0) {
+			Common::DebugFlags::FrameTrace("nan hunt armed for frame %llu",
+			                               static_cast<unsigned long long>(hunt_frame));
+#if defined(__ANDROID__)
+			__android_log_print(ANDROID_LOG_INFO, "CapyPS5-NanHunt", "armed (mode %lld) for frame %llu",
+			                    static_cast<long long>(value), static_cast<unsigned long long>(hunt_frame));
+#endif
+		}
+	}
+	return hunt_frame != 0 && frame == hunt_frame ? armed_value : 0;
+}
+
+namespace {
+
+// Counts NaN and infinite components of `count` texels in a host format; false when the format
+// holds no floats.
+bool CountNonFinite(vk::Format format, const uint8_t* data, uint64_t count, uint64_t& nans,
+                    uint64_t& infs, uint64_t& first) {
+	uint32_t components = 0;
+	uint32_t bits       = 0;
+	switch (format) {
+		case vk::Format::eR16Sfloat: components = 1; bits = 16; break;
+		case vk::Format::eR16G16Sfloat: components = 2; bits = 16; break;
+		case vk::Format::eR16G16B16A16Sfloat: components = 4; bits = 16; break;
+		case vk::Format::eR32Sfloat:
+		case vk::Format::eD32Sfloat: components = 1; bits = 32; break;
+		case vk::Format::eR32G32Sfloat: components = 2; bits = 32; break;
+		case vk::Format::eR32G32B32A32Sfloat: components = 4; bits = 32; break;
+		case vk::Format::eB10G11R11UfloatPack32: components = 3; bits = 11; break;
+		default: return false;
+	}
+	const auto note = [&](uint64_t texel, bool nan) {
+		if (nans + infs == 0) {
+			first = texel;
+		}
+		(nan ? nans : infs)++;
+	};
+	for (uint64_t t = 0; t < count; t++) {
+		if (bits == 16) {
+			const auto* h = reinterpret_cast<const uint16_t*>(data) + t * components;
+			for (uint32_t c = 0; c < components; c++) {
+				if ((h[c] & 0x7c00u) == 0x7c00u) {
+					note(t, (h[c] & 0x03ffu) != 0);
+				}
+			}
+		} else if (bits == 32) {
+			const auto* w = reinterpret_cast<const uint32_t*>(data) + t * components;
+			for (uint32_t c = 0; c < components; c++) {
+				if ((w[c] & 0x7f800000u) == 0x7f800000u) {
+					note(t, (w[c] & 0x007fffffu) != 0);
+				}
+			}
+		} else {
+			uint32_t packed = 0;
+			std::memcpy(&packed, data + t * 4, 4);
+			// R and G: 6-bit mantissa, 5-bit exponent; B: 5-bit mantissa, 5-bit exponent.
+			const uint32_t fields[3][2] = {{packed & 0x7ffu, 6}, {(packed >> 11u) & 0x7ffu, 6},
+			                               {(packed >> 22u) & 0x3ffu, 5}};
+			for (const auto& [field, mantissa_bits]: fields) {
+				if ((field >> mantissa_bits) == 0x1fu) {
+					note(t, (field & ((1u << mantissa_bits) - 1u)) != 0);
+				}
+			}
+		}
+	}
+	return true;
+}
+
+} // namespace
+
+void TextureCache::DebugScanImageNan(ImageId id, const std::string& label) {
+	std::scoped_lock lock {m_lock};
+	auto& image = m_slot_images[id];
+	if (image.depth_id || image.backing.image == nullptr || image.info.samples != 1 ||
+	    image.info.IsVolume()) {
+		return;
+	}
+	const auto format = image.backing.format;
+	uint64_t   probe_nans = 0, probe_infs = 0, probe_first = 0;
+	if (!CountNonFinite(format, nullptr, 0, probe_nans, probe_infs, probe_first)) {
+		return;
+	}
+	const auto     extent = image.IsScaled() ? image.backing.extent : image.info.extent;
+	const uint32_t bpp    = vk::blockSize(format);
+	const uint64_t size   = static_cast<uint64_t>(extent.width) * extent.height * bpp;
+	if (size == 0) {
+		return;
+	}
+	auto& download        = m_buffer_cache.GetUtilityBuffer(MemoryUsage::Download);
+	auto [mapped, offset] = download.Map(size, 16);
+	if (mapped == nullptr) {
+		return;
+	}
+	download.Commit();
+	vk::BufferImageCopy copy {};
+	copy.bufferOffset     = offset;
+	copy.imageSubresource = {format == vk::Format::eD32Sfloat ? vk::ImageAspectFlagBits::eDepth
+	                                                          : vk::ImageAspectFlagBits::eColor,
+	                         0, 0, 1};
+	copy.imageExtent      = vk::Extent3D {extent.width, extent.height, 1};
+	image.DownloadBacking(std::span {&copy, 1}, download.Handle(), offset, size);
+	const auto address = image.info.data.address;
+	const auto width   = extent.width;
+	const auto height  = extent.height;
+	m_scheduler.DeferPriorityOperation([&download, mapped, offset, size, format, width, height,
+	                                    address, label] {
+		download.Invalidate(offset, size);
+		uint64_t nans = 0, infs = 0, first = 0;
+		CountNonFinite(format, static_cast<const uint8_t*>(mapped),
+		               static_cast<uint64_t>(width) * height, nans, infs, first);
+		if (nans + infs == 0) {
+			return;
+		}
+		Common::DebugFlags::FrameTrace("  NAN %s image=0x%llx %ux%u nan=%llu inf=%llu", label.c_str(),
+		                               static_cast<unsigned long long>(address), width, height,
+		                               static_cast<unsigned long long>(nans),
+		                               static_cast<unsigned long long>(infs));
+#if defined(__ANDROID__)
+		__android_log_print(ANDROID_LOG_WARN, "CapyPS5-NanHunt",
+		                    "%s image=0x%llx %ux%u vkfmt=%u nan=%llu inf=%llu first=(%llu,%llu)",
+		                    label.c_str(), static_cast<unsigned long long>(address), width, height,
+		                    static_cast<uint32_t>(format), static_cast<unsigned long long>(nans),
+		                    static_cast<unsigned long long>(infs),
+		                    static_cast<unsigned long long>(first % width),
+		                    static_cast<unsigned long long>(first / width));
+#endif
+	});
 }
 
 bool TextureCache::DownloadImageMemory(ImageId id) {

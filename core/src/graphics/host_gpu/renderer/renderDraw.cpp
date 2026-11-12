@@ -2108,6 +2108,23 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 			ShaderWriteBarrier(vk_buffer, shader_write_stages);
 		}
 	}
+	// `debug.capy.nan_hunt 2`: check the color targets after every draw for NaN and infinities.
+	if (TextureCache::NanHuntMode() == 2) {
+		static uint64_t hunt_frame = 0;
+		static uint32_t draws      = 0;
+		const auto      frame      = Common::Telemetry::g_game_frames.load(std::memory_order_relaxed);
+		if (frame != hunt_frame) {
+			hunt_frame = frame;
+			draws      = 0;
+		}
+		draws++;
+		for (uint32_t i = 0; i < state.color_count; i++) {
+			m_context.GetTextureCache().DebugScanImageNan(
+			    state.color_info[i].image_id,
+			    fmt::format("draw #{} ps=0x{:x} rt{}", draws,
+			                buffer.GetShaders().GetPs().ps_regs.data_addr, state.color_info[i].target_slot));
+		}
+	}
 	// `setprop debug.capy.dump_after N`: during a frame trace, write the color targets back to
 	// guest memory right after the Nth draw (1-based, as numbered by the trace) of the frame.
 	if (Common::DebugFlags::FrameTracing()) {
