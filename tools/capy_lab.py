@@ -14,6 +14,7 @@ screenshots, logcat and image dumps. Results go to --out as PNG grids and a CSV.
   trace    record one frame trace (CapyPS5-Frame) to a text file
   dumps    save the color and depth targets after the given draws of a frame
   quirks   print the driver and the quirks in effect (CapyPS5-Quirks)
+  perf     frame rate, CPU time per frame and GPU load of variants, in interleaved rounds
 
 Examples (GOW, a PS4 title in ROMs/PS4/CUSA34386):
 
@@ -23,6 +24,8 @@ Examples (GOW, a PS4 title in ROMs/PS4/CUSA34386):
   python tools/capy_lab.py skip --kind ps --target 0x22a798000 --top 12
   python tools/capy_lab.py drivers --title CUSA34386 --other Lemon-Ade_Turnip_Driver_Lemon-Ade-v0.0.7
   python tools/capy_lab.py dumps --draws 300 669 1229
+  python tools/capy_lab.py perf --dir /storage/emulated/0/CapyPS5/PPSA28155 \
+      --variant detect:fex_host_features=1 --variant fixed:fex_host_features=0
 
 Properties are named without the debug.capy. prefix. App options use opt:<Name> (e.g.
 opt:ResolutionScale=500,1000); the app's value wins over a property of the same setting, so
@@ -33,6 +36,7 @@ import argparse
 import csv
 import io
 import re
+import shlex
 import subprocess
 import sys
 import tarfile
@@ -117,8 +121,9 @@ def launch(dev: Device, args) -> None:
     elf = args.elf or f"{game_dir}/eboot.bin"
     dev.adb("shell", "am", "force-stop", PACKAGE)
     dev.clear_logcat()
-    dev.adb("shell", "am", "start", "-n", ACTIVITY, "--es", "launch_elf", elf, "--es", "launch_dir",
-            game_dir)
+    # One quoted command: adb joins its arguments with spaces, which breaks folders with spaces.
+    dev.shell(f"am start -n {ACTIVITY} --es launch_elf {shlex.quote(elf)} --es launch_dir "
+              f"{shlex.quote(game_dir)}")
     print(f"launched {elf}", flush=True)
     wait_settled(dev, args.quiet, args.timeout)
     if args.warmup:
@@ -455,6 +460,129 @@ def cmd_quirks(dev: Device, args) -> None:
             print(re.sub(r"^.*?CapyPS5-Quirks: ", "", line))
 
 
+# Performance: frame rate and CPU time per frame.
+def max_temp(dev: Device) -> float:
+    """Hottest thermal zone in degrees C."""
+    temps = [int(t) for t in dev.shell("cat /sys/class/thermal/thermal_zone*/temp",
+                                       check=False).split() if t.lstrip("-").isdigit()]
+    return max(temps) / 1000 if temps else 0.0
+
+
+def cool_down(dev: Device, limit: float, timeout: int = 600) -> float:
+    """Waits until the device is below `limit` C, so every run starts alike (and it rests)."""
+    start = time.time()
+    temp = max_temp(dev)
+    while temp >= limit and time.time() - start < timeout:
+        time.sleep(10)
+        temp = max_temp(dev)
+    return temp
+
+
+def game_process(dev: Device) -> str:
+    """The emulator's game process (org.capyps5.emulator.debug:game)."""
+    for line in dev.shell("ps -A", check=False).splitlines():
+        if line.endswith(PACKAGE + ":game"):
+            return line.split()[1]
+    return ""
+
+
+def cpu_ticks(dev: Device, pid: str) -> int:
+    """User + system time of the process, in clock ticks (1/100 s)."""
+    fields = dev.shell(f"cat /proc/{pid}/stat", check=False).rsplit(")", 1)[-1].split()
+    return int(fields[11]) + int(fields[12]) if len(fields) > 12 else 0
+
+
+def sample_perf(dev: Device, seconds: int) -> dict:
+    pid = game_process(dev)
+    if not pid:
+        raise RuntimeError("the game is not running")
+    dev.setprop("debug.capy.fps_log", "2")
+    time.sleep(3)
+    dev.clear_logcat()
+    ticks0 = cpu_ticks(dev, pid)
+    gpu = []
+    end = time.time() + seconds
+    while time.time() < end:
+        busy = dev.shell("cat /sys/class/kgsl/kgsl-3d0/gpu_busy_percentage", check=False)
+        if busy.split() and busy.split()[0].isdigit():
+            gpu.append(int(busy.split()[0]))
+        time.sleep(2)
+    ticks1 = cpu_ticks(dev, pid)
+    frames, worst = 0, 0.0
+    for m in re.finditer(r"fps [\d.]+ worst ([\d.]+) ms frames (\d+)", dev.logcat("CapyPS5-Fps")):
+        worst = max(worst, float(m.group(1)))
+        frames += int(m.group(2))
+    return {
+        "fps": frames / seconds,
+        "worst_ms": worst,
+        "cpu_ms_per_frame": (ticks1 - ticks0) * 10 / frames if frames else 0.0,
+        "cores": (ticks1 - ticks0) / 100 / seconds,
+        "gpu": float(np.mean(gpu)) if gpu else 0.0,
+        "temp": max_temp(dev),
+    }
+
+
+def cmd_perf(dev: Device, args) -> None:
+    """Interleaved rounds of every variant, each a fresh launch from the same temperature."""
+    variants = []
+    for spec in args.variant:
+        label, _, sets = spec.partition(":")
+        variants.append((label, [s.partition("=")[::2] for s in sets.split(",") if s]))
+    if args.live and any(n.startswith(("opt:", "pref:")) for _, sets in variants for n, _ in sets):
+        sys.exit("app options need a relaunch: drop --live")
+    if not args.live and not needs_launch(args):
+        sys.exit("perf relaunches the game for every run: give --title (or --dir/--elf), or --live")
+    prefs_base = dev.prefs()
+    saved_fps_log = dev.getprop("debug.capy.fps_log")
+    rows = []
+    try:
+        for round_index in range(args.rounds):
+            for label, sets in variants:
+                undos = []
+                try:
+                    if not args.live:
+                        dev.adb("shell", "am", "force-stop", PACKAGE)
+                        start_temp = cool_down(dev, args.max_temp)
+                    else:
+                        start_temp = max_temp(dev)
+                    for name, value in sets:
+                        undos.append(apply_variant(dev, name, value, prefs_base))
+                    if args.live:
+                        time.sleep(args.delay)
+                    else:
+                        launch(dev, args)
+                    result = sample_perf(dev, args.seconds)
+                finally:
+                    for undo in reversed(undos):
+                        undo()
+                result.update(round=round_index + 1, variant=label, start_temp=start_temp)
+                rows.append(result)
+                print(f"  round {round_index + 1} {label:<16} {result['fps']:6.2f} fps  worst "
+                      f"{result['worst_ms']:6.1f} ms  cpu {result['cpu_ms_per_frame']:6.1f} ms/frame "
+                      f"({result['cores']:.2f} cores)  gpu {result['gpu']:3.0f} %  "
+                      f"{start_temp:.0f}->{result['temp']:.0f} C", flush=True)
+    finally:
+        dev.setprop("debug.capy.fps_log", saved_fps_log or "0")
+        if not args.live:
+            dev.adb("shell", "am", "force-stop", PACKAGE)
+            dev.write_prefs(prefs_base)
+    print("medians:")
+    for label, _ in variants:
+        mine = [r for r in rows if r["variant"] == label]
+        print(f"  {label:<16} {np.median([r['fps'] for r in mine]):6.2f} fps  cpu "
+              f"{np.median([r['cpu_ms_per_frame'] for r in mine]):6.1f} ms/frame  gpu "
+              f"{np.median([r['gpu'] for r in mine]):3.0f} %")
+    out = Path(args.out)
+    out.mkdir(parents=True, exist_ok=True)
+    with (out / "perf.csv").open("w", newline="") as f:
+        fields = ["round", "variant", "fps", "worst_ms", "cpu_ms_per_frame", "cores", "gpu",
+                  "start_temp", "temp"]
+        writer = csv.DictWriter(f, fieldnames=fields, extrasaction="ignore")
+        writer.writeheader()
+        writer.writerows(rows)
+    print(f"table: {out / 'perf.csv'}", flush=True)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -499,11 +627,22 @@ def main() -> None:
     p.add_argument("--count", type=int, default=1, help="consecutive draws per dump")
     p.add_argument("--delay", type=float, default=6.0)
     sub.add_parser("quirks")
+    p = sub.add_parser("perf"); game(p)
+    p.add_argument("--variant", action="append", required=True,
+                   help="label:name=value,name=value (repeatable); names as in props")
+    p.add_argument("--rounds", type=int, default=3)
+    p.add_argument("--seconds", type=int, default=30, help="sampling time per run")
+    p.add_argument("--max-temp", type=float, default=70.0,
+                   help="wait below this temperature (C) before every launch")
+    p.add_argument("--live", action="store_true",
+                   help="switch properties in the running game instead of relaunching")
+    p.add_argument("--delay", type=float, default=10.0, help="seconds after a --live change")
 
     args = parser.parse_args()
     dev = Device(args.device)
     commands = {"launch": launch, "props": cmd_props, "skip": cmd_skip, "drivers": cmd_drivers,
-                "trace": cmd_trace, "dumps": cmd_dumps, "quirks": cmd_quirks}
+                "trace": cmd_trace, "dumps": cmd_dumps, "quirks": cmd_quirks,
+                "perf": cmd_perf}
     commands[args.command](dev, args)
 
 
