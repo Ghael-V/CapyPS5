@@ -642,6 +642,25 @@ void RenderExecutor::DispatchDirect(uint64_t submit_id, CommandBuffer& buffer,
 
 	// The removed host fence also ordered read-only dispatches before later writers.
 	ShaderAccessBarrier(vk_buffer, vk::PipelineStageFlagBits::eComputeShader);
+	// `debug.capy.nan_hunt N`: check every float image this dispatch writes for NaN and infinities.
+	if (TextureCache::NanHuntMode() != 0) {
+		static uint64_t hunt_frame = 0;
+		static uint32_t dispatches = 0;
+		const auto      frame      = Common::Telemetry::g_game_frames.load(std::memory_order_relaxed);
+		if (frame != hunt_frame) {
+			hunt_frame = frame;
+			dispatches = 0;
+		}
+		dispatches++;
+		for (uint32_t i = 0; i < bindings.images.size() && i < program.info.images.size(); i++) {
+			if (program.info.images[i].written && bindings.images[i].image_id) {
+				m_context.GetTextureCache().DebugScanImageNan(
+				    bindings.images[i].image_id,
+				    fmt::format("dispatch #{} cs=0x{:x} image{}", dispatches,
+				                sh_ctx.GetCs().cs_regs.data_addr, i));
+			}
+		}
+	}
 #if defined(__ANDROID__)
 	// `setprop debug.capy.watch_cs 0x<cs>` + `debug.capy.watch_dump N`: save the images the next N
 	// dispatches of that compute shader write to <files>/watch/cs_<game frame>_<n>_<image>.img.

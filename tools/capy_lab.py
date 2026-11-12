@@ -14,6 +14,7 @@ screenshots, logcat and image dumps. Results go to --out as PNG grids and a CSV.
   trace    record one frame trace (CapyPS5-Frame) to a text file
   dumps    save the color and depth targets after the given draws of a frame
   quirks   print the driver and the quirks in effect (CapyPS5-Quirks)
+  csdumps  the images given compute shaders write (and read), NaN in magenta, Inf in cyan
   perf     frame rate, CPU time per frame and GPU load of variants, in interleaved rounds
 
 Examples (GOW, a PS4 title in ROMs/PS4/CUSA34386):
@@ -406,6 +407,34 @@ def load_dump(path: Path):
     return int(w), int(h), int(fmt), int(bpp), raw
 
 
+def unpack_r11g11b10(packed: np.ndarray) -> np.ndarray:
+    """VK_FORMAT_B10G11R11_UFLOAT_PACK32 to float RGB (Inf and NaN kept)."""
+    def small_float(bits, mantissa_bits):
+        exponent = (bits >> mantissa_bits) & 0x1F
+        mantissa = (bits & ((1 << mantissa_bits) - 1)).astype(np.float32)
+        scale = float(1 << mantissa_bits)
+        normal = (1 + mantissa / scale) * np.exp2(exponent.astype(np.float32) - 15)
+        denormal = mantissa / scale * 2.0 ** -14
+        special = np.where(mantissa == 0, np.inf, np.nan)
+        return np.where(exponent == 0, denormal, np.where(exponent == 31, special, normal))
+    r = small_float(packed & 0x7FF, 6)
+    g = small_float((packed >> 11) & 0x7FF, 6)
+    b = small_float((packed >> 22) & 0x3FF, 5)
+    return np.stack([r, g, b], -1).astype(np.float32)
+
+
+def float_to_image(rgb: np.ndarray) -> np.ndarray:
+    """HDR float color to 8-bit: scaled to the 99th percentile; NaN magenta, Inf cyan."""
+    nan = np.isnan(rgb).any(-1)
+    inf = np.isinf(rgb).any(-1)
+    finite = np.nan_to_num(rgb, nan=0.0, posinf=0.0, neginf=0.0)
+    out = np.clip(finite / max(np.percentile(finite, 99), 1e-6), 0, 1) ** (1 / 2.2)
+    out = (out * 255).astype(np.uint8)
+    out[nan] = (255, 0, 255)
+    out[inf & ~nan] = (0, 255, 255)
+    return out
+
+
 def dump_to_image(path: Path) -> np.ndarray:
     w, h, fmt, bpp, raw = load_dump(path)
     if fmt in (126, 130) and bpp == 4:  # D32 depth: nonlinear view, 0 (far) black
@@ -418,10 +447,12 @@ def dump_to_image(path: Path) -> np.ndarray:
         rgb = np.zeros((h, w, 3), np.float32)
         rgb[:, :, :2] = np.clip(np.abs(rg) / scale, 0, 1)
         return (rgb * 255).astype(np.uint8)
+    if fmt == 122 and bpp == 4:  # B10G11R11 unsigned float
+        return float_to_image(unpack_r11g11b10(raw.view(np.uint32).reshape(h, w)))
     if bpp == 8:  # RGBA16F
-        rgb = np.nan_to_num(raw.view(np.float16).reshape(h, w, 4)[:, :, :3].astype(np.float32))
-        rgb = np.clip(rgb / max(np.percentile(rgb, 99), 1e-6), 0, 1) ** (1 / 2.2)
-        return (rgb * 255).astype(np.uint8)
+        return float_to_image(raw.view(np.float16).reshape(h, w, 4)[:, :, :3].astype(np.float32))
+    if bpp == 16:  # RGBA32F
+        return float_to_image(raw.view(np.float32).reshape(h, w, 4)[:, :, :3])
     channels = raw.reshape(h, w, bpp)
     rgb = channels[:, :, :3] if bpp >= 3 else np.repeat(channels[:, :, :1], 3, 2)
     return rgb.astype(np.uint8)
@@ -452,6 +483,39 @@ def cmd_dumps(dev: Device, args) -> None:
     files = sorted((target / "files" / "watch").glob("f*.img"))
     images = [dump_to_image(f) for f in files]
     grid(images, [f.stem for f in files], out / "dumps.png", columns=2)
+
+
+def cmd_csdumps(dev: Device, args) -> None:
+    """The images the next dispatches of the given compute shaders write (watch_cs)."""
+    out = Path(args.out)
+    saved = {p: dev.getprop(f"debug.capy.{p}") for p in ("watch_cs", "watch_dump", "watch_reads")}
+    dev.run_as("rm -rf files/watch")
+    try:
+        dev.setprop("debug.capy.watch_reads", "1" if args.reads else "0")
+        for cs in args.cs:
+            dev.setprop("debug.capy.watch_cs", cs)
+            dev.setprop("debug.capy.watch_dump", "0")
+            time.sleep(1)
+            dev.setprop("debug.capy.watch_dump", str(args.count))
+            time.sleep(args.delay)
+            print(f"cs {cs} done", flush=True)
+            # Keep each shader's files apart: move them into a folder named after it.
+            dev.run_as(f"mkdir -p files/watch/{cs} && mv files/watch/cs_* files/watch/{cs}/ 2>/dev/null; true")
+    finally:
+        for p, v in saved.items():
+            dev.setprop(f"debug.capy.{p}", v or "0")
+    archive = dev.run_as("tar cf - files/watch", binary=True)
+    target = out / "csdumps"
+    target.mkdir(parents=True, exist_ok=True)
+    with tarfile.open(fileobj=io.BytesIO(archive)) as tar:
+        tar.extractall(target, filter="data")
+    files = sorted((target / "files" / "watch").glob("*/cs_*.img"))
+    images = [dump_to_image(f) for f in files]
+    labels = [f"{f.parent.name} {f.stem}" for f in files]
+    if images:
+        grid(images, labels, out / "csdumps.png", columns=3)
+    else:
+        print("no dumps: the shaders did not run (or wrote no images)")
 
 
 def cmd_quirks(dev: Device, args) -> None:
@@ -627,6 +691,11 @@ def main() -> None:
     p.add_argument("--count", type=int, default=1, help="consecutive draws per dump")
     p.add_argument("--delay", type=float, default=6.0)
     sub.add_parser("quirks")
+    p = sub.add_parser("csdumps")
+    p.add_argument("--cs", nargs="+", required=True, help="compute shader addresses (0x...)")
+    p.add_argument("--count", type=int, default=1, help="dispatches per shader")
+    p.add_argument("--reads", action="store_true", help="also the images they read")
+    p.add_argument("--delay", type=float, default=8.0)
     p = sub.add_parser("perf"); game(p)
     p.add_argument("--variant", action="append", required=True,
                    help="label:name=value,name=value (repeatable); names as in props")
@@ -642,7 +711,7 @@ def main() -> None:
     dev = Device(args.device)
     commands = {"launch": launch, "props": cmd_props, "skip": cmd_skip, "drivers": cmd_drivers,
                 "trace": cmd_trace, "dumps": cmd_dumps, "quirks": cmd_quirks,
-                "perf": cmd_perf}
+                "perf": cmd_perf, "csdumps": cmd_csdumps}
     commands[args.command](dev, args)
 
 

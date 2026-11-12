@@ -404,6 +404,17 @@ void Image::Upload(std::span<const vk::BufferImageCopy> copies, vk::Buffer buffe
 	EXIT_IF(copies.empty() || buffer == nullptr || size == 0);
 	if (static_cast<bool>(FullAspectMask(backing.format) & vk::ImageAspectFlagBits::eDepth)) {
 		Common::DebugFlags::LogDepthWrite("Upload", track_addr);
+		// `debug.capy.skip_ds_upload 1` (diagnostic): leave depth/stencil images as they are, as
+		// downscaled ones already do (UploadScaled), to test transfer writes into them.
+		static Common::DebugFlags::CachedValue skip_ds_upload("debug.capy.skip_ds_upload", 0);
+		if (skip_ds_upload.Get() != 0) {
+			Common::DebugFlags::NoteOnce("CapyPS5-Scale", 0x5344555056ull,
+			                             "depth/stencil upload skipped (debug.capy.skip_ds_upload)");
+			auto command = m_scheduler.Current().Handle();
+			Transit(vk::ImageLayout::eGeneral,
+			        vk::AccessFlagBits2::eShaderRead | vk::AccessFlagBits2::eTransferRead, {}, command);
+			return;
+		}
 	}
 #if defined(__ANDROID__)
 	{
