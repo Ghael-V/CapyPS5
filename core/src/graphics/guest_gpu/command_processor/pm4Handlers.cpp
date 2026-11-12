@@ -2046,12 +2046,13 @@ KYTY_CP_OP_PARSER(CpOpIndirectCxRegs) {
 		LOGF("indirect CX registers have null address, num_regs = %" PRIu32 " (ignored)\n", indirect_num_dw);
 		return KYTY_PM4_LEN(cmd_id) - 1u;
 	}
-	for (uint32_t i = 0; i < indirect_num_dw; i++, indirect_buffer += 2) {
+	const Pm4::LoadedRegisters registers {indirect_buffer, buffer[2]};
+	for (uint32_t i = 0; i < indirect_num_dw; i++) {
 		// Keep the encoded offset for packet control values, and use the normalized offset
 		// only for register dispatch.
-		auto raw_cmd_offset = indirect_buffer[0];
+		auto raw_cmd_offset = registers.RawOffset(i);
 		auto cmd_offset     = NormalizeRegisterOffset(raw_cmd_offset);
-		auto value          = indirect_buffer[1];
+		auto value          = registers.Value(i);
 
 		if (HwCtxTrySetFakeRegister(cmd_offset, value)) {
 			continue;
@@ -2120,10 +2121,11 @@ KYTY_CP_OP_PARSER(CpOpIndirectShRegs) {
 	}
 	const auto indirect_address = reinterpret_cast<uint64_t>(indirect_buffer);
 
-	for (uint32_t i = 0; i < indirect_num_dw; i++, indirect_buffer += 2) {
-		auto raw_cmd_offset = indirect_buffer[0];
+	const Pm4::LoadedRegisters registers {indirect_buffer, buffer[2]};
+	for (uint32_t i = 0; i < indirect_num_dw; i++) {
+		auto raw_cmd_offset = registers.RawOffset(i);
 		auto cmd_offset     = NormalizeRegisterOffset(raw_cmd_offset);
-		auto value          = indirect_buffer[1];
+		auto value          = registers.Value(i);
 
 		// Not sure if this is correct
 		// if (raw_cmd_offset != cmd_offset) {
@@ -2177,10 +2179,11 @@ KYTY_CP_OP_PARSER(CpOpIndirectUcRegs) {
 		LOGF("indirect UC registers have null address, num_regs = %" PRIu32 " (ignored)\n", indirect_num_dw);
 		return KYTY_PM4_LEN(cmd_id) - 1u;
 	}
-	for (uint32_t i = 0; i < indirect_num_dw; i++, indirect_buffer += 2) {
-		auto raw_cmd_offset = indirect_buffer[0];
+	const Pm4::LoadedRegisters registers {indirect_buffer, buffer[2]};
+	for (uint32_t i = 0; i < indirect_num_dw; i++) {
+		auto raw_cmd_offset = registers.RawOffset(i);
 		auto cmd_offset     = NormalizeRegisterOffset(raw_cmd_offset);
-		auto value          = indirect_buffer[1];
+		auto value          = registers.Value(i);
 
 		// Not sure if this is correct
 		// if (raw_cmd_offset != cmd_offset) {
