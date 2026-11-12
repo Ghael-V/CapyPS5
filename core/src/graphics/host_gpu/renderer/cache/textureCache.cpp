@@ -2398,8 +2398,15 @@ void TextureCache::DebugScanImageNan(ImageId id, const std::string& label) {
 	const auto address = image.info.data.address;
 	const auto width   = extent.width;
 	const auto height  = extent.height;
+	// `debug.capy.nan_roi (x0 << 16 | y0)` and `debug.capy.nan_roi_end (x1 << 16 | y1)`: also count
+	// the non-finite texels inside that rectangle (the log's roi=), to find the draw that should
+	// cover it.
+	static Common::DebugFlags::CachedValue nan_roi("debug.capy.nan_roi", 0);
+	static Common::DebugFlags::CachedValue nan_roi_end("debug.capy.nan_roi_end", 0);
+	const auto roi     = static_cast<uint64_t>(std::max<int64_t>(nan_roi.Get(), 0));
+	const auto roi_end = static_cast<uint64_t>(std::max<int64_t>(nan_roi_end.Get(), 0));
 	m_scheduler.DeferPriorityOperation([&download, mapped, offset, size, format, width, height,
-	                                    address, label] {
+	                                    address, label, roi, roi_end] {
 		download.Invalidate(offset, size);
 		uint64_t nans = 0, infs = 0, first = 0;
 		CountNonFinite(format, static_cast<const uint8_t*>(mapped),
@@ -2407,18 +2414,33 @@ void TextureCache::DebugScanImageNan(ImageId id, const std::string& label) {
 		if (nans + infs == 0) {
 			return;
 		}
+		uint64_t roi_count = 0;
+		if (roi_end != 0) {
+			const uint32_t x0 = roi >> 16u, y0 = roi & 0xffffu;
+			const uint32_t x1 = std::min<uint32_t>(roi_end >> 16u, width), y1 = std::min<uint32_t>(roi_end & 0xffffu, height);
+			const uint32_t bpp = vk::blockSize(format);
+			for (uint32_t y = y0; y < y1; y++) {
+				uint64_t row_nans = 0, row_infs = 0, row_first = 0;
+				if (x1 > x0) {
+					CountNonFinite(format, static_cast<const uint8_t*>(mapped) + (uint64_t {y} * width + x0) * bpp,
+					               x1 - x0, row_nans, row_infs, row_first);
+				}
+				roi_count += row_nans + row_infs;
+			}
+		}
 		Common::DebugFlags::FrameTrace("  NAN %s image=0x%llx %ux%u nan=%llu inf=%llu", label.c_str(),
 		                               static_cast<unsigned long long>(address), width, height,
 		                               static_cast<unsigned long long>(nans),
 		                               static_cast<unsigned long long>(infs));
 #if defined(__ANDROID__)
 		__android_log_print(ANDROID_LOG_WARN, "CapyPS5-NanHunt",
-		                    "%s image=0x%llx %ux%u vkfmt=%u nan=%llu inf=%llu first=(%llu,%llu)",
+		                    "%s image=0x%llx %ux%u vkfmt=%u nan=%llu inf=%llu first=(%llu,%llu) roi=%llu",
 		                    label.c_str(), static_cast<unsigned long long>(address), width, height,
 		                    static_cast<uint32_t>(format), static_cast<unsigned long long>(nans),
 		                    static_cast<unsigned long long>(infs),
 		                    static_cast<unsigned long long>(first % width),
-		                    static_cast<unsigned long long>(first / width));
+		                    static_cast<unsigned long long>(first / width),
+		                    static_cast<unsigned long long>(roi_count));
 #endif
 	});
 }
