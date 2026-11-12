@@ -692,6 +692,21 @@ static vk::Device VulkanCreateDevice(GraphicContext& graphics,
 	                    static_cast<unsigned>(static_cast<VkShaderStageFlags>(properties11.subgroupSupportedStages)),
 	                    static_cast<unsigned>(static_cast<VkSubgroupFeatureFlags>(properties11.subgroupSupportedOperations)),
 	                    properties11.subgroupQuadOperationsInAllStages ? 1 : 0);
+	// Whether the driver honours SignedZeroInfNanPreserve (every shader declares it for 32 bits):
+	// without it, NaN compares, min/max and selects may not behave as on the console.
+	__android_log_print(ANDROID_LOG_INFO, "CapyPS5-Gpu",
+	                    "float controls: inf/nan preserve f16=%d f32=%d f64=%d denorm preserve f16=%d "
+	                    "f32=%d flush f32=%d rte f32=%d rtz f32=%d independence denorm=%d rounding=%d",
+	                    float_controls.shaderSignedZeroInfNanPreserveFloat16 ? 1 : 0,
+	                    float_controls.shaderSignedZeroInfNanPreserveFloat32 ? 1 : 0,
+	                    float_controls.shaderSignedZeroInfNanPreserveFloat64 ? 1 : 0,
+	                    float_controls.shaderDenormPreserveFloat16 ? 1 : 0,
+	                    float_controls.shaderDenormPreserveFloat32 ? 1 : 0,
+	                    float_controls.shaderDenormFlushToZeroFloat32 ? 1 : 0,
+	                    float_controls.shaderRoundingModeRTEFloat32 ? 1 : 0,
+	                    float_controls.shaderRoundingModeRTZFloat32 ? 1 : 0,
+	                    static_cast<int>(float_controls.denormBehaviorIndependence),
+	                    static_cast<int>(float_controls.roundingModeIndependence));
 #endif
 	graphics.provoking_vertex_last_enabled = provoking_extension && provoking_vertex.provokingVertexLast;
 	graphics.attachment_feedback_loop_enabled =
