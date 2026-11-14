@@ -30,6 +30,23 @@ namespace {
 constexpr uint32_t SamplerBorderClampMask    = (1u << 2u) | (1u << 5u) | (1u << 8u);
 constexpr uint32_t SamplerDword3ReservedMask = 0x3ffff000u;
 
+// value and every value reaching it through Phi arms, each once, in depth-first order.
+std::vector<Value> PhiWeb(Value value) {
+	std::vector<Value> web;
+	std::vector<Value> pending {value};
+	while (!pending.empty()) {
+		const auto current = pending.back().Resolve();
+		pending.pop_back();
+		if (std::ranges::find(web, current) != web.end()) continue;
+		web.push_back(current);
+		const auto* phi = current.TryInstruction();
+		if (phi == nullptr || phi->GetOpcode() != ValueOpcode::Phi) continue;
+		for (size_t arm = 0; arm < phi->NumArgs(); ++arm)
+			pending.push_back(phi->Arg(arm));
+	}
+	return web;
+}
+
 uint32_t PossibleU32Bits(Value value, const auto& normalize) {
 	std::unordered_map<const Inst*, uint32_t> known;
 	const auto visit = [&](auto&& self, Value at) -> uint32_t {
@@ -629,24 +646,13 @@ private:
 		if (phi == nullptr || phi->GetOpcode() != ValueOpcode::Phi || m_native_cfg.blocks.empty())
 			return value;
 		std::vector<const Inst*> candidates;
-		std::vector<const Inst*> visited;
-		std::vector<const Inst*> pending {phi};
-		while (!pending.empty()) {
-			const auto* inst = pending.back();
-			pending.pop_back();
-			if (std::ranges::find(visited, inst) != visited.end()) continue;
-			visited.push_back(inst);
-			if (inst->GetOpcode() == ValueOpcode::Phi) {
-				for (size_t i = 0; i < inst->NumArgs(); ++i) {
-					const auto* arg = inst->Arg(i).Resolve().TryInstruction();
-					if (arg != nullptr) pending.push_back(arg);
-				}
-			} else if (inst->GetOpcode() == ValueOpcode::ReadConst ||
-			           inst->GetOpcode() == ValueOpcode::LoadAddressU32 ||
-			           inst->GetOpcode() == ValueOpcode::ReadConstBuffer ||
-			           inst->GetOpcode() == ValueOpcode::GetUserData) {
+		for (const auto node: PhiWeb(value)) {
+			const auto* inst = node.TryInstruction();
+			if (inst != nullptr && (inst->GetOpcode() == ValueOpcode::ReadConst ||
+			                        inst->GetOpcode() == ValueOpcode::LoadAddressU32 ||
+			                        inst->GetOpcode() == ValueOpcode::ReadConstBuffer ||
+			                        inst->GetOpcode() == ValueOpcode::GetUserData))
 				candidates.push_back(inst);
-			}
 		}
 		const auto source_at = [&](uint32_t pc) {
 			Value source;
@@ -3656,19 +3662,10 @@ private:
 		if (shift == nullptr || shift->GetOpcode() != ValueOpcode::ShiftRightLogical32 ||
 		    (PossibleU32Bits(shift->Arg(1)) & ~24u) != 0u) return false;
 		DescriptorSource::IndirectDescriptor::SelectorRead selector;
-		std::vector<const Inst*> pending {shift->Arg(0).Resolve().TryInstruction()};
-		std::vector<const Inst*> visited;
-		while (!pending.empty()) {
-			const auto* read = pending.back();
-			pending.pop_back();
+		for (const auto node: PhiWeb(shift->Arg(0))) {
+			const auto* read = node.TryInstruction();
 			if (read == nullptr) return false;
-			if (std::ranges::find(visited, read) != visited.end()) continue;
-			visited.push_back(read);
-			if (read->GetOpcode() == ValueOpcode::Phi) {
-				for (size_t arm = 0; arm < read->NumArgs(); ++arm)
-					pending.push_back(read->Arg(arm).Resolve().TryInstruction());
-				continue;
-			}
+			if (read->GetOpcode() == ValueOpcode::Phi) continue;
 			uint32_t index = 0;
 			const auto* memory = ScalarReadMemory(*read, index);
 			DescriptorSource source;
@@ -4329,6 +4326,30 @@ private:
 		}
 	}
 
+	// Returns the source of the one bound buffer with a fixed V# that a write's Phi web carries
+	// word by word, else UINT32_MAX. The web's other definitions are taken to reach the write only
+	// with EXEC zero, as in a loop-exit undo of an in-loop atomic.
+	uint32_t CarriedBufferSource(const Inst& handle) const {
+		std::array<std::vector<Value>, 4> webs;
+		for (uint32_t word = 0; word < 4u; ++word)
+			webs[word] = PhiWeb(handle.Arg(word));
+		const auto carries = [&](const BufferResource& buffer) {
+			if (m_sources[buffer.source].indirect_descriptor) return false;
+			for (uint32_t word = 0; word < 4u; ++word) {
+				const auto carried = [&](Value node) {
+					return EquivalentValue(m_program, node, m_sources[buffer.source].dwords[word]);
+				};
+				if (std::ranges::none_of(webs[word], carried)) return false;
+			}
+			return true;
+		};
+		const auto bound = std::ranges::find_if(m_info.buffers, carries);
+		if (bound == m_info.buffers.end() ||
+		    std::ranges::any_of(std::next(bound), m_info.buffers.end(), carries))
+			return UINT32_MAX;
+		return bound->source;
+	}
+
 	uint32_t AddBuffer(uint32_t source, const MemoryInfo& memory, ValueOpcode op, uint32_t pc) {
 		for (uint32_t i = 0; i < m_info.buffers.size(); i++) {
 			if (m_info.buffers[i].source == source) {
@@ -4524,36 +4545,40 @@ private:
 					m_info.uses_dma                         = true;
 					return;
 				}
-				// GPU-selected descriptor that the indirect path cannot serve. Bind an
-				// all-zero descriptor instead of exiting: the renderer maps zero-address /
-				// zero-size descriptors onto a null buffer and every emitted access is
-				// bounds-checked, so the access degrades to a zero read / dropped write
-				// for this one instruction instead of terminating the session.
-				DescriptorSource null_descriptor {};
-				null_descriptor.dword_count = 4;
-				null_descriptor.dwords      = {Value(0u), Value(0u), Value(0u), Value(0u)};
-				auto null_resource          = AddBuffer(InternSource(null_descriptor), memory, op, flags.pc);
-				if (null_resource == UINT32_MAX) {
-					null_resource = 0;
+				source = handle != nullptr && buffer != BufferAccess::Read ? CarriedBufferSource(*handle)
+				                                                              : UINT32_MAX;
+				if (source == UINT32_MAX) {
+					// GPU-selected descriptor that the indirect path cannot serve. Bind an
+					// all-zero descriptor instead of exiting: the renderer maps zero-address /
+					// zero-size descriptors onto a null buffer and every emitted access is
+					// bounds-checked, so the access degrades to a zero read / dropped write
+					// for this one instruction instead of terminating the session.
+					DescriptorSource null_descriptor {};
+					null_descriptor.dword_count = 4;
+					null_descriptor.dwords      = {Value(0u), Value(0u), Value(0u), Value(0u)};
+					auto null_resource          = AddBuffer(InternSource(null_descriptor), memory, op, flags.pc);
+					if (null_resource == UINT32_MAX) {
+						null_resource = 0;
+					}
+					// Keep the memory kind a valid static buffer kind (program validation only
+					// accepts Buffer/ScalarBuffer for buffer ops). A sibling instruction that
+					// already marked this slot IndirectBuffer degrades to the same static
+					// binding rather than failing compilation.
+					if (m_program.memory_info[flags.index].kind != ResourceKind::Buffer &&
+					    m_program.memory_info[flags.index].kind != ResourceKind::ScalarBuffer) {
+						m_program.memory_info[flags.index].kind =
+						    op == ValueOpcode::ReadConstBuffer ? ResourceKind::ScalarBuffer
+						                                         : ResourceKind::Buffer;
+					}
+					if (handle == nullptr) {
+						Fail(flags.pc, "buffer descriptor is not a valid runtime value and has no handle");
+					}
+					Common::DebugFlags::NoteOnce("CapyPS5-Shader", 0x4e554c4cull ^ flags.pc,
+					                             "GPU-selected buffer descriptor at pc 0x%x bound as null", flags.pc);
+					handle->SetFlags<uint32_t>(null_resource);
+					m_program.memory_info[flags.index].resource = null_resource;
+					return;
 				}
-				// Keep the memory kind a valid static buffer kind (program validation only
-				// accepts Buffer/ScalarBuffer for buffer ops). A sibling instruction that
-				// already marked this slot IndirectBuffer degrades to the same static
-				// binding rather than failing compilation.
-				if (m_program.memory_info[flags.index].kind != ResourceKind::Buffer &&
-				    m_program.memory_info[flags.index].kind != ResourceKind::ScalarBuffer) {
-					m_program.memory_info[flags.index].kind =
-					    op == ValueOpcode::ReadConstBuffer ? ResourceKind::ScalarBuffer
-					                                         : ResourceKind::Buffer;
-				}
-				if (handle == nullptr) {
-					Fail(flags.pc, "buffer descriptor is not a valid runtime value and has no handle");
-				}
-				Common::DebugFlags::NoteOnce("CapyPS5-Shader", 0x4e554c4cull ^ flags.pc,
-				                             "GPU-selected buffer descriptor at pc 0x%x bound as null", flags.pc);
-				handle->SetFlags<uint32_t>(null_resource);
-				m_program.memory_info[flags.index].resource = null_resource;
-				return;
 			}
 			resource = AddBuffer(source, memory, op, flags.pc);
 			if (resource == UINT32_MAX) {
