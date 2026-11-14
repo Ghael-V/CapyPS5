@@ -2425,6 +2425,7 @@ private:
 		image.read         = image.read || !write || atomic;
 		image.written      = image.written || write;
 		image.atomic       = image.atomic || atomic;
+		image.sample_access_only &= op == ValueOpcode::ImageSampleRaw;
 	}
 
 	uint32_t AddSampler(uint32_t source, uint32_t pc) {
