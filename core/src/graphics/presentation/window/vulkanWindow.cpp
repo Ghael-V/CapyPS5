@@ -459,6 +459,8 @@ static vk::Device VulkanCreateDevice(GraphicContext& graphics,
 	vk::PhysicalDeviceFragmentShaderBarycentricFeaturesKHR optional_barycentric {};
 	// Driver statistics of compiled pipelines (registers, waves), for debug.capy.pipeline_stats.
 	vk::PhysicalDevicePipelineExecutablePropertiesFeaturesKHR optional_executable_info {};
+	// Compute shaders that take derivatives run in 2x2 quads (ComputeDerivativeGroupQuadsKHR).
+	vk::PhysicalDeviceComputeShaderDerivativesFeaturesKHR optional_compute_derivatives {};
 	void*                                         optional_chain = nullptr;
 	{
 		const auto query = [&](auto& feature, const char* extension) {
@@ -475,6 +477,7 @@ static vk::Device VulkanCreateDevice(GraphicContext& graphics,
 		query(optional_barycentric, VK_KHR_FRAGMENT_SHADER_BARYCENTRIC_EXTENSION_NAME);
 #endif
 		query(optional_executable_info, VK_KHR_PIPELINE_EXECUTABLE_PROPERTIES_EXTENSION_NAME);
+		query(optional_compute_derivatives, VK_KHR_COMPUTE_SHADER_DERIVATIVES_EXTENSION_NAME);
 		vk::PhysicalDeviceFeatures2 supported {};
 		supported.pNext = optional_chain;
 		physical_device.getFeatures2(&supported);
@@ -507,7 +510,11 @@ static vk::Device VulkanCreateDevice(GraphicContext& graphics,
 #endif
 		enable(optional_barycentric, optional_barycentric.fragmentShaderBarycentric);
 		enable(optional_executable_info, optional_executable_info.pipelineExecutableInfo);
+		optional_compute_derivatives.computeDerivativeGroupLinear = VK_FALSE;
+		enable(optional_compute_derivatives, optional_compute_derivatives.computeDerivativeGroupQuads);
 	}
+	LOGF("Vulkan compute shader derivatives (quads): %s\n",
+	     optional_compute_derivatives.computeDerivativeGroupQuads == VK_TRUE ? "true" : "false");
 	graphics.pipeline_executable_info_enabled = optional_executable_info.pipelineExecutableInfo == VK_TRUE;
 	LOGF("Vulkan fragment shader barycentrics: %s\n",
 	     optional_barycentric.fragmentShaderBarycentric == VK_TRUE ? "true" : "false");
@@ -1380,6 +1387,7 @@ void WindowContext::CreateVulkan() {
 		                             VK_EXT_IMAGE_VIEW_MIN_LOD_EXTENSION_NAME,
 		                             VK_EXT_COLOR_WRITE_ENABLE_EXTENSION_NAME,
 		                             VK_KHR_PIPELINE_EXECUTABLE_PROPERTIES_EXTENSION_NAME,
+		                             VK_KHR_COMPUTE_SHADER_DERIVATIVES_EXTENSION_NAME,
 #if defined(__ANDROID__) || defined(ANDROID) || defined(KYTY_PLATFORM_ANDROID)
 		                             VK_KHR_FRAGMENT_SHADER_BARYCENTRIC_EXTENSION_NAME,
 #endif
