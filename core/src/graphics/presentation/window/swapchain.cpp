@@ -538,8 +538,15 @@ void Swapchain::Create() {
 		create_info.presentMode = vk::PresentModeKHR::eFifo;
 	}
 	create_info.clipped = VK_TRUE;
-	RequireVulkanSuccess(graphics.device.createSwapchainKHR(&create_info, nullptr, &m_handle),
-	                     "vkCreateSwapchainKHR");
+	const auto created = graphics.device.createSwapchainKHR(&create_info, nullptr, &m_handle);
+	if (created == vk::Result::eErrorSurfaceLostKHR || created == vk::Result::eErrorNativeWindowInUseKHR) {
+		// The window went away while the app was sent to the background: present nothing until
+		// a new surface arrives, as when it is null.
+		LOGF("Swapchain::Create: surface lost (%d), deferring\n", static_cast<int>(created));
+		m_handle = nullptr;
+		return;
+	}
+	RequireVulkanSuccess(created, "vkCreateSwapchainKHR");
 	EXIT_IF(m_handle == nullptr);
 
 	m_images = EnumerateVulkan<vk::Image>(
