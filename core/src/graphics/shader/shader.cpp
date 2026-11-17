@@ -116,6 +116,15 @@ uint32_t Gfx7ShaderCodeWords(uint64_t addr) {
 
 static ShaderMapEntry ShaderGetMappedData(uint64_t addr, const char* label);
 
+// Whether the Gnm "OrbShdr" footer still ends a PS4 shader recorded as `size` bytes at `addr`.
+// Games load new shaders over freed ones (Sackboy does between levels): a recorded size is stale
+// once another shader sits there, and decoding with it stops before that shader's S_ENDPGM.
+static bool Gfx7ShaderSizeCurrent(uint64_t addr, uint32_t size) {
+	std::array<uint32_t, 2> footer {};
+	return LibKernel::Memory::ReadGuestMemory(addr + size, footer.data(), sizeof(footer)) &&
+	       footer[0] == 0x5362724fu && (footer[1] & 0x00ffffffu) == 0x00726468u;
+}
+
 void ShaderDebugDisassembleGfx7(uint64_t addr, const char* stage) {
 #if defined(__ANDROID__)
 	namespace Decoder = ShaderRecompiler::Decoder;
@@ -189,6 +198,16 @@ static ShaderMapEntry ShaderGetMappedData(uint64_t addr, const char* label) {
 
 	std::scoped_lock lock(g_shader_map_mutex);
 
+	const bool gfx7 = ShaderRecompiler::Decoder::GetGuestIsa() == ShaderRecompiler::Decoder::GuestIsa::Gfx7;
+	if (auto iter = g_shader_map->find(addr); iter != g_shader_map->end() && gfx7 &&
+	                                          !Gfx7ShaderSizeCurrent(addr, iter->second.data.code_size_bytes)) {
+		// Only a shader that has a footer elsewhere now is stale; one never found with a footer
+		// keeps its scanned size.
+		const auto words = Gfx7ShaderCodeWords(addr);
+		if (words != 0 && uint64_t {words} * sizeof(uint32_t) != iter->second.data.code_size_bytes) {
+			g_shader_map->erase(iter);
+		}
+	}
 	if (auto iter = g_shader_map->find(addr); iter != g_shader_map->end()) {
 		static Common::DebugFlags::CachedValue loop_log("debug.capy.loop_log", 0);
 		if (loop_log.Get() != 0) {
@@ -201,7 +220,8 @@ static ShaderMapEntry ShaderGetMappedData(uint64_t addr, const char* label) {
 
 	// 1. Check range match: addr falls inside [k, k + code_size_bytes)
 	for (const auto& [k, v] : *g_shader_map) {
-		if (addr >= k && addr < k + v.data.code_size_bytes) {
+		if (addr >= k && addr < k + v.data.code_size_bytes &&
+		    (!gfx7 || Gfx7ShaderSizeCurrent(k, v.data.code_size_bytes))) {
 			const auto offset = addr - k;
 			const auto remaining_size = v.data.code_size_bytes - static_cast<uint32_t>(offset);
 			auto sub_data = v.data;
