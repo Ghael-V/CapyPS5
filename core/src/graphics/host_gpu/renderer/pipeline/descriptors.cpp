@@ -772,8 +772,20 @@ TextureBinding RenderExecutor::ResolveTexture(const ShaderRecompiler::IR::ImageR
 		desc.info.data.size        = desc.info.Gfx7MicroSize();
 	}
 	const bool gfx7_guest = ShaderRecompiler::Decoder::GetGuestIsa() == ShaderRecompiler::Decoder::GuestIsa::Gfx7;
-	const auto data_end   = desc.info.data.address + desc.info.data.size;
-	if (desc.info.data.size == 0 ||
+	// The mapping check covers the PS4 size of level 0 (padded pitch x height), not the gfx10
+	// layout: that one pads the height further and its tail can run past the game's allocation.
+	auto guest_size = desc.info.data.size;
+	if ((descriptor.fields[7] & 0x80000000u) != 0u) {
+		const uint64_t pitch  = ((descriptor.fields[7] >> 5u) & 0x3fffu) + 1u;
+		const uint64_t rows   = height;
+		const uint64_t slices = uint64_t {desc.info.resources.layers} * desc.info.extent.depth;
+		const uint64_t level0 = block_bytes != 0
+		                            ? ((pitch + 3u) / 4u) * ((rows + 3u) / 4u) * block_bytes
+		                            : pitch * rows * desc.info.bytes_per_block;
+		guest_size = std::min<uint64_t>(guest_size, level0 * slices);
+	}
+	const auto data_end = desc.info.data.address + guest_size;
+	if (desc.info.data.size == 0 || guest_size == 0 ||
 	    (gfx7_guest && (data_end < desc.info.data.address || data_end > (1ull << 40u) ||
 	                    LibKernel::Memory::ClampRangeSize(
 	                        LibKernel::Memory::FoldGuestAddress(desc.info.data.address), 1) == 0 ||
