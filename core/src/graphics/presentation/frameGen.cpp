@@ -216,6 +216,9 @@ void FrameGenerator::DestroyTargets() {
 	for (auto& frame: m_frames) {
 		DestroyTarget(frame);
 	}
+	for (auto& frame: m_frames_alt) {
+		DestroyTarget(frame);
+	}
 	for (auto& slot: m_pyramid) {
 		for (auto& level: slot) {
 			DestroyTarget(level);
@@ -235,6 +238,7 @@ void FrameGenerator::DestroyTargets() {
 		DestroyTarget(mask);
 	}
 	DestroyTarget(m_output);
+	DestroyTarget(m_output_alt);
 }
 
 void FrameGenerator::Resize(vk::CommandBuffer command, vk::Extent2D extent, bool srgb) {
@@ -249,6 +253,8 @@ void FrameGenerator::Resize(vk::CommandBuffer command, vk::Extent2D extent, bool
 	m_frame_count  = 0;
 	m_last_pyramid = ~0ull;
 	m_last_flow    = ~0ull;
+	m_frame_alt    = {};
+	m_output_alt_used = false;
 
 	m_level_size[0] = {std::max(1u, DivCeil(extent.width, SEARCH_REDUCTION)),
 	                   std::max(1u, DivCeil(extent.height, SEARCH_REDUCTION))};
@@ -262,9 +268,14 @@ void FrameGenerator::Resize(vk::CommandBuffer command, vk::Extent2D extent, bool
 	m_still_size = {std::max(1u, DivCeil(extent.width, 2)), std::max(1u, DivCeil(extent.height, 2))};
 
 	const auto frame_format = srgb ? vk::Format::eR8G8B8A8Srgb : vk::Format::eR8G8B8A8Unorm;
+	const auto alt_format   = srgb ? vk::Format::eR8G8B8A8Unorm : vk::Format::eR8G8B8A8Srgb;
 	const auto work_usage   = vk::ImageUsageFlagBits::eStorage | vk::ImageUsageFlagBits::eSampled;
 	for (auto& frame: m_frames) {
 		CreateTarget(frame, extent, frame_format,
+		             vk::ImageUsageFlagBits::eTransferDst | vk::ImageUsageFlagBits::eSampled);
+	}
+	for (auto& frame: m_frames_alt) {
+		CreateTarget(frame, extent, alt_format,
 		             vk::ImageUsageFlagBits::eTransferDst | vk::ImageUsageFlagBits::eSampled);
 	}
 	for (auto& slot: m_pyramid) {
@@ -286,6 +297,8 @@ void FrameGenerator::Resize(vk::CommandBuffer command, vk::Extent2D extent, bool
 		CreateTarget(mask, m_still_size, WORK_FORMAT, work_usage);
 	}
 	CreateTarget(m_output, extent, frame_format,
+	             vk::ImageUsageFlagBits::eStorage | vk::ImageUsageFlagBits::eTransferSrc);
+	CreateTarget(m_output_alt, extent, alt_format,
 	             vk::ImageUsageFlagBits::eStorage | vk::ImageUsageFlagBits::eTransferSrc);
 
 	// Every image lives in GENERAL from here on.
@@ -311,6 +324,9 @@ void FrameGenerator::Resize(vk::CommandBuffer command, vk::Extent2D extent, bool
 	for (auto& frame: m_frames) {
 		add(frame);
 	}
+	for (auto& frame: m_frames_alt) {
+		add(frame);
+	}
 	for (auto& slot: m_pyramid) {
 		for (auto& level: slot) {
 			add(level);
@@ -330,6 +346,7 @@ void FrameGenerator::Resize(vk::CommandBuffer command, vk::Extent2D extent, bool
 		add(mask);
 	}
 	add(m_output);
+	add(m_output_alt);
 	vk::DependencyInfo dependency {};
 	dependency.imageMemoryBarrierCount = static_cast<uint32_t>(barriers.size());
 	dependency.pImageMemoryBarriers    = barriers.data();
@@ -377,10 +394,12 @@ void FrameGenerator::Ingest(vk::CommandBuffer command, const VulkanImage& source
 	EXIT_IF(!m_supported);
 	const bool srgb =
 	    source.format == vk::Format::eR8G8B8A8Srgb || source.format == vk::Format::eB8G8R8A8Srgb;
-	if (m_frames[0].image.image == nullptr || extent != m_extent || srgb != m_srgb) {
+	if (m_frames[0].image.image == nullptr || extent != m_extent) {
 		Resize(command, extent, srgb);
 	}
-	auto& slot = m_frames[m_frame_count % 2];
+	const auto index      = static_cast<uint32_t>(m_frame_count % 2);
+	m_frame_alt[index]    = srgb != m_srgb;
+	auto& slot            = m_frame_alt[index] ? m_frames_alt[index] : m_frames[index];
 
 	// The slot was last read by the passes of the pair before.
 	vk::MemoryBarrier before {};
@@ -410,7 +429,7 @@ void FrameGenerator::Ingest(vk::CommandBuffer command, const VulkanImage& source
 void FrameGenerator::BuildPyramid(vk::CommandBuffer command, uint32_t slot) {
 	const std::array<uint32_t, 5> luma_push {m_extent.width, m_extent.height,
 	                                         m_level_size[0].width, m_level_size[0].height, 0};
-	Run(command, m_luma, {&m_frames[slot]}, m_pyramid[slot][0].view, luma_push.data(),
+	Run(command, m_luma, {&Frame(slot)}, m_pyramid[slot][0].view, luma_push.data(),
 	    DivCeil(m_level_size[0].width, 8), DivCeil(m_level_size[0].height, 8));
 	for (uint32_t level = 1; level < LEVELS; level++) {
 		const std::array<uint32_t, 5> down_push {
@@ -480,8 +499,8 @@ bool FrameGenerator::Analyze(vk::CommandBuffer command) {
 
 	// Still mask: raw from the frames, then majority and grow, ping-ponging between two images.
 	for (uint32_t pass = 0; pass < STILL_PASSES; pass++) {
-		const Target& in_a = pass == 0 ? m_frames[1 - slot] : m_still_masks[pass % 2 == 1 ? 0 : 1];
-		const Target& in_c = pass == 0 ? m_frames[slot] : in_a;
+		const Target& in_a = pass == 0 ? Frame(1 - slot) : m_still_masks[pass % 2 == 1 ? 0 : 1];
+		const Target& in_c = pass == 0 ? Frame(slot) : in_a;
 		const std::array<uint32_t, 5> still_push {m_still_size.width, m_still_size.height,
 		                                          m_extent.width, m_extent.height, pass};
 		Run(command, m_still, {&in_a, &in_c}, m_still_masks[pass % 2 == 0 ? 0 : 1].view,
@@ -501,8 +520,11 @@ void FrameGenerator::Generate(vk::CommandBuffer command, float t) {
 	Run(command, m_median, {&m_offsets}, m_offsets_filtered.view, median_push.data(),
 	    DivCeil(m_grid[0].width, 8), DivCeil(m_grid[0].height, 8));
 
-	// The previous generated frame may still be the source of the presentation blit.
-	auto&                   output = m_output.image;
+	// The generated frame takes the encoding of the latest one. The previous generated frame may
+	// still be the source of the presentation blit.
+	m_output_alt_used             = m_frame_alt[slot];
+	auto&                   target = m_output_alt_used ? m_output_alt : m_output;
+	auto&                   output = target.image;
 	vk::ImageMemoryBarrier2 barrier {};
 	barrier.srcStageMask        = output.state.pl_stage;
 	barrier.srcAccessMask       = output.state.access_mask;
@@ -524,8 +546,8 @@ void FrameGenerator::Generate(vk::CommandBuffer command, float t) {
 	    m_grid[0].width,     m_grid[0].height,     m_still_size.width,    m_still_size.height,
 	    Bits(t)};
 	Run(command, m_generate,
-	    {&m_frames[1 - slot], &m_frames[slot], &m_offsets_filtered, &m_still_masks[STILL_FINAL]},
-	    m_output.view, generate_push.data(), DivCeil(m_extent.width, 16),
+	    {&Frame(1 - slot), &Frame(slot), &m_offsets_filtered, &m_still_masks[STILL_FINAL]},
+	    target.view, generate_push.data(), DivCeil(m_extent.width, 16),
 	    DivCeil(m_extent.height, 8));
 	output.state = {vk::PipelineStageFlagBits2::eComputeShader, vk::AccessFlagBits2::eShaderWrite,
 	                vk::ImageLayout::eGeneral};
