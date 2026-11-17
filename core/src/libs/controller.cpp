@@ -205,6 +205,16 @@ static void pad_fill_data(PadData* data, const ControllerState& state, bool conn
 	data->buttons           = state.buttons;
 	data->left_stick_x      = state.axes[static_cast<int>(Axis::LeftX)];
 	data->left_stick_y      = state.axes[static_cast<int>(Axis::LeftY)];
+	// `setprop debug.capy.pad_lx N` / `pad_ly N` (1..255, 0 = off): hold the left stick there, so
+	// tests driven over adb can walk (adb input has no analog axes).
+	static Common::DebugFlags::CachedValue pad_lx("debug.capy.pad_lx", 0);
+	static Common::DebugFlags::CachedValue pad_ly("debug.capy.pad_ly", 0);
+	if (pad_lx.Get() > 0 && pad_lx.Get() <= 255) {
+		data->left_stick_x = static_cast<uint8_t>(pad_lx.Get());
+	}
+	if (pad_ly.Get() > 0 && pad_ly.Get() <= 255) {
+		data->left_stick_y = static_cast<uint8_t>(pad_ly.Get());
+	}
 	data->right_stick_x     = state.axes[static_cast<int>(Axis::RightX)];
 	data->right_stick_y     = state.axes[static_cast<int>(Axis::RightY)];
 	data->analog_buttons_l2 = state.axes[static_cast<int>(Axis::TriggerLeft)];
