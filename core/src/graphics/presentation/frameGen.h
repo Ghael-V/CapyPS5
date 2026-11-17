@@ -46,7 +46,7 @@ public:
 	/// after compute writes.
 	void Generate(vk::CommandBuffer command, float t);
 
-	[[nodiscard]] VulkanImage& Output() noexcept { return m_output.image; }
+	[[nodiscard]] VulkanImage& Output() noexcept { return m_output_alt_used ? m_output_alt.image : m_output.image; }
 
 private:
 	static constexpr uint32_t LEVELS        = 3;
@@ -80,6 +80,10 @@ private:
 	         std::initializer_list<const Target*> sampled, vk::ImageView storage,
 	         const void* push, uint32_t groups_x, uint32_t groups_y);
 	void BuildPyramid(vk::CommandBuffer command, uint32_t slot);
+	// The copy of the frame in a slot: in the image whose sRGB-ness matched its source.
+	[[nodiscard]] const Target& Frame(uint32_t slot) const {
+		return m_frame_alt[slot] ? m_frames_alt[slot] : m_frames[slot];
+	}
 
 	GraphicContext& m_graphics;
 	bool            m_supported = false;
@@ -98,6 +102,10 @@ private:
 	std::array<vk::Extent2D, LEVELS>              m_level_size {};
 	std::array<vk::Extent2D, LEVELS>              m_grid {};
 	std::array<Target, 2>                         m_frames;
+	// The same slots in the other sRGB-ness: a game's display buffers can differ in it (one created
+	// as an sRGB target, the other as UNORM), and a blit between the two would re-encode the frame.
+	std::array<Target, 2>                         m_frames_alt;
+	std::array<bool, 2>                           m_frame_alt {};
 	std::array<std::array<Target, LEVELS>, 2>     m_pyramid;
 	// Ping-pong search fields per level.
 	std::array<std::array<Target, 2>, LEVELS>     m_fields;
@@ -107,6 +115,8 @@ private:
 	Target                                        m_offsets_filtered;
 	std::array<Target, 2>                         m_still_masks;
 	Target                                        m_output;
+	Target                                        m_output_alt;
+	bool                                          m_output_alt_used = false;
 
 	uint64_t m_frame_count  = 0;
 	uint64_t m_last_pyramid = ~0ull;
