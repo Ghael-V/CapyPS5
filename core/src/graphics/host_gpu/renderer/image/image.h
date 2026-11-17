@@ -135,11 +135,14 @@ public:
 	void               MarkBufferModified() noexcept { m_buffer_modified = true; }
 	void               ClearBufferModified() noexcept { m_buffer_modified = false; }
 
-	[[nodiscard]] bool Overlaps(uint64_t address, uint64_t size,
-	                            bool pages = false) const noexcept {
-		// A PS4 render target ends at its real size: the rest of its PS5-layout range is the
-		// game's next allocation (God of War Ragnarok's lit target follows its velocity target).
-		const auto own = info.gfx7_guest_size != 0 && info.gfx7_guest_size < info.data.size
+	// `full_range` (implied by `pages`) covers the whole range the image is registered and
+	// watched over; otherwise a PS4 render target ends at its real size, since the rest of its
+	// PS5-layout range is the game's next allocation (God of War Ragnarok's lit target follows
+	// its velocity target).
+	[[nodiscard]] bool Overlaps(uint64_t address, uint64_t size, bool pages = false,
+	                            bool full_range = false) const noexcept {
+		const auto own = !pages && !full_range && info.gfx7_guest_size != 0 &&
+		                         info.gfx7_guest_size < info.data.size
 		                     ? info.gfx7_guest_size
 		                     : info.data.size;
 		return pages ? ImagePageRangesOverlap(info.data.address, own, address, size)
