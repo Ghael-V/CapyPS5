@@ -514,7 +514,7 @@ bool TextureCache::FindTargetInfoAt(uint64_t address, uint32_t width, uint32_t h
 }
 
 TextureCache::ImageIds TextureCache::FindImagesInRegion(uint64_t address, uint64_t size,
-                                                        bool page_overlap) const {
+                                                        bool page_overlap, bool full_range) const {
 	ImagePageTable::PageRange pages {};
 	if (!ImagePageTable::TryGetPageRange(address, size, pages)) {
 		return {};
@@ -541,7 +541,7 @@ TextureCache::ImageIds TextureCache::FindImagesInRegion(uint64_t address, uint64
 				return;
 			}
 			image->query_epoch = query_epoch;
-			if (image->Overlaps(address, size, page_overlap)) {
+			if (image->Overlaps(address, size, page_overlap, full_range)) {
 				result.push_back(id);
 			}
 		});
@@ -2579,7 +2579,7 @@ void TextureCache::InvalidateCpuAliases(uint64_t address, uint64_t size) {
 		if (owner == nullptr) {
 			continue;
 		}
-		if (owner->Overlaps(address, size)) {
+		if (owner->Overlaps(address, size, false, true)) {
 			const auto real_size = owner->info.gfx7_guest_size;
 			if (real_size != 0 && real_size < owner->info.data.size &&
 			    address >= owner->info.data.address + real_size) {
@@ -2615,7 +2615,7 @@ void TextureCache::InvalidateCpuAliases(uint64_t address, uint64_t size) {
 
 bool TextureCache::HasImagesInRegion(uint64_t address, uint64_t size) {
 	std::scoped_lock lock {m_lock};
-	return !FindImagesInRegion(address, size, false).empty();
+	return !FindImagesInRegion(address, size, false, true).empty();
 }
 
 bool TextureCache::IsMeta(uint64_t address) {
@@ -2659,7 +2659,7 @@ bool TextureCache::TouchMeta(uint64_t address, uint32_t slice, bool is_clear) {
 
 bool TextureCache::IsRegionRegistered(uint64_t address, uint64_t size) {
 	std::scoped_lock lock {m_lock};
-	return !FindImagesInRegion(address, size, false).empty();
+	return !FindImagesInRegion(address, size, false, true).empty();
 }
 
 void TextureCache::UnmapMemory(uint64_t address, uint64_t size) {
@@ -2675,7 +2675,9 @@ void TextureCache::UnmapMemory(uint64_t address, uint64_t size) {
 			++metadata;
 		}
 	}
-	auto images = FindImagesInRegion(address, size, false);
+	// Free every image registered over the unmapped range, PS4 target tails included: their
+	// pages are watched, and the memory behind them is gone.
+	auto images = FindImagesInRegion(address, size, false, true);
 	for (const auto id: images) {
 		auto owner = m_slot_images.try_get(id);
 		if (owner == nullptr) {

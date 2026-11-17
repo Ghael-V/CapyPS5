@@ -174,8 +174,9 @@ private:
 	[[nodiscard]] static BindingType UploadBinding(const Image& image);
 
 	// Caller holds m_lock; it also serializes the per-image query epoch.
+	// `full_range`: match the whole registered range of PS4 targets, not only their real size.
 	[[nodiscard]] ImageIds      FindImagesInRegion(uint64_t address, uint64_t size,
-	                                               bool page_overlap) const;
+	                                               bool page_overlap, bool full_range = false) const;
 	[[nodiscard]] OverlapResult ResolveOverlap(const ImageInfo& requested, BindingType binding,
 	                                           ImageId cached, ImageId merged);
 	[[nodiscard]] ImageId       ResolveDepthOverlap(const ImageInfo& requested, BindingType binding,
