@@ -520,7 +520,8 @@ struct PipelineCache::ProgramCache {
 		} else {
 			translated = ShaderRecompiler::TranslateProgram(params.code, options);
 		}
-		if (entry == programs.end()) {
+		const bool created = entry == programs.end();
+		if (created) {
 			auto retained = source.call ? std::make_unique<ShaderRecompiler::ShaderSource>(std::move(source)) : nullptr;
 			entry = programs.try_emplace(lookup_key,
 			    ShaderRecompiler::IR::ExtractResourcePlan(translated.program), std::move(retained)).first;
@@ -536,6 +537,18 @@ struct PipelineCache::ProgramCache {
 				input_info.stage = {.program = &permutation->program, .resources = &entry->second.resources};
 				permutation->program.bindings.AdvancePushData(push_data_cursor);
 				return permutation->handle;
+			}
+		}
+		if (!created) {
+			// The plan cached with the entry came from its first translation; a later one can reach
+			// other resources (more buffers, or fewer than an indirect root the cached
+			// specialization names), and specializing it with the old plan closed the emulator in
+			// ApplyResourceSpecialization. Plan and specialize the translation being compiled.
+			entry->second.resource_plan = ShaderRecompiler::IR::ExtractResourcePlan(translated.program);
+			if (!ShaderRecompiler::IR::MaterializeResources(entry->second.resource_plan, runtime,
+			                                                 entry->second.resources, entry->second.specialization)) {
+				EXIT("shader resources could not be materialized (shader 0x%016" PRIx64 "): %s\n", params.hash,
+				     ShaderRecompiler::IR::LastMaterializeFailure());
 			}
 		}
 		entry->second.permutations.push_back(CompilePermutation(
