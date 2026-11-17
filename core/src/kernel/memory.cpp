@@ -410,6 +410,24 @@ public:
 		return FindOverlap(start, size) != nullptr;
 	}
 
+	// Like HasOverlap, but ignores the emulator's own "remap" reservations: a guest window above
+	// the guest-owned space keeps its host block reserved while the guest has nothing mapped there,
+	// so it must not count as a guest mapping for MAP_NO_OVERWRITE.
+	bool HasGuestOverlap(uint64_t start, uint64_t size) {
+		Common::LockGuard lock(m_mutex);
+
+		for (const auto& range: m_ranges) {
+			if (!VirtualRangesOverlap(start, size, range.start, range.size)) {
+				continue;
+			}
+			if (range.type != VirtualRangeType::Reserved ||
+			    std::strncmp(range.name, "remap", KERNEL_MAXIMUM_NAME_LENGTH) != 0) {
+				return true;
+			}
+		}
+		return false;
+	}
+
 	bool QueryOverlap(uint64_t start, uint64_t size, Range* out) {
 		EXIT_IF(out == nullptr);
 		Common::LockGuard lock(m_mutex);
@@ -3023,7 +3041,7 @@ static int MapFlexibleMemoryUnfolded(void** addr_in_out, size_t len, int prot, i
 		    (in_addr & (map_alignment - 1u)) != 0) {
 			return KERNEL_ERROR_EINVAL;
 		}
-		if ((flags & GUEST_MAP_NO_OVERWRITE) != 0 && g_virtual_ranges->HasOverlap(in_addr, len)) {
+		if ((flags & GUEST_MAP_NO_OVERWRITE) != 0 && g_virtual_ranges->HasGuestOverlap(in_addr, len)) {
 			return KERNEL_ERROR_ENOMEM;
 		}
 		std::vector<VirtualRanges::Range> reserved_ranges;
@@ -3868,7 +3886,7 @@ static int MapDirectMemoryUnfolded(void** addr, size_t len, int prot, int flags,
 		    (alignment != 0 && in_addr % alignment != 0)) {
 			return KERNEL_ERROR_EINVAL;
 		}
-		if (no_overwrite && g_virtual_ranges->HasOverlap(in_addr, len)) {
+		if (no_overwrite && g_virtual_ranges->HasGuestOverlap(in_addr, len)) {
 			return MapDirectNoMemory(__LINE__);
 		}
 
@@ -4487,7 +4505,7 @@ int KYTY_SYSV_ABI KernelReserveVirtualRange(void** addr, size_t len, int flags, 
 		const auto clip_min  = folded ? size_t {0x40000000ull} : FIXED_CLIP_MIN;
 		for (;;) {
 			const bool overlap = (folded || (flags & GUEST_MAP_NO_OVERWRITE) != 0) &&
-			                     g_virtual_ranges->HasOverlap(base, len);
+			                     g_virtual_ranges->HasGuestOverlap(base, len);
 			// Adopt above HOST_USER_MAX too: fixed targets between
 			// the guest window and the fold mask (e.g. 0x63ffffc000) were refused
 			// with ENOMEM and clipped uselessly, since clipping never brings an
