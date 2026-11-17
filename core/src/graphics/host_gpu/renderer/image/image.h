@@ -183,6 +183,10 @@ public:
 	// The current stencil plane's mapping into the depth image, also retained by its association.
 	ImageSubresourceRange stencil_subresources;
 	uint64_t         tick_accessed_last = 0;
+	// Order of the last GPU write as a target or storage image, and, for a PS4 1D-tiled texture, the
+	// newest such write it has copied in (see TextureCache::AdoptGfx7MicroLevels).
+	uint64_t         gpu_write_serial   = 0;
+	uint64_t         adopted_serial     = 0;
 	size_t           lru_id             = 0;
 
 private:

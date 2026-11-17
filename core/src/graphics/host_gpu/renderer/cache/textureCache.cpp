@@ -1052,6 +1052,9 @@ void TextureCache::UploadGfx7MicroTiled(Image& image) {
 	const uint32_t bytes  = info.bytes_per_block;
 	const uint32_t tw     = info.tiling.texel_width;
 	const uint32_t th     = info.tiling.texel_height;
+	// The texels are read on the CPU: bring in what shaders or DMA wrote there first (Unreal fills
+	// its sky cube with compute and copies, never through the CPU).
+	(void)m_buffer_cache.SyncForRead(info.data.address, info.data.size);
 	std::vector<uint8_t> guest(info.data.size);
 	if (!LibKernel::Memory::ReadGuestMemory(info.data.address, guest.data(), guest.size())) {
 		return;
@@ -1176,7 +1179,7 @@ void TextureCache::UploadGfx7MicroTiled(Image& image) {
 					break;
 			}
 		}
-		in_offset += layout.size * info.resources.layers;
+		in_offset += layout.size * info.Gfx7MicroSlots();
 	}
 	staging->Flush(0, linear_size);
 	image.Upload(copies, staging->Handle(), 0, linear_size);
@@ -1480,6 +1483,61 @@ ImageId TextureCache::AssociateStencil(ImageId depth_id, GuestRange stencil) {
 	return association;
 }
 
+// A PS4 1D-tiled texture whose levels the GPU drew first, one render target per level (Unreal's
+// sky and reflection captures render each mip of a cube as a six-layer target, then sample the
+// whole cube). Those targets never reach guest memory, so the levels are copied from them.
+void TextureCache::AdoptGfx7MicroLevels(ImageId id, const ImageIds& candidates) {
+	const auto info = m_slot_images[id].info;
+	if (info.gfx7_micro_pitch == 0 || info.gfx7_micro_thick || info.gfx7_linear || info.IsVolume() ||
+	    info.samples != 1) {
+		return;
+	}
+	const auto adopted     = m_slot_images[id].adopted_serial;
+	auto       newest      = adopted;
+	bool       initialized = adopted != 0;
+	for (const auto candidate: candidates) {
+		const auto* target = m_slot_images.try_get(candidate);
+		if (target == nullptr || candidate == id || !(target->binding.is_target || target->IsGpuModified()) ||
+		    target->gpu_write_serial <= adopted || target->info.gfx7_micro_pitch != 0 ||
+		    target->info.data.address < info.data.address || target->info.resources.levels != 1 ||
+		    target->info.bytes_per_block != info.bytes_per_block || target->info.samples != 1 ||
+		    target->backing.samples != m_slot_images[id].backing.samples || target->info.IsVolume() ||
+		    target->info.resources.layers > info.resources.layers) {
+			continue;
+		}
+		// A target holds a whole level (all slices) or some of its slices, one after another.
+		for (uint32_t level = 0; level < info.resources.levels; level++) {
+			const auto extent = info.MipExtent(level);
+			const auto layout = info.Gfx7MicroLevelLayout(level);
+			const auto base   = info.data.address + info.Gfx7MicroLevelOffset(level);
+			const auto slice  = layout.size * layout.groups;
+			if (target->info.extent.width != extent.width || target->info.extent.height != extent.height ||
+			    target->info.data.address < base || slice == 0 ||
+			    (target->info.data.address - base) % slice != 0) {
+				continue;
+			}
+			const auto first = (target->info.data.address - base) / slice;
+			if (first + target->info.resources.layers > info.resources.layers) {
+				continue;
+			}
+			if (!initialized) {
+				InitializeImage(id);
+				initialized = true;
+			}
+			Common::DebugFlags::NoteOnce("CapyPS5-Gfx7Tex", info.data.address ^ 0x4c564c00ull ^ (level << 16u) ^ first,
+			                             "texture 0x%llx %ux%u level %u slice %llu taken from target 0x%llx (%u layers)",
+			                             static_cast<unsigned long long>(info.data.address), info.extent.width,
+			                             info.extent.height, level, static_cast<unsigned long long>(first),
+			                             static_cast<unsigned long long>(target->info.data.address),
+			                             target->info.resources.layers);
+			CopyImageMip(id, candidate, level, static_cast<uint32_t>(first));
+			newest = std::max(newest, target->gpu_write_serial);
+			break;
+		}
+	}
+	m_slot_images[id].adopted_serial = newest;
+}
+
 ImageId TextureCache::FindImage(ImageDesc& desc, bool exact_format) {
 	auto& command = m_scheduler.Current();
 	if (command.IsInvalid()) {
@@ -1575,6 +1633,10 @@ ImageId TextureCache::FindImage(ImageDesc& desc, bool exact_format) {
 			                                    inserted.info.data.size)) {
 				inserted.MarkBufferModified();
 			}
+			AdoptGfx7MicroLevels(result, candidates);
+		}
+		if (desc.type == BindingType::Texture && m_slot_images[result].info.gfx7_micro_pitch != 0) {
+			AdoptGfx7MicroLevels(result, candidates);
 		}
 		auto& image = m_slot_images[result];
 		if (view_mip >= 0) {
@@ -1660,6 +1722,7 @@ vk::ImageView TextureCache::FindTexture(ImageId id, const ImageDesc& desc) {
 	}
 	if (desc.type == BindingType::Storage) {
 		image.MarkGpuModified();
+		image.gpu_write_serial = ++m_gpu_write_serial;
 	}
 	if (!image.info.data.Empty()) {
 		RefreshImage(id);
@@ -1701,6 +1764,7 @@ vk::ImageView TextureCache::FindRenderTarget(ImageId id, const ImageDesc& desc) 
 	}
 	TouchImage(image);
 	image.MarkGpuModified();
+	image.gpu_write_serial    = ++m_gpu_write_serial;
 	image.usage.render_target = true;
 	RefreshImage(id);
 	CommitGpuWrite(image);

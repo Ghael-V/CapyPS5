@@ -76,13 +76,21 @@ ImageInfo::Gfx7MicroLevel ImageInfo::Gfx7MicroLevelLayout(uint32_t level) const 
 	return layout;
 }
 
-uint64_t ImageInfo::Gfx7MicroSize() const {
-	uint64_t total = 0;
-	for (uint32_t level = 0; level < resources.levels; level++) {
-		const auto layout = Gfx7MicroLevelLayout(level);
-		total += layout.size * layout.groups * resources.layers;
+uint32_t ImageInfo::Gfx7MicroSlots() const {
+	return gfx7_micro_pow2 ? std::bit_ceil(resources.layers) : resources.layers;
+}
+
+uint64_t ImageInfo::Gfx7MicroLevelOffset(uint32_t level) const {
+	uint64_t offset = 0;
+	for (uint32_t l = 0; l < level && l < resources.levels; l++) {
+		const auto layout = Gfx7MicroLevelLayout(l);
+		offset += layout.size * layout.groups * Gfx7MicroSlots();
 	}
-	return total;
+	return offset;
+}
+
+uint64_t ImageInfo::Gfx7MicroSize() const {
+	return Gfx7MicroLevelOffset(resources.levels);
 }
 
 void ImageInfo::UpdateSize() {

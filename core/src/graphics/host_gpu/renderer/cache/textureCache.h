@@ -182,6 +182,7 @@ private:
 	[[nodiscard]] ImageId       ResolveDepthOverlap(const ImageInfo& requested, BindingType binding,
 	                                                ImageId cached);
 	[[nodiscard]] ImageId       ExpandImage(const ImageInfo& info, ImageId source);
+	void                        AdoptGfx7MicroLevels(ImageId id, const ImageIds& candidates);
 	void                        RefreshImage(ImageId id);
 	void                        MaterializeColorClear(ImageId id, const ImageDesc& desc,
 	                                                uint32_t metadata_base_layer);
@@ -229,6 +230,7 @@ private:
 	uint64_t         m_critical_gc_memory     = 3ull * 1024 * 1024 * 1024;
 	uint64_t         m_gc_tick                = 0;
 	mutable uint32_t m_image_query_epoch      = 0;
+	uint64_t         m_gpu_write_serial       = 0;
 	bool             m_readback_linear_images = false;
 
 	friend struct TextureCacheTestAccess;
