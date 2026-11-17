@@ -1027,6 +1027,7 @@ LIB_DEFINE(InitGnmDriver_1) {
 	LIB_FUNC("V31V01UiScY", Gnm::GnmSetVsShader);     // UpdateVsShader
 	LIB_FUNC("4MgRw-bVNQU", Gnm::GnmSetPsShader);     // UpdatePsShader
 	LIB_FUNC("mLVL7N7BVBg", Gnm::GnmSetPsShader350);  // UpdatePsShader350
+	LIB_FUNC("nLM2i2+65hA", Gnm::GnmSetGsShader);     // UpdateGsShader
 	LIB_FUNC("Kx-h-nWQJ8A", Gnm::GnmSetCsShaderWithModifier);
 	LIB_FUNC("0BzLGljcwBo", Gnm::GnmDispatchDirect);
 	LIB_FUNC("Z43vKp5k7r0", Gnm::GnmDispatchIndirect);

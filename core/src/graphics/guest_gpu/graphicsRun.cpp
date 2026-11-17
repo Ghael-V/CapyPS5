@@ -1064,7 +1064,9 @@ void CommandProcessor::ProcessIndirectBuffer(std::span<const uint32_t> commands,
 	// real GPU, not the CPU: skip it and dump the packets that led to it.
 	constexpr uint64_t GuestAddressLimit = 1ull << 40u;
 	const auto         address           = reinterpret_cast<uint64_t>(commands.data());
-	if (address >= GuestAddressLimit || commands.size() > (GuestAddressLimit - address) / 4u) {
+	// Nor is one in the first page (a null or unwritten pointer in a stale packet).
+	if (address < 0x1000u || address >= GuestAddressLimit ||
+	    commands.size() > (GuestAddressLimit - address) / 4u) {
 		Common::DebugFlags::NoteOnce("CapyPS5-Pm4", address >> 12u,
 		                             "indirect buffer 0x%llx (%zu dwords) is outside guest memory: skipped",
 		                             static_cast<unsigned long long>(address), commands.size());
