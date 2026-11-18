@@ -55,6 +55,7 @@ public:
 	[[nodiscard]] bool HandleFault(PageFaultAccess access, uint64_t fault_vaddr) noexcept;
 	[[nodiscard]] bool InvalidateMemory(uint64_t vaddr, uint64_t size);
 	[[nodiscard]] bool IsMapped(uint64_t vaddr, uint64_t size) const noexcept;
+	[[nodiscard]] bool IsAnyMapped(uint64_t vaddr, uint64_t size) const noexcept;
 	void               MapMemory(uint64_t vaddr, uint64_t size);
 	/** `discard`: the contents are gone (memory released, or a free range about to be reused),
 	 * so GPU writes are dropped instead of read back. */

@@ -727,6 +727,20 @@ TextureBinding RenderExecutor::ResolveTexture(const ShaderRecompiler::IR::ImageR
 	            ShaderRecompiler::Decoder::GetGuestIsa() == ShaderRecompiler::Decoder::GuestIsa::Gfx7
 	        ? 256u
 	        : desc.info.tiling.block.block_size;
+	// A texture over memory with no mapped byte (stale descriptor on a path the shader does not
+	// take) reads nothing on the GPU; bind the null image. The host check keeps a texture whose
+	// memory the GPU was never told about (but the guest mapped) out of this path.
+	if (desc.info.data.size != 0 && !m_context.IsAnyMapped(address, desc.info.data.size) &&
+	    !LibKernel::Memory::IsHostRangeMapped(address & ~uint64_t {0xfff}, 0x1000)) {
+		Common::DebugFlags::NoteOnce("CapyPS5-Tex", address ^ 0x756e6d6170ull,
+		                             "texture 0x%llx size=%llu has no mapped byte: bound as null",
+		                             static_cast<unsigned long long>(address),
+		                             static_cast<unsigned long long>(desc.info.data.size));
+		auto       null_desc = NullTextureDesc(resource, storage ? TextureCache::BindingType::Storage
+		                                                         : TextureCache::BindingType::Texture);
+		const auto id        = texture_cache.FindImage(null_desc);
+		return {id, nullptr, std::move(null_desc)};
+	}
 	EXIT_NOT_IMPLEMENTED(desc.info.data.size == 0 || alignment == 0 ||
 	                     (address & (static_cast<uint64_t>(alignment) - 1u)) != 0);
 	if (storage) {
