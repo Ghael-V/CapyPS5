@@ -197,13 +197,13 @@
     <string name="trophies_card_next">Still to earn</string>
     <string name="whats_new_title">What\'s new in v%1$s</string>
     <string-array name="whats_new_items">
-        <item>Mali GPUs on their system driver can now run games: BCn textures are decompressed on the GPU when the driver cannot sample them.</item>
-        <item>PanVK on Mali: the GPU is no longer rejected for missing vertex-stage stores or dual-source blending.</item>
-        <item>Framegen: the FPS counter shows real and total frames (XX FPS - YY FG), and the options are now called Framegen x2, x3 and x4.</item>
-        <item>Games that output HDR10 are converted to SDR for the screen.</item>
-        <item>Tessellation: quad domains, fractional-even spacing and counterclockwise output, plus new shader instructions.</item>
-        <item>Audio and network fixes from KytyPS5: NGS2 channel matrices and waveform blocks, Http2 and resolver calls, and functions for Palworld, Gran Turismo 7 and NHL 27.</item>
-        <item>Many more KytyPS5 graphics fixes: depth textures, mip aliasing, render targets, video-out formats and fonts.</item>
+        <item>PS4 backward compatibility: PS4 games run on the same layers as PS5 games, like on a real PS5. They are marked PS4 in the library.</item>
+        <item>PS4 graphics: GCN shaders, PS4 render targets and texture tiling, fast clears, cube and volume textures, and PS4 save data and trophies.</item>
+        <item>Framegen can be changed from the pause menu while a game runs, and it now works with games whose two screen buffers use different formats.</item>
+        <item>Console language option, following the device language by default (global and per game).</item>
+        <item>Games that load shaders over freed ones or rebuild their pipelines no longer crash the renderer.</item>
+        <item>Audio: Opus with up to 8 channels, MP3 frame parsing and fuller AudioOut2 queues; network: getpeername.</item>
+        <item>Many kernel, memory and graphics fixes from KytyPS5, and faster GPU tracking of guest memory.</item>
     </string-array>
     <string name="option_language">Console language</string>
     <string name="option_language_desc">The language games are told the console uses. Games without it fall back to their own default.</string>

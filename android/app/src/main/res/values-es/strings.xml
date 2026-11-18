@@ -192,13 +192,13 @@
     <string name="trophies_card_next">Por conseguir</string>
     <string name="whats_new_title">Lo nuevo en la v%1$s</string>
     <string-array name="whats_new_items">
-        <item>Las GPU Mali con el driver del sistema ya pueden ejecutar juegos: las texturas BCn se descomprimen en la GPU cuando el driver no puede leerlas.</item>
-        <item>PanVK en Mali: la GPU ya no se rechaza por no tener escrituras en la etapa de vértices ni mezcla de doble fuente.</item>
-        <item>Framegen: el contador muestra los fotogramas reales y los totales (XX FPS - YY FG), y las opciones ahora se llaman Framegen x2, x3 y x4.</item>
-        <item>Los juegos que sacan imagen en HDR10 se convierten a SDR para la pantalla.</item>
-        <item>Teselado: dominios cuadrados, espaciado fraccional par y salida en sentido antihorario, y nuevas instrucciones de shader.</item>
-        <item>Correcciones de audio y red de KytyPS5: matrices de canales y bloques de onda de NGS2, llamadas Http2 y de resolución, y funciones para Palworld, Gran Turismo 7 y NHL 27.</item>
-        <item>Muchas más correcciones gráficas de KytyPS5: texturas de profundidad, mips, render targets, formatos de salida de vídeo y fuentes.</item>
+        <item>Retrocompatibilidad con PS4: los juegos de PS4 funcionan sobre las mismas capas que los de PS5, como en una PS5 real. En la biblioteca llevan la marca PS4.</item>
+        <item>Gráficos de PS4: shaders GCN, render targets y teselado de texturas de PS4, borrados rápidos, texturas cúbicas y de volumen, y partidas guardadas y trofeos de PS4.</item>
+        <item>Framegen se puede cambiar desde el menú de pausa con el juego en marcha, y ya funciona en juegos cuyos dos búferes de pantalla usan formatos distintos.</item>
+        <item>Opción de idioma de la consola, que sigue al idioma del dispositivo por defecto (global y por juego).</item>
+        <item>Los juegos que cargan shaders sobre otros liberados o reconstruyen sus pipelines ya no cierran el renderizador.</item>
+        <item>Audio: Opus de hasta 8 canales, lectura de tramas MP3 y colas AudioOut2 más completas; red: getpeername.</item>
+        <item>Muchas correcciones de kernel, memoria y gráficos de KytyPS5, y un seguimiento más rápido de la memoria del juego en la GPU.</item>
     </string-array>
     <string name="option_language">Idioma de la consola</string>
     <string name="option_language_desc">El idioma que el juego cree que usa la consola. Si el juego no lo incluye, usará el suyo por defecto.</string>

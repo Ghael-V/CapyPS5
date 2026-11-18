@@ -2,11 +2,12 @@
 
 **English** · [Español](README.es.md)
 
-The first PlayStation 5 emulator for Android, built on KytyPS5 and the FEX x86-64 JIT.
+The first PlayStation 5 emulator for Android, built on KytyPS5 and the FEX x86-64 JIT. It also runs
+PS4 games through backward compatibility, the way a PS5 does.
 
 **Website:** <https://capyps5.org> · **Discord:** <https://discord.com/invite/PEE7Q5TVM5>
 
-> **Alpha (v0.0.1).** Few games work and many don't run at full speed. This release is for testing
+> **Alpha (v0.0.6).** Many games work, but many don't run at full speed. This release is for testing
 > and reporting problems. The app tells you when a new version is out.
 
 Source code: <https://git.capyps5.org/CapyPS5/CapyPS5> (mirror: <https://github.com/Ghael-V/CapyPS5>).
@@ -19,11 +20,11 @@ Every release has a tag (`v0.0.1`, …) with the exact code it was built from.
   On other Adreno GPUs (for example the 750 in the Galaxy S24 Ultra) use a Turnip driver, and on Mali
   try PanVK: the app downloads them in **Settings → Graphics → Download drivers**.
 - 12 GB of RAM or more recommended.
-- Your own PS5 game dumps (a folder with `eboot.bin` and `sce_sys/`).
+- Your own PS5 or PS4 game dumps (a folder with `eboot.bin` and `sce_sys/`).
 
 **CapyPS5 includes no games, BIOS, firmware or Sony keys, and needs none of them.** Only use games
 you dumped from your own console. CapyPS5 is not affiliated with Sony Interactive Entertainment;
-PlayStation and PS5 are trademarks of their respective owners.
+PlayStation, PS4 and PS5 are trademarks of their respective owners.
 
 ## Usage
 
@@ -42,6 +43,21 @@ If a game closes because of an error, the library shows why when you return and 
 More than 100 games run correctly, according to testers' reports. The list grew too long to keep game by game, so it is no longer maintained here.
 
 Measured on an AYN Odin 3 (Snapdragon 8 Elite) and reported by testers on other phones (Snapdragon 8 Elite, 8 Gen 3 and 888, Dimensity with Mali). Results change with the GPU and driver. Smaller 2D games run well; big Unreal Engine games start but are slow, so they default to 25% resolution (configurable in Settings). CapyPS5 Framegen (Settings → Performance) can show a game running at 30 FPS at 60.
+
+## PS4 backward compatibility
+
+A PS5 runs PS4 games on its own hardware, and CapyPS5 does the same in software: PS4 games use the
+same x86-64 JIT, system libraries and Vulkan renderer as PS5 games. Only what the PS4 does
+differently is added:
+
+- **GPU:** the PS4's GCN (gfx7) shaders and registers, its texture tiling and render targets, and its
+  fast clears and depth compression.
+- **System:** the PS4 `libSceGnmDriver`, PS4 executables and the modules games ship, the PS4 memory
+  layout, and the PS4 save data and trophy APIs.
+
+PS4 games are found like PS5 games (a folder with `eboot.bin` and `sce_sys/param.sfo`) and carry a
+**PS4** mark in the library. Support is new: 2D and Unity games run best, Unreal Engine 4 games start
+but are slow, and many games don't boot yet. Reports help, as for PS5 games.
 
 ## Building
 
