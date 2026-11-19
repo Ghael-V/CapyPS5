@@ -259,6 +259,7 @@ void CommandScheduler::Shutdown() {
 			    lock, [this] { return m_operation_state == OperationState::Closed; });
 			return;
 		}
+		SealReleasesLocked();
 		m_operation_state = OperationState::Draining;
 	}
 	if (!m_command.IsInvalid()) {
@@ -275,7 +276,7 @@ void CommandScheduler::Shutdown() {
 	{
 		std::lock_guard lock(m_operation_mutex);
 		EXIT_IF(!m_pending_operations.empty() || !m_priority_operations.empty() ||
-		        m_priority_active);
+		        !m_unsealed_releases.empty() || m_priority_active);
 		m_operation_state = OperationState::Closed;
 	}
 	m_operation_available.notify_all();
@@ -327,6 +328,10 @@ void CommandScheduler::FlushAndWait() {
 void CommandScheduler::Finish() {
 	CS_LOG("Finish called by %p", __builtin_return_address(0));
 	CheckActive();
+	{
+		std::lock_guard lock(m_operation_mutex);
+		SealReleasesLocked();
+	}
 	if (!m_command.IsInvalid()) {
 		Submit();
 	}
@@ -369,8 +374,37 @@ void CommandScheduler::PopPendingOperations() {
 	}
 }
 
+void CommandScheduler::StartOperation() {
+	{
+		std::lock_guard lock(m_operation_mutex);
+		SealReleasesLocked();
+	}
+	PopPendingOperations();
+}
+
 void CommandScheduler::DeferOperation(Common::UniqueFunction<void>&& operation) {
 	QueueOperation(std::move(operation), false);
+}
+
+void CommandScheduler::DeferRelease(Common::UniqueFunction<void>&& operation) {
+	CheckActive();
+	EXIT_IF(!operation);
+	{
+		std::lock_guard lock(m_operation_mutex);
+		if (m_operation_state == OperationState::Open) {
+			m_unsealed_releases.push_back(std::move(operation));
+			return;
+		}
+	}
+	QueueOperation(std::move(operation), false);
+}
+
+void CommandScheduler::SealReleasesLocked() {
+	const auto last_recorded_tick = m_command.IsInvalid() ? CurrentTick() - 1 : CurrentTick();
+	for (auto& release: m_unsealed_releases) {
+		m_pending_operations.push({std::move(release), last_recorded_tick});
+	}
+	m_unsealed_releases.clear();
 }
 
 void CommandScheduler::DeferPriorityOperation(Common::UniqueFunction<void>&& operation) {

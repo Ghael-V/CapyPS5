@@ -161,7 +161,7 @@ void BufferCache::DeleteBuffer(BufferId id) {
 	}
 	Unregister(id);
 	if (m_scheduler.Active()) {
-		m_scheduler.DeferOperation([this, id] { m_slot_buffers.erase(id); });
+		m_scheduler.DeferRelease([this, id] { m_slot_buffers.erase(id); });
 	} else {
 		m_slot_buffers.erase(id);
 	}
@@ -709,7 +709,7 @@ vk::Buffer BufferCache::UploadCopies(Buffer& buffer, std::span<vk::BufferCopy> c
 	}
 	temporary->Flush(0, total_size);
 	const auto handle = temporary->Handle();
-	m_scheduler.DeferOperation([owner = std::move(temporary)]() mutable { owner.reset(); });
+	m_scheduler.DeferRelease([owner = std::move(temporary)]() mutable { owner.reset(); });
 	return handle;
 }
 
@@ -1147,7 +1147,7 @@ void BufferCache::EndUploadBatch() {
 		read_all(temporary->Mapped().data(), 0);
 		temporary->Flush(0, total_size);
 		source = temporary->Handle();
-		m_scheduler.DeferOperation([owner = std::move(temporary)]() mutable { owner.reset(); });
+		m_scheduler.DeferRelease([owner = std::move(temporary)]() mutable { owner.reset(); });
 	}
 	auto& command = m_scheduler.Current();
 	command.EndRendering();

@@ -46,10 +46,16 @@ public:
 	void                      Shutdown();
 	void                      Wait(uint64_t tick);
 	void                      PopPendingOperations();
+	// Starts a draw, dispatch or other GPU operation: seals the held releases, then pops.
+	void                      StartOperation();
 	void                      DrainPriorityOperations();
 	void                      WaitPriorityOperations(uint64_t tick);
 	// Guest-memory completions use the priority queue; normal callbacks maintain GPU resources.
 	void                      DeferOperation(Common::UniqueFunction<void>&& operation);
+	// Releases a resource a draw or dispatch may already hold: it is stamped at the next
+	// StartOperation, with the tick being recorded then, so it runs only after the command buffer
+	// its handles reached has completed.
+	void                      DeferRelease(Common::UniqueFunction<void>&& operation);
 	void                      DeferPriorityOperation(Common::UniqueFunction<void>&& operation);
 	[[nodiscard]] bool        HasPendingPriorityOperations();
 	// Runs after each guest-memory completion, so a guest queue waiting on it retries at once.
@@ -98,6 +104,7 @@ private:
 	void BeginNext();
 	void PriorityOperationsThread(std::stop_token stop);
 	void QueueOperation(Common::UniqueFunction<void>&& operation, bool priority);
+	void SealReleasesLocked();
 	void RunOperation(Common::UniqueFunction<void>&& operation);
 
 	MasterSemaphore              m_master;
@@ -108,6 +115,7 @@ private:
 	DynamicState                 m_dynamic_state;
 	std::queue<PendingOperation> m_pending_operations;
 	std::queue<PendingOperation> m_priority_operations;
+	std::vector<Common::UniqueFunction<void>> m_unsealed_releases;
 	std::mutex                   m_operation_mutex;
 	std::condition_variable      m_operation_available;
 	std::jthread                 m_priority_thread;
