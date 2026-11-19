@@ -130,6 +130,8 @@ CPUFeatures::CPUFeatures(FEXCore::Context::Context& CTX) {
   CpuInfo.ProcessorRevision = (FamilyIdentifier & 0xf0000) >> 4;                                // Extended Model
   CpuInfo.ProcessorRevision |= (FamilyIdentifier & 0xf0) << 4;                                  // Model
   CpuInfo.ProcessorRevision |= FamilyIdentifier & 0xf;                                          // Stepping
+  // 8-bits in CPUID 01.ebx for up to 256 cores.
+  CpuInfo.MaximumProcessors = ((CPUIDResult01.ebx >> 16) & 0xFF) + 1;
 }
 
 bool CPUFeatures::IsFeaturePresent(uint32_t Feature) {
@@ -162,6 +164,7 @@ bool CPUFeatures::IsFeaturePresent(uint32_t Feature) {
 }
 
 void CPUFeatures::UpdateInformation(SYSTEM_CPU_INFORMATION* Info) {
+  Info->MaximumProcessors = CpuInfo.MaximumProcessors;
   Info->ProcessorArchitecture = CpuInfo.ProcessorArchitecture;
   Info->ProcessorLevel = CpuInfo.ProcessorLevel;
   Info->ProcessorRevision = CpuInfo.ProcessorRevision;

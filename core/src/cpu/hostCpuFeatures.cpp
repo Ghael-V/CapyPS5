@@ -152,10 +152,17 @@ void DetectFexHostFeatures(FEXCore::HostFeatures& features) {
 	// SupportsI8MM), 3DNow!, SSE4a. RDRAND stays off too: on Qualcomm Oryon RNDRRS never succeeds.
 
 	// Any core with the slow LDAPUR makes the whole process avoid it (threads migrate).
+	// FEX's CPUID takes the core count from CPUMIDRs (FEX's own frontend fills it): left empty, leaf 1
+	// reported no logical processors, leaves 4 and 0x80000008 wrapped to 0xffffffff cores, and the
+	// brand string leaves (0x80000002-4) indexed an empty per-CPU table. A core whose MIDR sysfs
+	// can't read still counts, as an unknown part.
 	bool slow_ldapur = false;
-	const long cpus  = sysconf(_SC_NPROCESSORS_CONF);
-	for (long cpu = 0; cpu < cpus && !slow_ldapur; cpu++) {
-		slow_ldapur = HasSlowLdapur(ReadMidr(cpu));
+	const long cpus  = std::max<long>(sysconf(_SC_NPROCESSORS_CONF), 1);
+	features.CPUMIDRs.clear();
+	for (long cpu = 0; cpu < cpus; cpu++) {
+		const uint32_t midr = ReadMidr(cpu);
+		features.CPUMIDRs.push_back(midr);
+		slow_ldapur = slow_ldapur || HasSlowLdapur(midr);
 	}
 	if (slow_ldapur) {
 		features.SupportsTSOImm9 = 0;

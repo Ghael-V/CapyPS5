@@ -1,5 +1,5 @@
 # Third-party snapshot origins (vendored as plain files)
-FEX https://github.com/FEX-Emu/FEX.git 14c92681f4d62cf84d901460e0358de09c8847a7 + patches/fex-android.patch (already applied) + upstream backports 68f4c5fbc, 059a623b4, dbbda7b2b (partial) (2026-11-17)
+FEX https://github.com/FEX-Emu/FEX.git 14c92681f4d62cf84d901460e0358de09c8847a7 + patches/fex-android.patch (already applied) + upstream backports 68f4c5fbc, 059a623b4, dbbda7b2b (partial) (2026-11-17), b9fc587ac, 65da98d64, eb7a9f233, 4e1ad46b1 (without its tests) (2026-11-19)
 FEX/c07e2aa4b130b4fd359a1c6455a5201b17af01fa External/fmt (c07e2aa)
 FEX/09142d726429416bfa7b459151515fe3ab7622dd External/rpmalloc (09142d7)
 FEX/3234af2c03549bc85656bfd3a86993bf1cd8aef1 External/unordered_dense (3234af2)
