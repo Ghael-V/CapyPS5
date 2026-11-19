@@ -4245,6 +4245,13 @@ uint32_t* KYTY_SYSV_ABI AgcDcbSetFlip(CommandBuffer* buf, uint32_t video_out_han
 	return cmd;
 }
 
+// Async compute queues flip too; the flip NOP is the same on both queues.
+uint32_t* KYTY_SYSV_ABI AgcAcbSetFlip(CommandBuffer* buf, uint32_t video_out_handle,
+                                      int32_t display_buffer_index, uint32_t flip_mode,
+                                      int64_t flip_arg) {
+	return AgcDcbSetFlip(buf, video_out_handle, display_buffer_index, flip_mode, flip_arg);
+}
+
 } // namespace Gen5
 
 namespace Gen5Driver {
