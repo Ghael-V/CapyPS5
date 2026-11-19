@@ -155,6 +155,9 @@ bool IsRuntimeUniformOp(ValueOpcode op) {
 		case ValueOpcode::IMul64:
 		case ValueOpcode::UMulHi:
 		case ValueOpcode::UMin32:
+		case ValueOpcode::UMax32:
+		case ValueOpcode::SMin32:
+		case ValueOpcode::SMax32:
 		case ValueOpcode::ShiftLeftLogical32:
 		case ValueOpcode::ShiftLeftLogical64:
 		case ValueOpcode::ShiftRightLogical32:
@@ -878,6 +881,22 @@ bool SrtWalker::EvaluateInst(const Inst& inst, uint64_t& result) {
 		case ValueOpcode::UMin32:
 			if (binary()) {
 				result = std::min(static_cast<uint32_t>(a), static_cast<uint32_t>(b));
+				return true;
+			}
+			return false;
+		case ValueOpcode::UMax32:
+			if (binary()) {
+				result = std::max(static_cast<uint32_t>(a), static_cast<uint32_t>(b));
+				return true;
+			}
+			return false;
+		case ValueOpcode::SMin32:
+		case ValueOpcode::SMax32:
+			if (binary()) {
+				const auto lhs = static_cast<int32_t>(static_cast<uint32_t>(a));
+				const auto rhs = static_cast<int32_t>(static_cast<uint32_t>(b));
+				const bool min = inst.GetOpcode() == ValueOpcode::SMin32;
+				result         = static_cast<uint32_t>((min ? lhs < rhs : lhs > rhs) ? lhs : rhs);
 				return true;
 			}
 			return false;
