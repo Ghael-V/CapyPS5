@@ -62,6 +62,12 @@ public:
 	[[nodiscard]] vk::ImageView FindTexture(ImageId id, const ImageDesc& desc);
 	[[nodiscard]] vk::ImageView FindRenderTarget(ImageId id, const ImageDesc& desc);
 	[[nodiscard]] vk::ImageView FindDepthTarget(ImageId id, const ImageDesc& desc);
+	// Hosts without attachment feedback loops cannot sample a depth/stencil target that the draw
+	// writes. Copies `range` (the `aspects` given) of depth image `depth_id` into an image of its
+	// own, outside any render pass, for the draw to sample instead: the draw reads the values from
+	// before it ran. The copy lives until the depth image is deleted.
+	[[nodiscard]] ImageId CopyDepthForFeedback(ImageId depth_id, const ImageSubresourceRange& range,
+	                                           vk::ImageAspectFlags aspects);
 	[[nodiscard]] Image&        GetImage(ImageId id) {
 		auto& image = m_slot_images[id];
 		TouchImage(image);
@@ -159,6 +165,8 @@ private:
 	void                      RegisterImage(ImageId id);
 	void                      UnregisterImage(ImageId id);
 	void                      DeleteImage(ImageId id);
+	// Releases the depth feedback copy of a depth image, if it has one.
+	void                      ReleaseDepthFeedbackCopy(ImageId depth_id);
 	void                      FreeImage(ImageId id);
 	void                      TouchImage(Image& image);
 	void                      TrackImage(ImageId id);
@@ -221,6 +229,8 @@ private:
 	std::unordered_map<vk::Format, ImageId>           m_null_images;
 	Common::LeastRecentlyUsedCache<ImageId, uint64_t> m_lru_cache;
 	std::unordered_set<ImageId>                       m_download_images;
+	// Depth image -> its depth feedback copy (see CopyDepthForFeedback).
+	std::unordered_map<ImageId, ImageId>              m_depth_feedback_copies;
 	std::map<uint64_t, MetaDataInfo>                  m_surface_metas;
 	// Set once a PS4 depth target with an HTile is bound (BufferCache::SynchronizeGfx7Htile).
 	std::atomic_bool                                  m_has_gfx7_htile {false};
