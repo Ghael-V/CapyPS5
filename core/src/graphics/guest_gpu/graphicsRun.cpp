@@ -655,7 +655,18 @@ void CommandProcessor::WriteData(uint32_t* dst, const uint32_t* src, uint32_t dw
 			LOGF_COLOR(Log::Color::Yellow, "CommandProcessor::WriteData: unhandled dst_sel 0x%02" PRIx32 "\n", dst_sel);
 			break;
 	}
-	if (dw_num == 0 || dst == nullptr) {
+	if (dw_num == 0) {
+		return;
+	}
+	// A GDS destination is a 16-bit DWORD offset, not a pointer (offset 0 is valid).
+	if (dst_sel == 6) {
+		auto offset = reinterpret_cast<uint64_t>(dst);
+		for (uint32_t i = 0; i < dw_num; i++, offset += write_one_address ? 0u : 1u) {
+			m_renderer.GetBufferCache().FillBuffer((offset & 0xffffu) * 4u, 4u, src[i], true);
+		}
+		return;
+	}
+	if (dst == nullptr) {
 		return;
 	}
 	Common::DebugFlags::WatchWrite("WRITE_DATA", reinterpret_cast<uint64_t>(dst), dw_num * 4ull, src[0]);
