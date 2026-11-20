@@ -84,6 +84,7 @@ public:
 		std::filesystem::path dir;
 		std::string           point;
 		std::shared_ptr<Common::ArchiveReader> archive;
+		bool                                   read_only = false;
 	};
 
 	MountPoints() { EXIT_NOT_IMPLEMENTED(!Common::Thread::IsMainThread()); }
@@ -91,10 +92,12 @@ public:
 
 	KYTY_CLASS_NO_COPY(MountPoints);
 
-	void Mount(const std::filesystem::path& folder, const std::string& point);
+	void Mount(const std::filesystem::path& folder, const std::string& point, bool read_only);
 	void Umount(const std::string& folder_or_point);
 
-	[[nodiscard]] std::filesystem::path ResolvePath(const std::string& mounted_name);
+	// `read_only` (when given) tells whether the path lies on a read-only mount.
+	[[nodiscard]] std::filesystem::path ResolvePath(const std::string& mounted_name,
+	                                                bool*              read_only = nullptr);
 
 private:
 	std::vector<MountPair> m_mount_pairs;
@@ -294,7 +297,8 @@ void FileDescriptors::CloseAll() {
 	}
 }
 
-void MountPoints::Mount(const std::filesystem::path& folder, const std::string& point) {
+void MountPoints::Mount(const std::filesystem::path& folder, const std::string& point,
+                        bool read_only) {
 	Common::LockGuard lock(m_mutex);
 
 	auto point_str  = Common::FixDirectorySlash(point);
@@ -305,6 +309,8 @@ void MountPoints::Mount(const std::filesystem::path& folder, const std::string& 
 	p.dir   = folder;
 	p.point = point_str;
 	p.archive = Common::OpenArchive(folder);
+	// Archives (.zar) are read-only whatever the mount says.
+	p.read_only = read_only || Common::IsArchivePath(folder);
 
 	m_mount_pairs.push_back(std::move(p));
 }
@@ -375,8 +381,11 @@ static bool HasWindowsForbiddenFilenameCharacter(const std::string& relative_pat
 }
 #endif
 
-std::filesystem::path MountPoints::ResolvePath(const std::string& mounted_name) {
+std::filesystem::path MountPoints::ResolvePath(const std::string& mounted_name, bool* read_only) {
 	Common::LockGuard lock(m_mutex);
+	if (read_only != nullptr) {
+		*read_only = false;
+	}
 
 	// Match the entire guest path so a mount root works with or without a trailing slash.
 	const auto mounted_path = Common::FixDirectorySlash(mounted_name);
@@ -385,6 +394,9 @@ std::filesystem::path MountPoints::ResolvePath(const std::string& mounted_name) 
 	    [&mounted_path](const MountPair& p) { return mounted_path.starts_with(p.point); });
 	if (it != m_mount_pairs.end()) {
 		const auto& p = *it;
+		if (read_only != nullptr) {
+			*read_only = p.read_only;
+		}
 		auto rel_path = Common::RemoveFirst(Common::FixFilenameSlash(mounted_name), p.point.size());
 		while (rel_path.starts_with('/')) {
 			rel_path = Common::RemoveFirst(rel_path, 1);
@@ -428,9 +440,9 @@ void Shutdown() {
 	g_mount_points = nullptr;
 }
 
-void Mount(const std::filesystem::path& folder, const std::string& point) {
+void Mount(const std::filesystem::path& folder, const std::string& point, bool read_only) {
 
-	g_mount_points->Mount(folder, point);
+	g_mount_points->Mount(folder, point, read_only);
 }
 
 void Umount(const std::string& folder_or_point) {
@@ -514,15 +526,11 @@ int KYTY_SYSV_ABI KernelOpen(const char* path, int flags, uint16_t mode) {
 		return descriptor;
 	}
 
-	file->real_name = g_mount_points->ResolvePath(file->name);
+	bool read_only  = false;
+	file->real_name = g_mount_points->ResolvePath(file->name, &read_only);
 	if (file->real_name.empty()) {
 		g_files->DeleteDescriptor(descriptor);
 		return KERNEL_ERROR_ENOENT;
-	}
-	if (Common::IsArchivePath(file->real_name) &&
-	    (rw_mode != Common::File::Mode::Read || trunc || creat)) {
-		g_files->DeleteDescriptor(descriptor);
-		return KERNEL_ERROR_EROFS;
 	}
 
 	if (trunc && rw_mode == Common::File::Mode::Read) {
@@ -544,6 +552,18 @@ int KYTY_SYSV_ABI KernelOpen(const char* path, int flags, uint16_t mode) {
 		}
 #endif
 		return KERNEL_ERROR_ENOENT;
+	}
+
+	// /app0 and archives are read-only: only opening what exists for reading works there.
+	if (read_only) {
+		if (excl && creat && info) {
+			g_files->DeleteDescriptor(descriptor);
+			return KERNEL_ERROR_EEXIST;
+		}
+		if (rw_mode != Common::File::Mode::Read || trunc || !info) {
+			g_files->DeleteDescriptor(descriptor);
+			return KERNEL_ERROR_EROFS;
+		}
 	}
 
 	if (directory || dir_exist) {
@@ -1326,8 +1346,9 @@ int KYTY_SYSV_ABI KernelUnlink(const char* path) {
 		return KERNEL_ERROR_EINVAL;
 	}
 
-	auto real_file_name = g_mount_points->ResolvePath(path);
-	if (Common::IsArchivePath(real_file_name)) {
+	bool read_only      = false;
+	auto real_file_name = g_mount_points->ResolvePath(path, &read_only);
+	if (read_only) {
 		return KERNEL_ERROR_EROFS;
 	}
 
@@ -1365,9 +1386,11 @@ int KYTY_SYSV_ABI KernelRename(const char* from, const char* to) {
 
 	auto from_path = std::string(from);
 	auto to_path   = std::string(to);
-	auto real_from = g_mount_points->ResolvePath(from_path);
-	auto real_to   = g_mount_points->ResolvePath(to_path);
-	if (Common::IsArchivePath(real_from) || Common::IsArchivePath(real_to)) {
+	bool from_read_only = false;
+	bool to_read_only   = false;
+	auto real_from      = g_mount_points->ResolvePath(from_path, &from_read_only);
+	auto real_to        = g_mount_points->ResolvePath(to_path, &to_read_only);
+	if (from_read_only || to_read_only) {
 		return KERNEL_ERROR_EROFS;
 	}
 
@@ -1471,16 +1494,17 @@ int KYTY_SYSV_ABI KernelMkdir(const char* path, uint16_t mode) {
 	     "\t mode = %04" PRIx16 "\n",
 	     path, mode);
 
-	auto real_name = g_mount_points->ResolvePath(std::string(path));
+	bool read_only = false;
+	auto real_name = g_mount_points->ResolvePath(std::string(path), &read_only);
 	if (real_name.empty()) {
 		return KERNEL_ERROR_ENOENT;
-	}
-	if (Common::IsArchivePath(real_name)) {
-		return KERNEL_ERROR_EROFS;
 	}
 
 	if (Common::File::IsDirectoryExisting(real_name)) {
 		return KERNEL_ERROR_EEXIST;
+	}
+	if (read_only) {
+		return KERNEL_ERROR_EROFS;
 	}
 
 	if (!Common::File::CreateDirectory(real_name)) {
@@ -1503,8 +1527,9 @@ int KYTY_SYSV_ABI KernelRmdir(const char* path) {
 
 	LOGF("\t path = %s\n", path);
 
-	auto real_name = g_mount_points->ResolvePath(std::string(path));
-	if (Common::IsArchivePath(real_name)) {
+	bool read_only = false;
+	auto real_name = g_mount_points->ResolvePath(std::string(path), &read_only);
+	if (read_only) {
 		return KERNEL_ERROR_EROFS;
 	}
 
