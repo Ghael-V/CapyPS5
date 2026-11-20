@@ -440,6 +440,26 @@ void Dispatcher::EmitDispatcher() {
   }
 
   {
+    // Faultless synchronous signal.
+    // Some games abuse SIGILL/SIGTRAP/SIGSEGV heavily and the fault overhead is visible.
+    // Instead of double faulting, clean up state and jump to the frontend to handle this.
+    // `FEXCore::Core::CpuStateFrame::SynchronousFaultData` needs to be setup at this point.
+    GuestSignal_SynchronousFault = GetCursorAddress<uint64_t>();
+
+    SpillStaticRegs(TMP1);
+
+    ldr(ARMEmitter::XReg::x0, &l_CTX);
+    mov(ARMEmitter::XReg::x1, STATE);
+    ldr(ARMEmitter::XReg::x2, STATE_PTR(CpuStateFrame, Pointers.SynchronousExceptionHandler));
+
+    if (!CTX->Config.DisableVixlIndirectCalls) [[unlikely]] {
+      GenerateIndirectRuntimeCall<void, void*, void*>(ARMEmitter::Reg::r2);
+    } else {
+      br(ARMEmitter::Reg::r2);
+    }
+  }
+
+  {
     ThreadPauseHandlerAddressSpillSRA = GetCursorAddress<uint64_t>();
     SpillStaticRegs(TMP1);
 
@@ -546,8 +566,30 @@ void Dispatcher::EmitDispatcher() {
     // We can safely claim we are no longer in a syscall
     str(ARMEmitter::XReg::zr, STATE, offsetof(FEXCore::Core::CpuStateFrame, InSyscallInfo));
 
-    // Now go back to the regular dispatcher loop
-    (void)b(&LoopTop);
+    {
+      // L1 lookup after syscall. Mirrors the implementation in `ExitFunction`.
+      // Most syscall instructions just return to the following RIP, so it is highly likely to be in the L1 in tight loops.
+      ldr(TMP3, STATE_PTR(CpuStateFrame, State.rip));
+
+      // TF may be set: a single-stepped SYSCALL or CPUID. An L1 hit would jump into a block compiled without the
+      // per-instruction single-step trap, and the trap would only be raised at the next dispatcher entry, instructions
+      // later. The loop top checks TF and compiles single-step blocks.
+      ldrb(TMP1, STATE_PTR(CpuStateFrame, State.flags[X86State::RFLAG_TF_RAW_LOC]));
+      (void)cbnz(ARMEmitter::Size::i32Bit, TMP1, &LoopTop);
+
+      ldp<ARMEmitter::IndexType::OFFSET>(TMP1, TMP2, STATE, offsetof(FEXCore::Core::CpuStateFrame, State.L1Pointer));
+
+      // Calculate (tmp1 + ((ripreg & L1_ENTRIES_MASK) << 4)) for the address
+      // L1Mask is pre-shifted.
+      and_(ARMEmitter::Size::i64Bit, TMP2, TMP2, TMP3, ARMEmitter::ShiftType::LSL, FEXCore::ilog2(sizeof(LookupCache::LookupCacheEntry)));
+      add(TMP1, TMP1, TMP2);
+
+      ldp<ARMEmitter::IndexType::OFFSET>(TMP2, TMP1, TMP1, 0);
+
+      sub(TMP1, TMP1, TMP3);
+      (void)cbnz(ARMEmitter::Size::i64Bit, TMP1, &LoopTop);
+      br(TMP2);
+    }
   }
 
   {
@@ -571,44 +613,6 @@ void Dispatcher::EmitDispatcher() {
     // Now go back to the regular dispatcher loop
     (void)b(&LoopTop);
   }
-
-  auto EmitLongALUOpHandler = [&](auto R, auto Offset) {
-    auto Address = GetCursorAddress<uint64_t>();
-
-    PushDynamicRegs(TMP4);
-    SpillStaticRegs(TMP4);
-
-    if (!TMP_ABIARGS) {
-      mov(ARMEmitter::XReg::x0, TMP1);
-      mov(ARMEmitter::XReg::x1, TMP2);
-      mov(ARMEmitter::XReg::x2, TMP3);
-    }
-
-    ldr(ARMEmitter::XReg::x3, R, Offset);
-    if (!CTX->Config.DisableVixlIndirectCalls) [[unlikely]] {
-      GenerateIndirectRuntimeCall<__uint128_t, uint64_t, uint64_t, uint64_t>(ARMEmitter::Reg::r3);
-    } else {
-      blr(ARMEmitter::Reg::r3);
-    }
-
-    // Result is now in x0, x1
-    if (!TMP_ABIARGS) {
-      mov(TMP1, ARMEmitter::XReg::x0);
-      mov(TMP2, ARMEmitter::XReg::x1);
-    }
-
-    FillStaticRegs();
-
-    // Fix the stack and any values that were stepped on
-    PopDynamicRegs();
-
-    // Go back to our code block
-    ret();
-    return Address;
-  };
-
-  LUDIVHandlerAddress = EmitLongALUOpHandler(STATE_PTR(CpuStateFrame, Pointers.LUDIV));
-  LDIVHandlerAddress = EmitLongALUOpHandler(STATE_PTR(CpuStateFrame, Pointers.LDIV));
 
   EmitF64Sin();
   EmitF64Cos();
@@ -2690,10 +2694,9 @@ void Dispatcher::InitThreadPointers(FEXCore::Core::InternalThreadState* Thread) 
     Ptrs.GuestSignal_SIGILL = GuestSignal_SIGILL;
     Ptrs.GuestSignal_SIGTRAP = GuestSignal_SIGTRAP;
     Ptrs.GuestSignal_SIGSEGV = GuestSignal_SIGSEGV;
+    Ptrs.GuestSignal_SynchronousFault = GuestSignal_SynchronousFault;
     Ptrs.SignalReturnHandler = SignalHandlerReturnAddress;
     Ptrs.SignalReturnHandlerRT = SignalHandlerReturnAddressRT;
-    Ptrs.LUDIVHandler = LUDIVHandlerAddress;
-    Ptrs.LDIVHandler = LDIVHandlerAddress;
     Ptrs.F64SinHandler = F64SinHandlerAddress;
     Ptrs.F64CosHandler = F64CosHandlerAddress;
     Ptrs.F64TanHandler = F64TanHandlerAddress;
