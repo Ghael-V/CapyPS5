@@ -37,6 +37,7 @@
 #include <array>
 #include <bit>
 #include <chrono>
+#include <unordered_set>
 #include <atomic>
 #if defined(__ANDROID__) || defined(__linux__)
 #include <pthread.h>
@@ -340,6 +341,34 @@ struct PipelineCache::ProgramCache {
 		template <bool HasCalls>
 		Permutation* FindPermutation(const ShaderRecompiler::IR::SrtRuntime& runtime,
 		                             uint32_t push_data_cursor) {
+#if defined(__ANDROID__)
+			// `debug.capy.materialize_stats 1`: how often a materialization repeats the inputs
+			// (entry, user SGPRs, shader base) of one seen in the previous two seconds.
+			static Common::DebugFlags::CachedValue materialize_stats("debug.capy.materialize_stats", 0);
+			if (materialize_stats.Get() != 0) {
+				static std::unordered_set<uint64_t> previous, current;
+				static uint64_t total = 0, repeats = 0, same_entry_last = 0;
+				static auto     next  = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+				const uint64_t parts[] = {reinterpret_cast<uint64_t>(this), runtime.shader_base,
+				                          XXH3_64bits(runtime.user_data.data(), runtime.user_data.size_bytes())};
+				const auto key = XXH3_64bits(parts, sizeof(parts));
+				total++;
+				repeats += previous.contains(key) || current.contains(key) ? 1 : 0;
+				same_entry_last += key == last_stats_key ? 1 : 0;
+				last_stats_key = key;
+				current.insert(key);
+				if (const auto now = std::chrono::steady_clock::now(); now >= next) {
+					next = now + std::chrono::seconds(2);
+					__android_log_print(ANDROID_LOG_WARN, "CapyPS5-Materialize",
+					                    "materializations %llu, repeated inputs %llu, same as the entry's last %llu, distinct %zu",
+					                    static_cast<unsigned long long>(total), static_cast<unsigned long long>(repeats),
+					                    static_cast<unsigned long long>(same_entry_last), current.size());
+					previous.swap(current);
+					current.clear();
+					total = repeats = same_entry_last = 0;
+				}
+			}
+#endif
 			if (!ShaderRecompiler::IR::MaterializeResources(resource_plan, runtime, resources, specialization)) {
 				EXIT("shader resources could not be materialized again: %s\n",
 				     ShaderRecompiler::IR::LastMaterializeFailure());
@@ -359,6 +388,7 @@ struct PipelineCache::ProgramCache {
 			return nullptr;
 		}
 
+		uint64_t                                        last_stats_key = 0;
 		std::unique_ptr<ShaderRecompiler::ShaderSource> call_source;
 		ShaderRecompiler::IR::ResourcePlan           resource_plan;
 		ShaderRecompiler::IR::ResourceSnapshot       resources;
