@@ -418,6 +418,17 @@ inline constexpr uint64_t VIDEO_OUT_PIXEL_FORMAT_R16_G16_B16_A16_FLOAT_FOR_BT210
 inline constexpr uint64_t VIDEO_OUT_PIXEL_FORMAT_B16_G16_R16_A16_FLOAT_FOR_BT2100_PQ =
     0xc001070700000000ull;
 
+// Linear-light SDR VideoOut formats: their pixels need the sRGB transfer before the screen.
+[[nodiscard]] constexpr bool IsLinearVideoOutPixelFormat(uint64_t format) {
+	switch (format) {
+		case 0x8100000622000000ull:
+		case 0x8100000600000000ull:
+		case 0xc001000622000000ull:
+		case 0xc001000600000000ull: return true;
+		default: return false;
+	}
+}
+
 [[nodiscard]] constexpr bool IsHdrVideoOutPixelFormat(uint64_t format) {
 	switch (format) {
 		case VIDEO_OUT_PIXEL_FORMAT_R10_G10_B10_A2_BT2100_PQ:

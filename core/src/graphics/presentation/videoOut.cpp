@@ -1215,6 +1215,7 @@ void FlipQueue::Prepare(uint64_t request_id, Graphics::CommandBuffer& buffer) {
 	bool                current = false;
 	bool                premultiplied_alpha = false;
 	bool                hdr                 = false;
+	bool                linear              = false;
 	{
 		Common::LockGuard lock(cfg->mutex);
 		current = cfg->opened && !cfg->closing && cfg->generation == generation;
@@ -1238,6 +1239,8 @@ void FlipQueue::Prepare(uint64_t request_id, Graphics::CommandBuffer& buffer) {
 				source_info = cfg->groups[surface.group_index].ImageInfo(surface);
 				hdr         = Graphics::IsHdrVideoOutPixelFormat(
 				    cfg->groups[surface.group_index].attribute.pixel_format);
+				linear      = Graphics::IsLinearVideoOutPixelFormat(
+				    cfg->groups[surface.group_index].attribute.pixel_format);
 				premultiplied_alpha =
 				    (cfg->groups[surface.group_index].attribute.option &
 				     VIDEO_OUT_BUFFER_ATTRIBUTE_OPTION_ALPHA_PREMULTIPLIED) != 0;
@@ -1259,7 +1262,7 @@ void FlipQueue::Prepare(uint64_t request_id, Graphics::CommandBuffer& buffer) {
 		frame = &m_presenter.PrepareBlankFrame(width, height, index == VIDEO_OUT_BUFFER_INDEX_BLACK,
 		                                       &buffer);
 	} else {
-		frame = &m_presenter.PrepareFrame(buffer, source_info, hdr);
+		frame = &m_presenter.PrepareFrame(buffer, source_info, hdr, linear);
 	}
 
 	Common::LockGuard lock(m_mutex);

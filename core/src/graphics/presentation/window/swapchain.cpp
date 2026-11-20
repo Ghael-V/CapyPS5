@@ -44,6 +44,7 @@ struct Presenter::Frame {
 	VulkanImage   image;
 	vk::ImageView view         = nullptr;
 	bool          hdr          = false; // PQ (HDR10) pixels, converted to SDR when drawn
+	bool          linear       = false; // linear-light SDR pixels, sRGB-encoded when drawn
 	uint64_t      present_tick = 0;
 	bool          busy         = false;
 
@@ -928,9 +929,12 @@ void Swapchain::RecordPresentCommands(CommandBuffer& command, VulkanImage* sourc
 	                           &to_present);
 	if (draw_attachment) {
 		if (hdr_source != nullptr) {
-			// PQ source, linear when stored as 16-bit float, opaque like the blit it replaces.
+			// PQ source, linear when stored as 16-bit float, or a linear SDR source; opaque like
+			// the blit it replaces.
 			const uint32_t hdr_flags =
-			    4u | (hdr_source->image.format == vk::Format::eR16G16B16A16Sfloat ? 8u : 0u) | 16u;
+			    hdr_source->hdr
+			        ? 4u | (hdr_source->image.format == vk::Format::eR16G16B16A16Sfloat ? 8u : 0u) | 16u
+			        : 8u | 16u;
 			DrawOverlay(vk_command, Presenter::Layer {hdr_source, 0, false}, hdr_flags);
 			if (draw_overlay || draw_system_overlay) {
 				to_present.srcAccessMask = vk::AccessFlagBits::eColorAttachmentWrite;
@@ -1016,7 +1020,8 @@ Presenter::Presenter(WindowContext& window): m_impl(std::make_unique<Impl>(windo
 
 Presenter::~Presenter() = default;
 
-Presenter::Frame& Presenter::PrepareFrame(CommandBuffer& buffer, const ImageInfo& info, bool hdr) {
+Presenter::Frame& Presenter::PrepareFrame(CommandBuffer& buffer, const ImageInfo& info, bool hdr,
+                                          bool linear) {
 	KYTY_PROFILER_FUNCTION();
 	EXIT_IF(buffer.IsInvalid());
 	Common::LockGuard render_lock(m_impl->renderer.GetMutex());
@@ -1035,7 +1040,8 @@ Presenter::Frame& Presenter::PrepareFrame(CommandBuffer& buffer, const ImageInfo
 	frame->Configure(m_impl->window.graphic_ctx,
 	                 {image.backing.extent.width, image.backing.extent.height}, frame_format);
 	frame->CopyFrom(buffer, image);
-	frame->hdr = hdr;
+	frame->hdr    = hdr;
+	frame->linear = linear;
 	return *frame;
 }
 
@@ -1140,6 +1146,7 @@ void Presenter::Impl::PresentGuestFrame() {
 	    static_cast<uint32_t>(std::clamp<int64_t>(frame_gen_setting.Get(), 0, 3));
 	// HDR frames are not generated from: the generator works on 8-bit SDR images.
 	if (max_generated == 0 || layers[0].frame == nullptr || layers[0].frame->hdr ||
+	    layers[0].frame->linear ||
 	    frame_gen_unsupported) {
 		Present();
 		return;
@@ -1244,7 +1251,7 @@ void Presenter::Impl::Present(const FrameGenStep* step) {
 				source = generated_source;
 			}
 			auto* hdr_source = generated_source == nullptr && layers[0].frame != nullptr &&
-			                           layers[0].frame->hdr
+			                           (layers[0].frame->hdr || layers[0].frame->linear)
 			                       ? layers[0].frame
 			                       : nullptr;
 			swapchain.RecordPresentCommands(command, source, hdr_source, layers[1],

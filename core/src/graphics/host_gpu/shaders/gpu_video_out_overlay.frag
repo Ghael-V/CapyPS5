@@ -22,12 +22,16 @@ void main() {
 		color.a = 1.0;
 	}
 	const bool premultiplied = (flags & 1u) != 0u;
-	const bool convert       = (flags & PQ_SOURCE) != 0u;
+	const bool pq            = (flags & PQ_SOURCE) != 0u;
+	const bool source_linear = (flags & 8u) != 0u;
+	const bool convert       = pq || source_linear;
 	if (convert && premultiplied) {
 		color.rgb = color.a > 0.0 ? color.rgb / color.a : vec3(0.0);
 	}
-	if (convert) {
-		color.rgb = Hdr10ToSdr(color.rgb, (flags & 8u) != 0u);
+	if (pq) {
+		color.rgb = Hdr10ToSdr(color.rgb, source_linear);
+	} else if (source_linear) {
+		color.rgb = LinearToSrgb(color.rgb);
 	}
 	if (!premultiplied || convert) {
 		color.rgb *= color.a;
