@@ -1031,19 +1031,48 @@ static void PrepareGfx7FetchCall(const HW::UserSgprInfo& sgprs, uint32_t user_sg
 		const auto fetch = static_cast<uint64_t>(sgprs.value[pair]) |
 		                   (static_cast<uint64_t>(sgprs.value[pair + 1u]) << 32u);
 		EXIT_NOT_IMPLEMENTED(fetch == 0 || (fetch & 3u) != 0);
-		// The fetch shader ends at its S_SETPC_B64; give the decoder room up to 4 KiB.
+		// The fetch shader ends at its S_SETPC_B64; give the decoder room up to 4 KiB. Every draw
+		// comes here: read the 4 KiB at once (word by word only when part of it is unmapped), and
+		// decode a fetch shader only the first time, or when its words at that address changed.
 		std::array<uint32_t, 1024> probe {};
 		uint32_t fetch_words = 0;
-		while (fetch_words < probe.size() &&
-		       LibKernel::Memory::ReadGuestMemory(fetch + fetch_words * 4u, &probe[fetch_words], 4u)) {
-			fetch_words++;
+		if (LibKernel::Memory::ReadGuestMemory(fetch, probe.data(), sizeof(probe))) {
+			fetch_words = static_cast<uint32_t>(probe.size());
+		} else {
+			while (fetch_words < probe.size() &&
+			       LibKernel::Memory::ReadGuestMemory(fetch + fetch_words * 4u, &probe[fetch_words], 4u)) {
+				fetch_words++;
+			}
 		}
 		EXIT_NOT_IMPLEMENTED(fetch_words == 0);
 		params.back_code = code.subspan(word);
-		params.code      = std::span {reinterpret_cast<const uint32_t*>(fetch), fetch_words};
-		const auto front = Decoder::DecodeFrontProgram(params.code);
-		params.code      = front.code;
-		const uint64_t hashes[] = {params.hash, XXH3_64bits(params.code.data(), params.code.size_bytes())};
+		struct FetchShader {
+			uint32_t words = 0;
+			uint64_t hash  = 0;
+		};
+		static std::mutex                                cache_mutex;
+		static std::unordered_map<uint64_t, FetchShader> cache;
+		uint32_t front_words = 0;
+		uint64_t front_hash  = 0;
+		{
+			std::scoped_lock lock(cache_mutex);
+			if (const auto found = cache.find(fetch);
+			    found != cache.end() && found->second.words <= fetch_words &&
+			    XXH3_64bits(probe.data(), found->second.words * 4u) == found->second.hash) {
+				front_words = found->second.words;
+				front_hash  = found->second.hash;
+			}
+		}
+		if (front_words == 0) {
+			const auto front = Decoder::DecodeFrontProgram(
+			    std::span {reinterpret_cast<const uint32_t*>(fetch), fetch_words});
+			front_words = static_cast<uint32_t>(front.code.size());
+			front_hash  = XXH3_64bits(probe.data(), front_words * 4u);
+			std::scoped_lock lock(cache_mutex);
+			cache[fetch] = {front_words, front_hash};
+		}
+		params.code = std::span {reinterpret_cast<const uint32_t*>(fetch), front_words};
+		const uint64_t hashes[] = {params.hash, front_hash};
 		params.hash = XXH3_64bits(hashes, sizeof(hashes));
 		return;
 	}
