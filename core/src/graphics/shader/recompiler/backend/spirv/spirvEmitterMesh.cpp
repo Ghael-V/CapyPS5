@@ -90,11 +90,13 @@ void EmitEmulatedMeshEntryPoint(EmitterState& state) {
 	                                     TypeU32(state), ConstantU32(state, 0));
 	const auto  primitives    = MeshLoad(state, state.mesh_allocation, spv::StorageClassWorkgroup,
 	                                     TypeU32(state), ConstantU32(state, 1));
-	const auto  group         = EmitAddU32(
-        state, EmitInputComponentU32(state, IR::StageInputKind::WorkgroupId, 0),
-        EmitBinaryU32(state, spv::OpIMul,
-                      EmitInputComponentU32(state, IR::StageInputKind::WorkgroupId, 1),
-                      MeshPushDword(state, 6)));
+	// The record slot of the workgroup in the whole draw, which may run in slices.
+	const auto group_x = EmitAddU32(state, EmitInputComponentU32(state, IR::StageInputKind::WorkgroupId, 0),
+	                                MeshPushDword(state, IR::PushData::MeshBaseGroupDword));
+	const auto group_y = EmitAddU32(state, EmitInputComponentU32(state, IR::StageInputKind::WorkgroupId, 1),
+	                                MeshPushDword(state, IR::PushData::MeshBaseInstanceDword));
+	const auto group   = EmitAddU32(state, group_x,
+	                                EmitBinaryU32(state, spv::OpIMul, group_y, MeshPushDword(state, 6)));
 	const auto records = MeshAddress(state, MeshPushDword(state, 8), MeshPushDword(state, 9));
 	const auto indices = MeshAddBytes(state, records, MeshPushDword(state, 7));
 	const auto vertex_base =

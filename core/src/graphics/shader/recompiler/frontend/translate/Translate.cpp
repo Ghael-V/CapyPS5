@@ -1268,7 +1268,12 @@ IR::Program TranslateProgram(const Decoder::Program& decoded, const CFG::Graph& 
 				return entry_ir.ISub(lhs, minimum(lhs, rhs));
 			};
 			const auto local = builtin(IR::StageInputKind::LocalInvocationIndex);
-			const auto group = builtin(IR::StageInputKind::WorkgroupId, 0);
+			// A draw split into slices passes each slice's first workgroup and instance: the
+			// shader works on the workgroup and instance of the whole draw.
+			const auto group    = entry_ir.IAdd(builtin(IR::StageInputKind::WorkgroupId, 0),
+			                                    draw(IR::PushData::MeshBaseGroupDword));
+			const auto instance = entry_ir.IAdd(builtin(IR::StageInputKind::WorkgroupId, 1),
+			                                    draw(IR::PushData::MeshBaseInstanceDword));
 			const auto primitive_chunk = mesh.fast_launch ? group :
 			    entry_ir.IMul(group, u32(mesh.primitives_per_group));
 			const auto step  = u32(mesh.InputPrimitiveStep());
@@ -1303,8 +1308,7 @@ IR::Program TranslateProgram(const Decoder::Program& decoded, const CFG::Graph& 
 				// Fast launch broadcasts the subgroup's base vertex and instance to every lane.
 				entry_ir.SetVectorReg(static_cast<IR::VectorReg>(5), entry_ir.IAdd(draw(1), group));
 				// Instance IDs exclude the start instance, which shaders add from user data.
-				entry_ir.SetVectorReg(static_cast<IR::VectorReg>(6),
-				                      builtin(IR::StageInputKind::WorkgroupId, 1));
+				entry_ir.SetVectorReg(static_cast<IR::VectorReg>(6), instance);
 			} else {
 				// GS adjacency addresses local ES records in LDS. Fans retain the draw's
 				// center in every subgroup; strip winding follows the global primitive.
@@ -1354,8 +1358,7 @@ IR::Program TranslateProgram(const Decoder::Program& decoded, const CFG::Graph& 
 				entry_ir.SetVectorReg(static_cast<IR::VectorReg>(5),
 				                      entry_ir.IAdd(draw(1), entry_ir.Select(indexed, index, input_vertex)));
 				// Instance IDs exclude the start instance, which shaders add from user data.
-				entry_ir.SetVectorReg(static_cast<IR::VectorReg>(8),
-				                      builtin(IR::StageInputKind::WorkgroupId, 1));
+				entry_ir.SetVectorReg(static_cast<IR::VectorReg>(8), instance);
 			}
 		} else if (options.stage == ShaderType::Local) {
 			entry_ir.SetScalarReg(static_cast<IR::ScalarReg>(3), active_lane_count());

@@ -331,10 +331,15 @@ static_assert(static_cast<uint32_t>(DescriptorBindingKind::Count) == 56u);
 struct PushData {
 	static constexpr uint32_t DwordCount = 32;
 	// Mesh draws: count, base vertex, base instance, index size, index address lo/hi; emulated
-	// mesh shaders add workgroups per instance, index region offset, record address lo/hi.
-	static constexpr uint32_t MeshDrawDwordCount = 10;
-	// User clip planes 0..N follow the mesh draw parameters, four dwords each.
-	static constexpr uint32_t UserClipPlaneDword = MeshDrawDwordCount;
+	// mesh shaders add workgroups per instance, index region offset, record address lo/hi. A
+	// draw past the host workgroup limits runs in slices: the slice's first workgroup and
+	// instance follow.
+	static constexpr uint32_t MeshBaseGroupDword    = 10;
+	static constexpr uint32_t MeshBaseInstanceDword = 11;
+	static constexpr uint32_t MeshDrawDwordCount    = 12;
+	// User clip planes 0..N, four dwords each. Mesh draws have none (see pipelineCache), so the
+	// planes start where the mesh slice bases are.
+	static constexpr uint32_t UserClipPlaneDword = 10;
 	// The last two dwords carry the scaled-image masks at run time (see ScaledImageMaskSpecId):
 	// vertex, mesh and compute stages read the first, pixel shaders the second.
 	static constexpr uint32_t ScaledMaskDword      = DwordCount - 2u;

@@ -32,6 +32,7 @@
 #include "graphics/host_gpu/renderer/gpuProfiler.h"
 #include "graphics/host_gpu/renderer/debug.h"
 #include "graphics/host_gpu/renderer/depthRenderTarget.h"
+#include "graphics/host_gpu/renderer/meshSlices.h"
 #include "graphics/host_gpu/renderer/image/textureCommon.h"
 #include "graphics/host_gpu/renderer/pipeline/pipelineCache.h"
 #include "graphics/host_gpu/renderer/pipeline/shaderResourceBarrier.h"
@@ -1516,22 +1517,8 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 		if (primitives == 0 || draw.instance_count == 0) {
 			return;
 		}
-		mesh_groups        = (primitives - 1u) / mesh.primitives_per_group + 1u;
-		const auto& limits = m_context.GetGraphics().mesh_shader_properties;
-		const auto& compute_limits = m_context.GetGraphics().GetPhysicalDeviceProperties().limits;
-		if (mesh_emulated) {
-			if (mesh_groups > compute_limits.maxComputeWorkGroupCount[0] ||
-			    draw.instance_count > compute_limits.maxComputeWorkGroupCount[1]) {
-				EXIT("emulated mesh draw exceeds compute workgroup limits: %ux%u\n", mesh_groups,
-				     draw.instance_count);
-			}
-		} else if (mesh_groups > limits.maxMeshWorkGroupCount[0] ||
-		    draw.instance_count > limits.maxMeshWorkGroupCount[1] ||
-		    static_cast<uint64_t>(mesh_groups) * draw.instance_count >
-		        limits.maxMeshWorkGroupTotalCount) {
-			EXIT("mesh draw exceeds host workgroup limits: %ux%u\n", mesh_groups,
-			     draw.instance_count);
-		}
+		mesh_groups = (primitives - 1u) / mesh.primitives_per_group + 1u;
+		// Draws past the host workgroup limits run in slices (ForEachMeshSlice).
 	}
 
 	if (mesh_active && draw.IsIndexed()) {
@@ -1883,12 +1870,24 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 		    static_cast<uint32_t>(index_source.address),
 		    static_cast<uint32_t>(index_source.address >> 32u), mesh_groups,
 		    static_cast<uint32_t>(mesh_index_offset), static_cast<uint32_t>(records),
-		    static_cast<uint32_t>(records >> 32u)};
+		    static_cast<uint32_t>(records >> 32u), 0, 0};
 		static_assert(std::size(draw_data) == ShaderRecompiler::IR::PushData::MeshDrawDwordCount);
 		vk_buffer.pushConstants(compute_pipeline.pipeline_layout, vk::ShaderStageFlagBits::eCompute,
 		                        0, sizeof(draw_data), draw_data);
 		vk_buffer.bindPipeline(vk::PipelineBindPoint::eCompute, compute_pipeline.pipeline);
-		vk_buffer.dispatch(mesh_groups, draw.instance_count, 1);
+		const auto& compute_limits = m_context.GetGraphics().GetPhysicalDeviceProperties().limits;
+		const MeshGridLimits grid {compute_limits.maxComputeWorkGroupCount[0],
+		                           compute_limits.maxComputeWorkGroupCount[1], UINT32_MAX};
+		ForEachMeshSlice(mesh_groups, draw.instance_count, grid, [&](const MeshSlice& slice) {
+			if (slice.base_group != 0 || slice.base_instance != 0) {
+				const std::array<uint32_t, 2> bases {slice.base_group, slice.base_instance};
+				vk_buffer.pushConstants(compute_pipeline.pipeline_layout,
+				                        vk::ShaderStageFlagBits::eCompute,
+				                        ShaderRecompiler::IR::PushData::MeshBaseGroupDword * sizeof(uint32_t),
+				                        sizeof(bases), bases.data());
+			}
+			vk_buffer.dispatch(slice.groups, slice.instances, 1);
+		});
 		vk::MemoryBarrier written {};
 		written.srcAccessMask = vk::AccessFlagBits::eShaderWrite;
 		written.dstAccessMask = vk::AccessFlagBits::eVertexAttributeRead | vk::AccessFlagBits::eIndexRead;
@@ -1912,7 +1911,7 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 		    draw.IsIndexed() ? static_cast<uint32_t>(emit.vertex_offset) : emit.first_vertex,
 		    emit.first_instance, index_source.guest_element_size,
 		    static_cast<uint32_t>(index_source.address),
-		    static_cast<uint32_t>(index_source.address >> 32u), 0, 0, 0, 0};
+		    static_cast<uint32_t>(index_source.address >> 32u), 0, 0, 0, 0, 0, 0};
 		static_assert(std::size(draw_data) == ShaderRecompiler::IR::PushData::MeshDrawDwordCount);
 		vk_buffer.pushConstants(pipeline.pipeline_layout,
 		                        vk::ShaderStageFlagBits::eMeshEXT |
@@ -2083,7 +2082,20 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 	if (mesh_emulated) {
 		vk_buffer.drawIndexed(mesh_index_count, 1, 0, 0, 0);
 	} else if (mesh_active) {
-		vk_buffer.drawMeshTasksEXT(mesh_groups, draw.instance_count, 1);
+		const auto&          limits = m_context.GetGraphics().mesh_shader_properties;
+		const MeshGridLimits grid {limits.maxMeshWorkGroupCount[0], limits.maxMeshWorkGroupCount[1],
+		                           limits.maxMeshWorkGroupTotalCount};
+		ForEachMeshSlice(mesh_groups, draw.instance_count, grid, [&](const MeshSlice& slice) {
+			if (slice.base_group != 0 || slice.base_instance != 0) {
+				const std::array<uint32_t, 2> bases {slice.base_group, slice.base_instance};
+				vk_buffer.pushConstants(pipeline.pipeline_layout,
+				                        vk::ShaderStageFlagBits::eMeshEXT |
+				                            vk::ShaderStageFlagBits::eFragment,
+				                        ShaderRecompiler::IR::PushData::MeshBaseGroupDword * sizeof(uint32_t),
+				                        sizeof(bases), bases.data());
+			}
+			vk_buffer.drawMeshTasksEXT(slice.groups, slice.instances, 1);
+		});
 	} else {
 		EmitDrawPrimitives(ucfg, vk_buffer, draw, emit, indirect_buffer, indirect_offset);
 	}
