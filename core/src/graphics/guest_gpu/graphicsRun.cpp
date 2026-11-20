@@ -726,9 +726,6 @@ void CommandProcessor::DmaData(uint8_t engine, uint8_t dst_sel, uint8_t dst_cach
 		LOGF("CommandProcessor::DmaData: unsupported flags dst_policy=%u src_policy=%u wait=%u confirm=%u block=%u\n",
 		     dst_cache_policy, src_cache_policy, wait_for_previous, write_confirm, block_engine);
 	}
-	if (static_cast<uint32_t>(dst_address_or_offset) == 0x3022cu) {
-		return;
-	}
 	auto decode_gds = [](uint8_t selector, bool& is_gds) {
 		switch (selector) {
 			case 0:
