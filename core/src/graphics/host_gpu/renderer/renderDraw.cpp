@@ -2144,7 +2144,7 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 		}
 	}
 	// `debug.capy.nan_hunt 2`: check the color targets after every draw for NaN and infinities.
-	if (TextureCache::NanHuntMode() == 2) {
+	if (const auto hunt = TextureCache::NanHuntMode(); hunt >= 2) {
 		static uint64_t hunt_frame = 0;
 		static uint32_t draws      = 0;
 		const auto      frame      = Common::Telemetry::g_game_frames.load(std::memory_order_relaxed);
@@ -2153,6 +2153,21 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 			draws      = 0;
 		}
 		draws++;
+		// Mode 3 also checks the textures the pixel shader reads, on the draws of the pixel
+		// shader at `debug.capy.nan_ps 0x<address>`.
+		static Common::DebugFlags::CachedValue nan_ps("debug.capy.nan_ps", 0);
+		const auto ps_addr = buffer.GetShaders().GetPs().ps_regs.data_addr;
+		if (hunt == 3 && m_graphics_bindings.pixel && nan_ps.Get() != 0 &&
+		    static_cast<uint64_t>(nan_ps.Get()) == ps_addr) {
+			uint32_t slot = 0;
+			for (const auto& texture: m_graphics_bindings.pixel->images) {
+				if (texture.image_id) {
+					m_context.GetTextureCache().DebugScanImageNan(
+					    texture.image_id, fmt::format("draw #{} ps=0x{:x} reads tex{}", draws, ps_addr, slot));
+				}
+				slot++;
+			}
+		}
 		for (uint32_t i = 0; i < state.color_count; i++) {
 			m_context.GetTextureCache().DebugScanImageNan(
 			    state.color_info[i].image_id,

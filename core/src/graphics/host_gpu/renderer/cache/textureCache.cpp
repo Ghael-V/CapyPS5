@@ -2440,6 +2440,10 @@ int64_t TextureCache::NanHuntMode() {
 	static uint64_t                        hunt_frame  = 0;
 	const auto                             value       = nan_hunt.Get();
 	const auto frame = Common::Telemetry::g_game_frames.load(std::memory_order_relaxed);
+	// 10 + mode hunts on every frame, not just the next one (slow: for short windows only).
+	if (value >= 10) {
+		return value - 10;
+	}
 	if (value != armed_value) {
 		armed_value = value;
 		// The frame after the current one, so the hunt covers a whole frame from its start.
@@ -2555,13 +2559,24 @@ void TextureCache::DebugScanImageNan(ImageId id, const std::string& label) {
 	static Common::DebugFlags::CachedValue nan_roi_end("debug.capy.nan_roi_end", 0);
 	const auto roi     = static_cast<uint64_t>(std::max<int64_t>(nan_roi.Get(), 0));
 	const auto roi_end = static_cast<uint64_t>(std::max<int64_t>(nan_roi_end.Get(), 0));
+	// `debug.capy.nan_log_clean <vkformat>`: also log the clean scans of images in that Vulkan
+	// format, to see where an image turns non-finite.
+	static Common::DebugFlags::CachedValue nan_log_clean("debug.capy.nan_log_clean", 0);
+	const bool log_clean = nan_log_clean.Get() != 0 && nan_log_clean.Get() == static_cast<int64_t>(format);
 	m_scheduler.DeferPriorityOperation([&download, mapped, offset, size, format, width, height,
-	                                    address, label, roi, roi_end] {
+	                                    address, label, roi, roi_end, log_clean] {
 		download.Invalidate(offset, size);
 		uint64_t nans = 0, infs = 0, first = 0;
 		CountNonFinite(format, static_cast<const uint8_t*>(mapped),
 		               static_cast<uint64_t>(width) * height, nans, infs, first);
 		if (nans + infs == 0) {
+#if defined(__ANDROID__)
+			if (log_clean) {
+				__android_log_print(ANDROID_LOG_WARN, "CapyPS5-NanHunt", "%s image=0x%llx %ux%u vkfmt=%u clean",
+				                    label.c_str(), static_cast<unsigned long long>(address), width, height,
+				                    static_cast<uint32_t>(format));
+			}
+#endif
 			return;
 		}
 		uint64_t roi_count = 0;
