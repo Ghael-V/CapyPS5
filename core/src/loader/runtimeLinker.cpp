@@ -1037,6 +1037,16 @@ static bool RelocateRecord(uint32_t index, Elf64_Rela* r, Program* program, bool
 		}
 	}
 
+	// The target comes from the file: never write outside the module image. A fixed-address
+	// executable has base_vaddr 0 and absolute addresses, so its image starts at map_vaddr.
+	const uint64_t image_begin = program->map_vaddr;
+	const uint64_t image_end   = program->base_vaddr + program->base_size;
+	if (image_end < image_begin || image_end - image_begin < sizeof(uint64_t) ||
+	    ri.vaddr < image_begin || ri.vaddr - image_begin > image_end - image_begin - sizeof(uint64_t)) {
+		EXIT("relocation target 0x%016" PRIx64 " outside module image [0x%016" PRIx64
+		     ", 0x%016" PRIx64 "): %s\n",
+		     ri.vaddr, image_begin, image_end, Common::PathToString(program->file_name).c_str());
+	}
 	const bool patched = PatchGuestMemory64(ri.vaddr, value);
 	if (patched && stubbed) {
 		LOGF("Relocate: unresolved %s import patched to stub [%u] [%016" PRIx64 "] <- %016" PRIx64
