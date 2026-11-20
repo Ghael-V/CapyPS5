@@ -1466,9 +1466,11 @@ void TextureCache::RefreshImage(ImageId id) {
 	Common::DebugFlags::FrameTrace("  tc %s id=%u addr=0x%llx", "refresh", static_cast<uint32_t>(id.index),
 	                               static_cast<unsigned long long>(m_slot_images[id].info.data.address));
 	auto& image = m_slot_images[id];
-	if (image.depth_id &&
-	    (m_slot_images[image.depth_id].info.metadata.stencil_compressed ||
-	     m_slot_images[image.depth_id].info.samples != 1)) {
+	// A compressed stencil plane is not plain bytes in guest memory, alone (an S8 stencil-only
+	// target) or associated with a depth image.
+	if ((image.depth_id && (m_slot_images[image.depth_id].info.metadata.stencil_compressed ||
+	                        m_slot_images[image.depth_id].info.samples != 1)) ||
+	    (image.info.pixel_format == vk::Format::eS8Uint && image.info.metadata.stencil_compressed)) {
 		return;
 	}
 	TrackImage(id);
