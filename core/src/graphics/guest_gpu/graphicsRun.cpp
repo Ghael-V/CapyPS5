@@ -928,7 +928,7 @@ void GuestGpu::PrefetchSubmission(const PrefetchJob& job, std::stop_token stop) 
 				if (length != 4u) {
 					break; // a branch
 				}
-				const uint64_t commands = packet[1] | (static_cast<uint64_t>(packet[2]) << 32u);
+				const uint64_t commands = (packet[1] & ~0x3u) | (static_cast<uint64_t>(packet[2]) << 32u);
 				const uint32_t control  = packet[3];
 				const uint32_t size     = control & 0xfffffu;
 				if (commands == 0 || size == 0) {

@@ -2001,8 +2001,9 @@ KYTY_CP_OP_PARSER(CpOpIndirectBuffer) {
 		     control_flags);
 	}
 
-	auto* indirect_buffer =
-	    reinterpret_cast<const uint32_t*>(buffer[0] | (static_cast<uint64_t>(buffer[1]) << 32u));
+	// The two low bits of the target DWORD are not address bits.
+	auto* indirect_buffer = reinterpret_cast<const uint32_t*>(
+	    (buffer[0] & ~0x3u) | (static_cast<uint64_t>(buffer[1]) << 32u));
 	uint32_t                     indirect_num_dw = control & 0xfffffu;
 	static std::atomic<uint32_t> indirect_log_count {0};
 	if (indirect_log_count.fetch_add(1) < 128) {
