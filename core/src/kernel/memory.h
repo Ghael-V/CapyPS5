@@ -128,6 +128,9 @@ bool                   IsHostRangeMapped(uint64_t vaddr, uint64_t size);
 [[nodiscard]] uint64_t ClampRangeSize(uint64_t vaddr, uint64_t size);
 void                   WriteBacking(uint64_t vaddr, const void* data, uint64_t size) noexcept;
 void                   InvalidateMemory(uint64_t vaddr, uint64_t size);
+// The guest has the whole range committed with CPU or GPU write access. A host store into it
+// faults only on pages the GPU resource tracker protects, which its fault handler recovers.
+[[nodiscard]] bool     IsGuestWritable(uint64_t vaddr, uint64_t size);
 void                   InstallGpuResources(Graphics::RenderContext* renderer) noexcept;
 [[nodiscard]] bool HandleGpuFault(Graphics::PageFaultAccess access, uint64_t fault_vaddr) noexcept;
 
@@ -210,6 +213,10 @@ void SetGuestProtectionHook(GuestProtectionHook hook, void* context);
 
 // Guest address folding (see memory.cpp): the address the host actually uses for a guest address.
 uint64_t FoldGuestAddress(uint64_t vaddr);
+// The host address of guest `vaddr`, and in *contiguous how many of the next `size` bytes stay
+// contiguous there (the PS4 window remap maps each 1 GiB window on its own). For host code that
+// writes guest memory directly, such as a file read into a guest buffer.
+[[nodiscard]] uint64_t GuestHostSpan(uint64_t vaddr, uint64_t size, uint64_t* contiguous);
 using AddressFoldHook = void (*)(uint64_t mask);
 /** Called once when folding is enabled, so the JIT can start masking guest addresses. */
 void SetAddressFoldHook(AddressFoldHook hook);

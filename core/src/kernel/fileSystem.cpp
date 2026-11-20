@@ -12,6 +12,7 @@
 #include "common/archive.h"
 #include "common/assert.h"
 #include "common/common.h"
+#include "common/debugFlags.h"
 #include "common/dateTime.h"
 #include "common/emulatorConfig.h"
 #include "common/file.h"
@@ -19,6 +20,7 @@
 #include "common/logging/log.h"
 #include "common/stringUtils.h"
 #include "common/threads.h"
+#include "kernel/guestFileRead.h"
 #include "kernel/memory.h"
 #include "libs/errno.h"
 #include "libs/libs.h"
@@ -35,6 +37,36 @@
 #include <vector>
 
 namespace Libs::LibKernel::FileSystem {
+
+// See ReadIntoGuest: OK, or the kernel error for its EFAULT / EIO. `buf` is the guest address; the
+// read goes to the host address the guest one folds to, window by window.
+template <typename FileT>
+static int ReadFileIntoGuest(FileT* file, void* buf, uint32_t want, uint64_t pos, uint32_t* got) {
+	const auto guest       = reinterpret_cast<uint64_t>(buf);
+	const bool recoverable = Memory::IsGuestWritable(guest, want);
+	uint32_t   done        = 0;
+	int        err         = 0;
+	while (done < want) {
+		uint64_t   span = 0;
+		const auto host = Memory::GuestHostSpan(guest + done, want - done, &span);
+		uint32_t   part = 0;
+		err = ReadIntoGuest(file->f, reinterpret_cast<void*>(host), static_cast<uint32_t>(span),
+		                    pos + done, &part, recoverable);
+		done += part;
+		if (err != 0 || part < span) {
+			break;
+		}
+	}
+	*got = done;
+	if (err == 0) {
+		return OK;
+	}
+	Common::DebugFlags::NoteOnce("CapyPS5-FileRead", reinterpret_cast<uint64_t>(buf) ^ want,
+	                             "guest read failed: err=%d buf=%p want=%u got=%u pos=%llu", err, buf, want,
+	                             *got, static_cast<unsigned long long>(pos));
+	return err == EFAULT ? KERNEL_ERROR_EFAULT : KERNEL_ERROR_EIO;
+}
+
 
 LIB_NAME("libkernel", "libkernel");
 
@@ -681,10 +713,17 @@ int64_t KYTY_SYSV_ABI KernelRead(int d, void* buf, size_t nbytes) {
 	Memory::InvalidateMemory(reinterpret_cast<uint64_t>(buf),
 	                         std::min<uint64_t>(nbytes, remaining));
 	uint32_t bytes_read = 0;
-	file->f.Read(buf, static_cast<uint32_t>(nbytes), &bytes_read);
+	// The read cannot deliver more than is left in the file, so only that part of the buffer
+	// has to be writable.
+	const int read_error = ReadFileIntoGuest(
+	    file, buf, static_cast<uint32_t>(std::min<uint64_t>(nbytes, remaining)), pos, &bytes_read);
 
 	file->mutex.Unlock();
 
+	if (read_error != OK) {
+		LOGF("\tread failed after %u bytes\n", bytes_read);
+		return read_error;
+	}
 	if (is_invalid) {
 		LOGF("\tfile is invalid\n");
 		return KERNEL_ERROR_EIO;
@@ -807,11 +846,17 @@ int64_t KYTY_SYSV_ABI KernelPread(int d, void* buf, size_t nbytes, int64_t offse
 	                         std::min<uint64_t>(nbytes, remaining));
 	uint32_t bytes_read = 0;
 	file->f.Seek(offset);
-	file->f.Read(buf, static_cast<uint32_t>(nbytes), &bytes_read);
+	const int read_error = ReadFileIntoGuest(
+	    file, buf, static_cast<uint32_t>(std::min<uint64_t>(nbytes, remaining)),
+	    static_cast<uint64_t>(offset), &bytes_read);
 	file->f.Seek(pos);
 
 	file->mutex.Unlock();
 
+	if (read_error != OK) {
+		LOGF("\tpread failed after %u bytes\n", bytes_read);
+		return read_error;
+	}
 	if (is_invalid) {
 		LOGF("\tfile is invalid\n");
 		return KERNEL_ERROR_EIO;
@@ -907,8 +952,14 @@ int64_t KYTY_SYSV_ABI KernelPreadv(int d, const KernelIovec* iov, int iovcnt, in
 		}
 		const auto count = static_cast<uint32_t>(std::min<uint64_t>(buffer.iov_len, remaining));
 		Memory::InvalidateMemory(reinterpret_cast<uint64_t>(buffer.iov_base), count);
-		uint32_t bytes = 0;
-		file->f.Read(buffer.iov_base, count, &bytes);
+		uint32_t  bytes      = 0;
+		const int read_error = ReadFileIntoGuest(
+		    file, buffer.iov_base, count,
+		    static_cast<uint64_t>(offset) + static_cast<uint64_t>(bytes_read), &bytes);
+		if (read_error != OK) {
+			(void)file->f.Seek(position);
+			return read_error;
+		}
 		bytes_read += bytes;
 		remaining -= bytes;
 		if (bytes < count) {

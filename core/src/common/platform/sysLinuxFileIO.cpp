@@ -85,6 +85,28 @@ static void apply_cache_hint(FILE* f, sys_file_cache_type_t cache_type) {
 #endif
 }
 
+void SysFileReadEx(void* data, uint32_t size, sys_file_t& f, uint32_t* bytes_read, int* err) {
+	if (err != nullptr) {
+		*err = 0;
+	}
+	if (f.type != SYS_FILE_FILE) {
+		SysFileRead(data, size, f, bytes_read);
+		return;
+	}
+	errno = 0;
+	clearerr(f.f);
+	const size_t r = fread(data, 1, size, f.f);
+	if (bytes_read != nullptr) {
+		*bytes_read = static_cast<uint32_t>(r);
+	}
+	// A large read goes from the kernel straight into the destination: a guest page the GPU
+	// resource tracker made read-only fails it with EFAULT. The caller retries through a bounce
+	// buffer.
+	if (r < size && ferror(f.f) != 0 && err != nullptr) {
+		*err = errno != 0 ? errno : EIO;
+	}
+}
+
 void SysFileRead(void* data, uint32_t size, sys_file_t& f, uint32_t* bytes_read) {
 	if (f.type == SYS_FILE_FILE) {
 		size_t w = fread(data, 1, size, f.f);

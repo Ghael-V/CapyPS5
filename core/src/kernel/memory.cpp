@@ -1107,6 +1107,22 @@ static bool ForGuestSpans(uint64_t vaddr, uint64_t size, F&& f) {
 	return true;
 }
 
+uint64_t GuestHostSpan(uint64_t vaddr, uint64_t size, uint64_t* contiguous) {
+	constexpr uint64_t ChunkSize = 1ull << RemapChunkShift;
+	if (g_remap_table.load(std::memory_order_relaxed) == nullptr || size == 0 ||
+	    vaddr >= (1ull << 40u) || size > (1ull << 40u) - vaddr) {
+		*contiguous = size;
+		return FoldGuestAddress(vaddr);
+	}
+	const uint64_t delta = RemapDelta(vaddr);
+	uint64_t       end   = std::min<uint64_t>(size, ChunkSize - (vaddr & (ChunkSize - 1u)));
+	while (end < size && RemapDelta(vaddr + end) == delta) {
+		end = std::min<uint64_t>(size, end + ChunkSize);
+	}
+	*contiguous = end;
+	return vaddr + delta;
+}
+
 bool TryWriteBacking(uint64_t vaddr, const void* data, uint64_t size) {
 	return g_guest_address_space != nullptr &&
 	       ForGuestSpans(vaddr, size, [&](uint64_t host, uint64_t offset, uint64_t length) {
@@ -1179,6 +1195,18 @@ void InvalidateMemory(uint64_t vaddr, uint64_t size) {
 		return;
 	}
 	(void)GetGpuResources().InvalidateMemory(vaddr, size);
+}
+
+bool IsGuestWritable(uint64_t vaddr, uint64_t size) {
+	if (size == 0) {
+		return true;
+	}
+	std::vector<VirtualRanges::Range> ranges;
+	return g_virtual_ranges != nullptr && g_virtual_ranges->QuerySpan(vaddr, size, &ranges) &&
+	       std::all_of(ranges.begin(), ranges.end(), [](const VirtualRanges::Range& range) {
+		       return IsCommittedRangeType(range.type) &&
+		              (range.protection & (PROT_CPU_WRITE | PROT_GPU_WRITE)) != 0;
+	       });
 }
 
 void InstallGpuResources(Graphics::RenderContext* resources) noexcept {
