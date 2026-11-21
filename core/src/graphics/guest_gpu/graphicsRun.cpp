@@ -7,6 +7,8 @@
 #include <string>
 #if defined(__ANDROID__) || defined(__linux__)
 #include <pthread.h>
+#include <sched.h>
+#include <unistd.h>
 #endif
 
 #include "common/assert.h"
@@ -769,6 +771,54 @@ void GuestGpu::WaitForIdle() {
 	}
 }
 
+// The GPU thread is the emulator's busiest: keep it on the cores with the highest maximum clock
+// (the scheduler tends to leave it on the mid cores). `setprop debug.capy.gpu_fast_cores 0`
+// leaves it to the scheduler.
+static void PinGpuThreadToFastestCores() {
+#if defined(__ANDROID__) || defined(__linux__)
+	static Common::DebugFlags::CachedValue enabled("debug.capy.gpu_fast_cores", 1);
+	if (enabled.Get() == 0) {
+		return;
+	}
+	const auto cpus = std::min<long>(sysconf(_SC_NPROCESSORS_CONF), CPU_SETSIZE);
+	std::vector<uint64_t> max_freq(static_cast<size_t>(std::max(cpus, 0L)), 0);
+	uint64_t fastest = 0;
+	for (long cpu = 0; cpu < cpus; cpu++) {
+		char path[96];
+		std::snprintf(path, sizeof(path), "/sys/devices/system/cpu/cpu%ld/cpufreq/cpuinfo_max_freq", cpu);
+		if (auto* file = std::fopen(path, "r"); file != nullptr) {
+			unsigned long long khz = 0;
+			if (std::fscanf(file, "%llu", &khz) == 1) {
+				max_freq[cpu] = khz;
+				fastest       = std::max<uint64_t>(fastest, khz);
+			}
+			std::fclose(file);
+		}
+	}
+	cpu_set_t set;
+	CPU_ZERO(&set);
+	uint32_t count = 0;
+	for (long cpu = 0; cpu < cpus; cpu++) {
+		if (fastest != 0 && max_freq[cpu] == fastest) {
+			CPU_SET(cpu, &set);
+			count++;
+		}
+	}
+	// Nothing to gain when every core is as fast (or the clocks are unknown).
+	if (count == 0 || count == static_cast<uint32_t>(cpus)) {
+		return;
+	}
+	const bool ok = sched_setaffinity(0, sizeof(set), &set) == 0;
+#if defined(__ANDROID__)
+	__android_log_print(ANDROID_LOG_INFO, "CapyPS5-Gpu", "GPU thread %s %u fastest cores (%llu kHz)",
+	                    ok ? "pinned to the" : "could not be pinned to the", count,
+	                    static_cast<unsigned long long>(fastest));
+#else
+	(void)ok;
+#endif
+#endif
+}
+
 void GuestGpu::ThreadRun(void* data) {
 	auto* gpu = static_cast<GuestGpu*>(data);
 	EXIT_IF(gpu == nullptr);
@@ -776,6 +826,7 @@ void GuestGpu::ThreadRun(void* data) {
 #if defined(__ANDROID__) || defined(__linux__)
 	pthread_setname_np(pthread_self(), "CapyGpu");
 #endif
+	PinGpuThreadToFastestCores();
 	g_gpu_thread = true;
 	g_gpu_state  = gpu;
 
