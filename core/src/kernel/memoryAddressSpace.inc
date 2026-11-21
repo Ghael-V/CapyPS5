@@ -29,6 +29,42 @@ static constexpr uint64_t HOST_USER_MAX = 0x3fffffffffull;
 static constexpr uint64_t HOST_USER_MAX = 0xfbffffffffull;
 #endif
 
+// A reader-writer lock whose readers take one atomic operation each way: libc++'s shared_mutex
+// locks an internal mutex for every shared lock and unlock, and the GPU thread and the draw
+// prefetch read guest memory through the backing store all the time while its mappings change
+// rarely. Writers are serialized among themselves, stop new readers and wait for the others.
+class ReadMostlyMutex {
+public:
+	void lock_shared() {
+		for (;;) {
+			if ((m_state.fetch_add(1, std::memory_order_acquire) & Writer) == 0) {
+				return;
+			}
+			m_state.fetch_sub(1, std::memory_order_relaxed);
+			while ((m_state.load(std::memory_order_relaxed) & Writer) != 0) {
+				std::this_thread::yield();
+			}
+		}
+	}
+	void unlock_shared() { m_state.fetch_sub(1, std::memory_order_release); }
+	void lock() {
+		m_writers.lock();
+		m_state.fetch_or(Writer, std::memory_order_acquire);
+		while ((m_state.load(std::memory_order_acquire) & ~Writer) != 0) {
+			std::this_thread::yield();
+		}
+	}
+	void unlock() {
+		m_state.fetch_and(~Writer, std::memory_order_release);
+		m_writers.unlock();
+	}
+
+private:
+	static constexpr uint32_t Writer = 0x80000000u;
+	std::atomic<uint32_t>     m_state {0};
+	std::mutex                m_writers;
+};
+
 static bool GuestFreeRangeContains(uint64_t base, uint64_t range_size, uint64_t candidate,
                                    uint64_t size) {
 	if (UINT64_MAX - base < range_size || candidate < base) {
@@ -744,7 +780,7 @@ private:
 
 	uint8_t*                     m_backing_base = nullptr;
 	uint64_t                     m_size         = 0;
-	std::shared_mutex            m_mutex;
+	ReadMostlyMutex              m_mutex;
 	std::map<uint64_t, MapEntry> m_maps;
 };
 

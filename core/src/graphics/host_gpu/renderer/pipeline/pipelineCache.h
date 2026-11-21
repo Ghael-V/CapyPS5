@@ -142,7 +142,15 @@ public:
 	                    bool pixel_active, std::array<ShaderVertexInputInfo, 3>& vertex_info,
 	                    ShaderPixelInputInfo& pixel_info,
 	                    uint32_t indirect_vertex_sgpr   = UINT32_MAX,
-	                    uint32_t indirect_instance_sgpr = UINT32_MAX);
+	                    uint32_t indirect_instance_sgpr = UINT32_MAX,
+	                    uint64_t prefetch_submission    = 0);
+	// Draw prefetch (`debug.capy.prefetch`): another thread runs ahead of the GPU thread through the
+	// same command buffers and materializes the shader resources of upcoming draws; the GPU thread
+	// takes those results when they still hold (GetGraphicsPrograms with a nonzero
+	// `prefetch_submission` above does the prefetching). The GPU thread names the submission it
+	// processes, which results must match.
+	static void SetPrefetchSubmission(uint64_t submission);
+	[[nodiscard]] static bool PrefetchEnabled();
 	ShaderProgram GetComputeProgram(const HW::ComputeShaderInfo& regs,
 	                                const HW::ShaderRegisters&   sh,
 	                                ShaderComputeInputInfo&      input_info);

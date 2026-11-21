@@ -15,6 +15,7 @@
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
+#include <stop_token>
 #include <cstdint>
 #include <deque>
 #include <memory>
@@ -105,7 +106,18 @@ private:
 		bool                      constant_complete = false;
 		bool                      blocked           = false;
 		uint64_t                  flip_request_id   = 0;
+		uint64_t                  prefetch_id       = 0; // nonzero: the draw prefetch follows it
 	};
+
+	// Draw prefetch (`debug.capy.prefetch 1`, before the game starts): a thread runs ahead through
+	// each graphics submission with its own register state and materializes the shader resources
+	// of its draws; the GPU thread takes the results that still hold.
+	struct PrefetchJob {
+		uint64_t                  id = 0;
+		std::span<const uint32_t> commands;
+	};
+	void PrefetchRun(std::stop_token stop);
+	void PrefetchSubmission(const PrefetchJob& job, std::stop_token stop);
 
 	void              Enqueue(Submission submission);
 	void              ProcessCommands();
@@ -137,6 +149,23 @@ private:
 	std::array<std::unique_ptr<CommandProcessor>, ComputeQueueCount> m_compute_cp;
 
 	uint64_t        m_submit_id = 0;
+	std::unique_ptr<CommandProcessor> m_prefetch_cp;
+	// The GPU thread's registers as it starts a submission: the prefetch takes them whenever it
+	// lost track of its own (it gave up a submission the GPU thread finished first).
+	struct PrefetchRegisters {
+		uint64_t       id = 0;
+		HW::Context    ctx;
+		HW::Shader     sh;
+		HW::UserConfig ucfg;
+	};
+	std::mutex        m_prefetch_registers_mutex;
+	PrefetchRegisters m_prefetch_registers;
+	bool              m_prefetch_lost = true; // prefetch thread only
+	std::mutex                        m_prefetch_mutex;
+	std::condition_variable           m_prefetch_available;
+	std::deque<PrefetchJob>           m_prefetch_jobs;
+	uint64_t                          m_next_prefetch_id = 0;
+	std::jthread                      m_prefetch_thread;
 	std::atomic_int m_done_num  = 0;
 	std::jthread    m_thread;
 

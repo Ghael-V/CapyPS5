@@ -24,6 +24,7 @@
 #include "graphics/guest_gpu/hardwareContext.h"
 #include "graphics/guest_gpu/pm4.h"
 #include "graphics/host_gpu/renderer/gpuProfiler.h"
+#include "graphics/host_gpu/renderer/pipeline/pipelineCache.h"
 #include "graphics/host_gpu/renderer/render.h"
 #include "graphics/host_gpu/renderer/renderContext.h"
 #include "graphics/host_gpu/renderer/sync.h"
@@ -38,6 +39,7 @@
 #include "libs/errno.h"
 
 #include <algorithm>
+#include <condition_variable>
 #include <array>
 #include <atomic>
 #include <cstdio>
@@ -145,6 +147,8 @@ GuestGpu::GuestGpu(RenderContext& renderer): m_renderer(renderer) {
 	GraphicsInitJmpTables();
 	m_gfx_cp = std::make_unique<CommandProcessor>(renderer, 0);
 	m_gfx_cp->Reset();
+	m_prefetch_cp = std::make_unique<CommandProcessor>(renderer, 0);
+	m_prefetch_cp->Reset();
 	m_thread = std::jthread(ThreadRun, this);
 	// Label writes land when the host GPU finishes; a queue blocked on one should not sleep out
 	// the 100 ms stall timeout.
@@ -161,6 +165,11 @@ void GuestGpu::Shutdown() {
 		return;
 	}
 	m_renderer.GetCommandScheduler().SetCompletionListener({});
+	if (m_prefetch_thread.joinable()) {
+		m_prefetch_thread.request_stop();
+		m_prefetch_available.notify_all();
+		m_prefetch_thread.join();
+	}
 	{
 		Common::LockGuard lock(m_queue_mutex);
 		m_accepting = false;
@@ -455,6 +464,7 @@ void CommandProcessor::DumpConstRam(uint32_t* dst, uint32_t offset, uint32_t dw_
 		                            offset, dw_num, kDwords);
 		return;
 	}
+	Libs::LibKernel::Memory::NoteEmulatorGuestWrite(reinterpret_cast<uint64_t>(dst), static_cast<uint64_t>(dw_num) * 4u);
 	memcpy(dst, m_const_ram + offset / 4, static_cast<size_t>(dw_num) * 4);
 }
 
@@ -622,6 +632,7 @@ void CommandProcessor::PrepareGuestWrite(const void* dst, uint64_t size) {
 	if (address == 0 || size == 0) {
 		return;
 	}
+	Libs::LibKernel::Memory::NoteEmulatorGuestWrite(address, size);
 	if (auto& buffers = m_renderer.GetBufferCache(); buffers.HasGpuDirtyBytes(address, size)) {
 		buffers.ReadMemory(address, size, true);
 	}
@@ -678,6 +689,7 @@ void CommandProcessor::WriteReferenceClock(uint64_t dst_address, uint32_t num_by
 		return;
 	}
 	const auto value = Sync::ReadGpuTimestamp();
+	Libs::LibKernel::Memory::NoteEmulatorGuestWrite(dst_address, num_bytes);
 	std::memcpy(reinterpret_cast<void*>(dst_address), &value, num_bytes);
 	static std::atomic<uint32_t> clock_log_count {0};
 	if (clock_log_count.fetch_add(1) < 64) {
@@ -754,10 +766,277 @@ void CommandProcessor::DmaData(uint8_t engine, uint8_t dst_sel, uint8_t dst_cach
 	                        dst_gds, src_gds);
 }
 
+// The graphics submission the GPU thread processes and how many DE packets of it it has run.
+static std::atomic<uint64_t> g_prefetch_gpu_submission {0};
+static std::atomic<uint64_t> g_prefetch_gpu_packets {0};
+// The last submission whose DE the GPU thread finished: its command memory may be reused.
+static std::atomic<uint64_t> g_prefetch_gpu_done {0};
+
+void GuestGpu::PrefetchRun(std::stop_token stop) {
+#if defined(__ANDROID__) || defined(__linux__)
+	pthread_setname_np(pthread_self(), "CapyPrefetch");
+#endif
+	// Materializations here use their own scratch: the GPU thread may walk the same plans at once.
+	ShaderRecompiler::IR::ResourcePlan::ScratchTable scratch;
+	ShaderRecompiler::IR::ResourcePlan::UseThreadScratch(&scratch);
+	while (!stop.stop_requested()) {
+		PrefetchJob job;
+		{
+			std::unique_lock lock(m_prefetch_mutex);
+			m_prefetch_available.wait(lock, [&] { return stop.stop_requested() || !m_prefetch_jobs.empty(); });
+			if (stop.stop_requested()) {
+				return;
+			}
+			job = m_prefetch_jobs.front();
+			m_prefetch_jobs.pop_front();
+		}
+		PrefetchSubmission(job, stop);
+	}
+}
+
+struct PrefetchWalkStats {
+	uint64_t submissions = 0, draws = 0, behind = 0, prefetched = 0, waits = 0, wait_timeouts = 0;
+	uint64_t given_up = 0, resynced = 0;
+	uint64_t max_ahead = 0;
+	std::chrono::steady_clock::time_point next_log {};
+};
+static PrefetchWalkStats g_prefetch_walk;
+
+static void LogPrefetchWalk() {
+#if defined(__ANDROID__)
+	auto&      s   = g_prefetch_walk;
+	const auto now = std::chrono::steady_clock::now();
+	if (now < s.next_log) {
+		return;
+	}
+	s.next_log = now + std::chrono::seconds(2);
+	__android_log_print(ANDROID_LOG_WARN, "CapyPS5-Prefetch",
+	                    "walk: submissions %llu (given up %llu, resynced %llu), draws %llu (behind %llu, prefetched %llu), "
+	                    "waits %llu (timeouts %llu), max ahead %llu packets",
+	                    static_cast<unsigned long long>(s.submissions), static_cast<unsigned long long>(s.given_up),
+	                    static_cast<unsigned long long>(s.resynced), static_cast<unsigned long long>(s.draws),
+	                    static_cast<unsigned long long>(s.behind), static_cast<unsigned long long>(s.prefetched),
+	                    static_cast<unsigned long long>(s.waits), static_cast<unsigned long long>(s.wait_timeouts),
+	                    static_cast<unsigned long long>(s.max_ahead));
+	s = {.next_log = s.next_log};
+#endif
+}
+
+// Walks the DE stream of one graphics submission with the prefetch register state: register
+// packets run their own handlers, draws are prefetched, packets that wait on memory hold the walk
+// until the GPU thread passed them (what follows a wait may read memory the wait guards), and
+// everything else is skipped. Behind the GPU thread, registers are still followed (they carry over
+// to the next submission) but draws are not prefetched.
+void GuestGpu::PrefetchSubmission(const PrefetchJob& job, std::stop_token stop) {
+	auto& cp = *m_prefetch_cp;
+	g_prefetch_walk.submissions++;
+	// Once the GPU thread finished a submission the guest may reuse its memory: never walk it
+	// then. Giving one up loses the registers it set, so the next walk starts from the GPU
+	// thread's own as it starts that submission.
+	const auto finished = [&] { return g_prefetch_gpu_done.load(std::memory_order_acquire) >= job.id; };
+	const auto give_up  = [&] {
+		m_prefetch_lost = true;
+		g_prefetch_walk.given_up++;
+	};
+	if (finished()) {
+		give_up();
+		return;
+	}
+	if (m_prefetch_lost) {
+		const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(100);
+		while (!stop.stop_requested() && g_prefetch_gpu_submission.load(std::memory_order_acquire) < job.id &&
+		       std::chrono::steady_clock::now() < deadline) {
+			std::this_thread::sleep_for(std::chrono::microseconds(20));
+		}
+		std::lock_guard lock(m_prefetch_registers_mutex);
+		if (m_prefetch_registers.id != job.id) {
+			give_up();
+			return;
+		}
+		cp.GetCtx()   = m_prefetch_registers.ctx;
+		cp.GetShCtx() = m_prefetch_registers.sh;
+		cp.GetUcfg()  = m_prefetch_registers.ucfg;
+		m_prefetch_lost = false;
+		g_prefetch_walk.resynced++;
+	}
+	// Each command buffer is copied with a checked read before it is walked: one the guest
+	// unmapped or reused meanwhile is then garbage at worst, never a fault.
+	struct Cursor {
+		std::vector<uint32_t> words;
+		std::span<const uint32_t> commands;
+		uint32_t                  offset = 0;
+	};
+	const auto load = [](uint64_t address, size_t count, Cursor& cursor) {
+		cursor.words.resize(count);
+		cursor.offset = 0;
+		if (address == 0 || count == 0 ||
+		    !Libs::LibKernel::Memory::ReadGuestMemory(address, cursor.words.data(), count * sizeof(uint32_t))) {
+			cursor.words.clear();
+		}
+		cursor.commands = cursor.words;
+	};
+	std::vector<Cursor> stack(1);
+	stack.reserve(8); // the spans point into the words: no reallocation
+	load(reinterpret_cast<uint64_t>(job.commands.data()), job.commands.size(), stack.back());
+	uint64_t            packets = 0;
+	const auto behind = [&] {
+		const auto gpu = g_prefetch_gpu_submission.load(std::memory_order_acquire);
+		return gpu > job.id ||
+		       (gpu == job.id && g_prefetch_gpu_packets.load(std::memory_order_acquire) > packets);
+	};
+	const auto wait_for_gpu = [&] {
+		g_prefetch_walk.waits++;
+		const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(100);
+		while (!stop.stop_requested() && !behind()) {
+			if (std::chrono::steady_clock::now() >= deadline) {
+				g_prefetch_walk.wait_timeouts++;
+				break;
+			}
+			std::this_thread::sleep_for(std::chrono::microseconds(20));
+		}
+	};
+	while (!stack.empty() && !stop.stop_requested()) {
+		auto& cursor = stack.back();
+		if (cursor.offset >= cursor.commands.size()) {
+			stack.pop_back();
+			continue;
+		}
+		if (finished()) {
+			give_up();
+			return;
+		}
+		const auto* packet    = cursor.commands.data() + cursor.offset;
+		const auto  remaining = static_cast<uint32_t>(cursor.commands.size()) - cursor.offset;
+		const auto  header    = packet[0];
+		if (header == 0x80000000u || Pm4::PacketSizeDw(header) == 1u) {
+			cursor.offset++;
+			continue;
+		}
+		const auto length = KYTY_PM4_LEN(header);
+		if (remaining < 2 || length == 0 || length > remaining) {
+			stack.pop_back();
+			continue;
+		}
+		const auto opcode = (header >> 8u) & 0xffu;
+		const auto r      = KYTY_PM4_R(header);
+		cursor.offset += length;
+		if (g_cp_op_func[opcode] != nullptr) {
+			packets++;
+		}
+		switch (opcode) {
+			case Pm4::IT_INDIRECT_BUFFER: {
+				if (length != 4u) {
+					break; // a branch
+				}
+				const uint64_t commands = packet[1] | (static_cast<uint64_t>(packet[2]) << 32u);
+				const uint32_t control  = packet[3];
+				const uint32_t size     = control & 0xfffffu;
+				if (commands == 0 || size == 0) {
+					break;
+				}
+				if ((control & (1u << 20u)) != 0) {
+					load(commands, size, stack.back()); // chained: replaces this buffer
+				} else if (stack.size() < 8u) {
+					stack.emplace_back();
+					load(commands, size, stack.back());
+				}
+				break;
+			}
+			case Pm4::IT_SET_CONTEXT_REG:
+			case Pm4::IT_SET_SH_REG:
+			case Pm4::IT_SET_UCONFIG_REG:
+			case Pm4::IT_SET_UCONFIG_REG_INDEX:
+			case Pm4::IT_SET_CONFIG_REG:
+				(void)g_cp_op_func[opcode](cp, header & ~1u, packet + 1, remaining, static_cast<uint32_t>(cursor.commands.size()));
+				break;
+			case Pm4::IT_SET_CONTEXT_REG_INDIRECT:
+			case Pm4::IT_SET_SH_REG_INDIRECT:
+			case Pm4::IT_SET_UCONFIG_REG_INDIRECT: {
+				// The register list lives in guest memory, which may not be readable yet this far
+				// ahead: copy it with a checked read and point the handler at the copy.
+				if (length != 5u) {
+					break;
+				}
+				const auto     address = (static_cast<uint64_t>(packet[1]) & 0xfffffffcu) |
+				                     (static_cast<uint64_t>(packet[2]) << 32u);
+				const uint32_t count   = packet[4] & 0x3fffu;
+				const bool     pairs   = (packet[3] & Pm4::LOAD_REG_INDEX_OFFSET_AND_DATA) != 0;
+				std::vector<uint32_t> list(static_cast<size_t>(count) * (pairs ? 2u : 1u));
+				if (address == 0 || list.empty() ||
+				    !Libs::LibKernel::Memory::ReadGuestMemory(address, list.data(), list.size() * sizeof(uint32_t))) {
+					break;
+				}
+				const auto copy = reinterpret_cast<uint64_t>(list.data());
+				const std::array<uint32_t, 5> local {header, static_cast<uint32_t>(copy), static_cast<uint32_t>(copy >> 32u),
+				                                     packet[3], packet[4]};
+				(void)g_cp_op_func[opcode](cp, header & ~1u, local.data() + 1, 4u, 5u);
+				break;
+			}
+			case Pm4::IT_INDEX_TYPE:
+			case Pm4::IT_NUM_INSTANCES:
+			case Pm4::IT_SET_BASE:
+			case Pm4::IT_CLEAR_STATE:
+			case Pm4::IT_INDEX_BASE:
+			case Pm4::IT_INDEX_BUFFER_SIZE:
+			case Pm4::IT_CONTEXT_CONTROL:
+				(void)g_cp_op_func[opcode](cp, header & ~1u, packet + 1, remaining, static_cast<uint32_t>(cursor.commands.size()));
+				break;
+			case Pm4::IT_NOP:
+				if (r == Pm4::R_CONTEXT_STATE || r == Pm4::R_DISPATCH_RESET) {
+					(void)g_cp_op_func[opcode](cp, header & ~1u, packet + 1, remaining, static_cast<uint32_t>(cursor.commands.size()));
+				} else if (r == Pm4::R_WAIT_FLIP_DONE) {
+					wait_for_gpu();
+				}
+				break;
+			case Pm4::IT_DRAW_INDEX_2:
+			case Pm4::IT_DRAW_INDEX_AUTO:
+			case Pm4::IT_DRAW_INDEX_OFFSET_2:
+				g_prefetch_walk.draws++;
+				if (!behind()) {
+					if (g_prefetch_gpu_submission.load(std::memory_order_acquire) == job.id) {
+						const auto gpu_packets = g_prefetch_gpu_packets.load(std::memory_order_acquire);
+						if (packets > gpu_packets) {
+							g_prefetch_walk.max_ahead = std::max(g_prefetch_walk.max_ahead, packets - gpu_packets);
+						}
+					}
+					g_prefetch_walk.prefetched +=
+					    PrefetchDrawPrograms(m_renderer, cp.GetCtx(), cp.GetShCtx(), cp.GetUcfg(), job.id) ? 1u : 0u;
+				} else {
+					g_prefetch_walk.behind++;
+				}
+				LogPrefetchWalk();
+				break;
+			case Pm4::IT_WAIT_REG_MEM:
+			case Pm4::IT_WAIT_REG_MEM_64:
+			case Pm4::IT_MEM_SEMAPHORE:
+			case Pm4::IT_COND_EXEC:
+			case Pm4::IT_SET_PREDICATION:
+			case Pm4::IT_WAIT_ON_CE_COUNTER:
+			case Pm4::IT_WAIT_ON_DE_COUNTER_DIFF:
+			case Pm4::IT_REWIND:
+				wait_for_gpu();
+				break;
+			default: break;
+		}
+	}
+}
+
 void GuestGpu::Enqueue(Submission submission) {
 	EXIT_IF(submission.queue_id >= QueueCount);
 	Common::LockGuard lock(m_queue_mutex);
 	EXIT_IF(!m_accepting);
+	if (submission.type == SubmissionType::Graphics && PipelineCache::PrefetchEnabled()) {
+		submission.prefetch_id = ++m_next_prefetch_id;
+		Libs::LibKernel::Memory::EnableEmulatorWriteLog(true);
+		if (!m_prefetch_thread.joinable()) {
+			m_prefetch_thread = std::jthread([this](std::stop_token stop) { PrefetchRun(stop); });
+		}
+		{
+			std::lock_guard prefetch_lock(m_prefetch_mutex);
+			m_prefetch_jobs.push_back({submission.prefetch_id, submission.commands});
+		}
+		m_prefetch_available.notify_one();
+	}
 	m_queues[submission.queue_id].push_back(std::move(submission));
 	m_submission_count++;
 	m_work_available.Signal();
@@ -988,9 +1267,24 @@ bool GuestGpu::Process(Submission& submission, bool& progressed) {
 				cp.SetCeComplete(submission.constant_complete);
 				if (!submission.command_complete) {
 					g_sync_stream = "gfx-DE";
+					if (submission.prefetch_id != 0) {
+						PipelineCache::SetPrefetchSubmission(submission.prefetch_id);
+						if (g_prefetch_gpu_submission.load(std::memory_order_relaxed) < submission.prefetch_id) {
+							std::lock_guard registers_lock(m_prefetch_registers_mutex);
+							m_prefetch_registers.id   = submission.prefetch_id;
+							m_prefetch_registers.ctx  = cp.GetCtx();
+							m_prefetch_registers.sh   = cp.GetShCtx();
+							m_prefetch_registers.ucfg = cp.GetUcfg();
+						}
+						g_prefetch_gpu_submission.store(submission.prefetch_id, std::memory_order_release);
+						submission.command_execution.PublishProgress(true);
+					}
 					submission.command_complete =
 					    cp.Process(submission.command_execution, submission.commands) ==
 					    Pm4ProcessResult::Complete;
+					if (submission.command_complete && submission.prefetch_id != 0) {
+						g_prefetch_gpu_done.store(submission.prefetch_id, std::memory_order_release);
+					}
 					if (submission.command_complete && !submission.constant_commands.empty()) {
 						SyncRecord("DE complete", cp.CeCount(), cp.DeCount());
 					}
@@ -1329,6 +1623,9 @@ void CommandProcessor::ProcessPm4(Pm4Execution& execution) {
 		if (!execution.m_suspended) {
 			Pm4TraceRecord(packet, total_dw - remaining_dw, packet_header, packet_dw);
 			execution.m_packet_counter++;
+			if (execution.m_publish_progress) {
+				g_prefetch_gpu_packets.store(execution.m_packet_counter, std::memory_order_release);
+			}
 		}
 		if (packet_dw > remaining_dw) {
 			Pm4TraceAnomaly("packet overruns its buffer", packet);

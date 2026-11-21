@@ -105,6 +105,26 @@ bool EquivalentValue(const ResourcePlan& program, Value left, Value right,
 
 } // namespace
 
+static thread_local ResourcePlan::ScratchTable* t_scratch_table = nullptr;
+
+ResourcePlan::EvaluationScratch& ResourcePlan::Scratch() const {
+	return t_scratch_table != nullptr ? (*t_scratch_table)[this] : gpu_scratch;
+}
+
+void ResourcePlan::UseThreadScratch(ScratchTable* table) {
+	t_scratch_table = table;
+}
+
+bool ResourcePlan::UsesThreadScratch() {
+	return t_scratch_table != nullptr;
+}
+
+void ResourcePlan::AssignEvaluationSlots() {
+	for (const auto& inst: value_storage) {
+		(void)inst.EvaluationIndex(evaluation_value_count);
+	}
+}
+
 ResourcePlan::ResourcePlan() = default;
 ResourcePlan::ResourcePlan(ResourcePlan&&) noexcept = default;
 

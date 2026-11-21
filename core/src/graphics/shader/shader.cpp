@@ -116,6 +116,33 @@ uint32_t Gfx7ShaderCodeWords(uint64_t addr) {
 
 static ShaderMapEntry ShaderGetMappedData(uint64_t addr, const char* label);
 
+// The draw prefetch's lookups: they use what the GPU thread found already and fail, instead of
+// scanning, decoding or stopping, on anything else.
+static thread_local bool t_prefetch_lookup = false;
+static thread_local bool t_prefetch_failed = false;
+
+void ShaderBeginPrefetchLookup() {
+	t_prefetch_lookup = true;
+	t_prefetch_failed = false;
+}
+
+bool ShaderEndPrefetchLookup() {
+	t_prefetch_lookup = false;
+	return !t_prefetch_failed;
+}
+
+bool ShaderPrefetchLookupFailed() {
+	return t_prefetch_lookup && t_prefetch_failed;
+}
+
+static bool PrefetchLookupMiss() {
+	if (!t_prefetch_lookup) {
+		return false;
+	}
+	t_prefetch_failed = true;
+	return true;
+}
+
 // Whether the Gnm "OrbShdr" footer still ends a PS4 shader recorded as `size` bytes at `addr`.
 // Games load new shaders over freed ones (Sackboy does between levels): a recorded size is stale
 // once another shader sits there, and decoding with it stops before that shader's S_ENDPGM.
@@ -193,13 +220,55 @@ void ShaderDebugDisassembleGfx7(uint64_t addr, const char* stage) {
 #endif
 }
 
+// ShaderGetMappedData's exact and range matches, without changing the map.
+static bool ShaderAddressKnownLocked(uint64_t addr, bool gfx7) {
+	if (addr == 0) {
+		return false;
+	}
+	// A registered address is known even when its size may be stale: the lookup refreshes it.
+	if (g_shader_map->contains(addr)) {
+		return true;
+	}
+	for (const auto& [k, v] : *g_shader_map) {
+		if (addr >= k && addr < k + v.data.code_size_bytes &&
+		    (!gfx7 || Gfx7ShaderSizeCurrent(k, v.data.code_size_bytes))) {
+			return true;
+		}
+	}
+	return false;
+}
+
+bool ShaderDrawProgramsKnown(const HW::VertexShaderInfo& vs, const HW::PixelShaderInfo& ps,
+                             const HW::Context& context, bool tess_active, bool ps_active) {
+	if (g_shader_map == nullptr) {
+		return false;
+	}
+	const bool gfx7   = ShaderRecompiler::Decoder::GetGuestIsa() == ShaderRecompiler::Decoder::GuestIsa::Gfx7;
+	const auto stages = context.GetShaderStages();
+	std::scoped_lock lock(g_shader_map_mutex);
+	const auto known = [&](uint64_t addr) { return ShaderAddressKnownLocked(addr, gfx7); };
+	if (ps_active && !known(ps.ps_regs.data_addr)) {
+		return false;
+	}
+	if (tess_active) {
+		return (stages & 0x4u) != 0 && (stages & 0x20u) == 0 && vs.hs_regs.user_data_addr != 0 &&
+		       known(vs.ls_regs.data_addr) && known(vs.hs_regs.data_addr) && known(vs.es_regs.data_addr);
+	}
+	if (gfx7) {
+		// A legacy GS pipeline reads ES, GS and the copy VS; the VS alone otherwise.
+		return known(vs.vs_regs.data_addr) &&
+		       ((stages & 0x20u) == 0 || (known(vs.es_regs.data_addr) && known(vs.gs_regs.data_addr)));
+	}
+	return known(vs.es_regs.data_addr);
+}
+
 static ShaderMapEntry ShaderGetMappedData(uint64_t addr, const char* label) {
 	EXIT_IF(g_shader_map == nullptr);
 
 	std::scoped_lock lock(g_shader_map_mutex);
 
 	const bool gfx7 = ShaderRecompiler::Decoder::GetGuestIsa() == ShaderRecompiler::Decoder::GuestIsa::Gfx7;
-	if (auto iter = g_shader_map->find(addr); iter != g_shader_map->end() && gfx7 &&
+	if (auto iter = g_shader_map->find(addr); iter != g_shader_map->end() && gfx7 && !t_prefetch_lookup &&
 	                                          !Gfx7ShaderSizeCurrent(addr, iter->second.data.code_size_bytes)) {
 		// Only a shader that has a footer elsewhere now is stale; one never found with a footer
 		// keeps its scanned size.
@@ -236,6 +305,9 @@ static ShaderMapEntry ShaderGetMappedData(uint64_t addr, const char* label) {
 
 	// Do not match by aligned base or low address bits: both can return a different shader,
 	// which renders garbage instead of failing visibly.
+	if (PrefetchLookupMiss()) {
+		return {};
+	}
 
 	LOGF_COLOR(Log::Color::Red, "%s shader=0x%016" PRIx64 " is missing from ShaderMap (entries=%zu):\n",
 	           label, addr, g_shader_map->size());
@@ -1027,9 +1099,15 @@ static void PrepareGfx7FetchCall(const HW::UserSgprInfo& sgprs, uint32_t user_sg
 			return; // no fetch shader
 		}
 		const auto pair = inst.src0.reg;
+		if ((inst.src0.kind != Decoder::OperandKind::Sgpr || pair + 1u >= user_sgprs) && PrefetchLookupMiss()) {
+			return;
+		}
 		EXIT_NOT_IMPLEMENTED(inst.src0.kind != Decoder::OperandKind::Sgpr || pair + 1u >= user_sgprs);
 		const auto fetch = static_cast<uint64_t>(sgprs.value[pair]) |
 		                   (static_cast<uint64_t>(sgprs.value[pair + 1u]) << 32u);
+		if ((fetch == 0 || (fetch & 3u) != 0) && PrefetchLookupMiss()) {
+			return;
+		}
 		EXIT_NOT_IMPLEMENTED(fetch == 0 || (fetch & 3u) != 0);
 		// The fetch shader ends at its S_SETPC_B64; give the decoder room up to 4 KiB. Every draw
 		// comes here: read the 4 KiB at once (word by word only when part of it is unmapped), and
@@ -1043,6 +1121,9 @@ static void PrepareGfx7FetchCall(const HW::UserSgprInfo& sgprs, uint32_t user_sg
 			       LibKernel::Memory::ReadGuestMemory(fetch + fetch_words * 4u, &probe[fetch_words], 4u)) {
 				fetch_words++;
 			}
+		}
+		if (fetch_words == 0 && PrefetchLookupMiss()) {
+			return;
 		}
 		EXIT_NOT_IMPLEMENTED(fetch_words == 0);
 		params.back_code = code.subspan(word);
@@ -1062,6 +1143,9 @@ static void PrepareGfx7FetchCall(const HW::UserSgprInfo& sgprs, uint32_t user_sg
 				front_words = found->second.words;
 				front_hash  = found->second.hash;
 			}
+		}
+		if (front_words == 0 && PrefetchLookupMiss()) {
+			return;
 		}
 		if (front_words == 0) {
 			const auto front = Decoder::DecodeFrontProgram(
@@ -1452,6 +1536,9 @@ static bool GetGfx7GsFold(const HW::VertexShaderInfo& regs, const HW::Context& c
 			}
 			return it->second.has_value();
 		}
+	}
+	if (PrefetchLookupMiss()) {
+		return false;
 	}
 	ShaderGfx7GsFold        result;
 	result.ring_offset_sgpr = es_user_sgprs;

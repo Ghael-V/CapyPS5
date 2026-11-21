@@ -127,6 +127,7 @@ public:
 	[[nodiscard]] Block*                  Parent() const;
 	[[nodiscard]] const std::vector<Use>& Uses() const;
 	// Runtime indices belong to the resource plan that owns this instruction.
+	[[nodiscard]] bool HasEvaluationIndex() const { return evaluation_index != UINT32_MAX; }
 	[[nodiscard]] uint32_t EvaluationIndex(uint32_t& count) const {
 		if (evaluation_index == UINT32_MAX) {
 			evaluation_index = count++;

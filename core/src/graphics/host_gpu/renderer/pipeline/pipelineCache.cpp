@@ -37,6 +37,8 @@
 #include <array>
 #include <bit>
 #include <chrono>
+#include <deque>
+#include <shared_mutex>
 #include <unordered_set>
 #include <atomic>
 #if defined(__ANDROID__) || defined(__linux__)
@@ -321,7 +323,8 @@ struct PipelineCache::ProgramCache {
 	struct SourceEntry {
 		SourceEntry(ShaderRecompiler::IR::ResourcePlan plan,
 		            std::unique_ptr<ShaderRecompiler::ShaderSource> call_source)
-		    : call_source(std::move(call_source)), resource_plan(std::move(plan)) {
+		    : call_source(std::move(call_source)),
+		      resource_plan(std::make_shared<ShaderRecompiler::IR::ResourcePlan>(std::move(plan))) {
 			permutations.reserve(8);
 		}
 
@@ -334,13 +337,16 @@ struct PipelineCache::ProgramCache {
 		bool RefreshCallSource(const ShaderRecompiler::IR::SrtRuntime& runtime) {
 			const auto revision = call_source->revision;
 			ShaderRecompiler::RefreshShaderSource(*call_source, runtime);
-			resource_plan.source_reads = call_source->reads;
+			// Call-source entries are never prefetched, so their plan may change in place.
+			resource_plan->source_reads = call_source->reads;
 			return revision != call_source->revision;
 		}
 
+		// `materialize` false: `resources` and `specialization` already hold this draw's values
+		// (a prefetched result).
 		template <bool HasCalls>
 		Permutation* FindPermutation(const ShaderRecompiler::IR::SrtRuntime& runtime,
-		                             uint32_t push_data_cursor) {
+		                             uint32_t push_data_cursor, bool materialize = true) {
 #if defined(__ANDROID__)
 			// `debug.capy.materialize_stats 1`: how often a materialization repeats the inputs
 			// (entry, user SGPRs, shader base) of one seen in the previous two seconds.
@@ -369,7 +375,8 @@ struct PipelineCache::ProgramCache {
 				}
 			}
 #endif
-			if (!ShaderRecompiler::IR::MaterializeResources(resource_plan, runtime, resources, specialization)) {
+			if (materialize &&
+			    !ShaderRecompiler::IR::MaterializeResources(*resource_plan, runtime, resources, specialization)) {
 				EXIT("shader resources could not be materialized again: %s\n",
 				     ShaderRecompiler::IR::LastMaterializeFailure());
 			}
@@ -390,7 +397,9 @@ struct PipelineCache::ProgramCache {
 
 		uint64_t                                        last_stats_key = 0;
 		std::unique_ptr<ShaderRecompiler::ShaderSource> call_source;
-		ShaderRecompiler::IR::ResourcePlan           resource_plan;
+		// Replaced whole (under ProgramCache::programs_mutex), never changed in place, except for
+		// call-source entries: a prefetch holds the plan it materialized with.
+		std::shared_ptr<ShaderRecompiler::IR::ResourcePlan> resource_plan;
 		ShaderRecompiler::IR::ResourceSnapshot       resources;
 		ShaderRecompiler::IR::ResourceSpecialization specialization;
 		std::vector<Permutation>                    permutations;
@@ -480,7 +489,8 @@ struct PipelineCache::ProgramCache {
 				source_changed = cached.RefreshCallSource(runtime);
 				if (!source_changed) permutation = cached.FindPermutation<true>(runtime, push_data_cursor);
 			} else {
-				permutation = cached.FindPermutation<false>(runtime, push_data_cursor);
+				const bool prefetched = TakePrefetched(cached, runtime);
+				permutation = cached.FindPermutation<false>(runtime, push_data_cursor, !prefetched);
 			}
 			if (permutation != nullptr) {
 				input_info.stage = {.program = &permutation->program, .resources = &entry->second.resources};
@@ -553,16 +563,19 @@ struct PipelineCache::ProgramCache {
 		const bool created = entry == programs.end();
 		if (created) {
 			auto retained = source.call ? std::make_unique<ShaderRecompiler::ShaderSource>(std::move(source)) : nullptr;
-			entry = programs.try_emplace(lookup_key,
-			    ShaderRecompiler::IR::ExtractResourcePlan(translated.program), std::move(retained)).first;
+			{
+				std::unique_lock lock(programs_mutex);
+				entry = programs.try_emplace(lookup_key,
+				    ShaderRecompiler::IR::ExtractResourcePlan(translated.program), std::move(retained)).first;
+			}
 			if (!ShaderRecompiler::IR::MaterializeResources(
-			        entry->second.resource_plan, runtime, entry->second.resources,
+			        *entry->second.resource_plan, runtime, entry->second.resources,
 			        entry->second.specialization)) {
 				EXIT("shader resources could not be materialized (shader 0x%016" PRIx64 "): %s\n",
 				     params.hash, ShaderRecompiler::IR::LastMaterializeFailure());
 			}
 		} else if (source_changed) {
-			entry->second.resource_plan = ShaderRecompiler::IR::ExtractResourcePlan(translated.program);
+			ReplacePlan(entry->second, translated);
 			if (const auto* permutation = entry->second.FindPermutation<true>(runtime, push_data_cursor)) {
 				input_info.stage = {.program = &permutation->program, .resources = &entry->second.resources};
 				permutation->program.bindings.AdvancePushData(push_data_cursor);
@@ -574,8 +587,8 @@ struct PipelineCache::ProgramCache {
 			// other resources (more buffers, or fewer than an indirect root the cached
 			// specialization names), and specializing it with the old plan closed the emulator in
 			// ApplyResourceSpecialization. Plan and specialize the translation being compiled.
-			entry->second.resource_plan = ShaderRecompiler::IR::ExtractResourcePlan(translated.program);
-			if (!ShaderRecompiler::IR::MaterializeResources(entry->second.resource_plan, runtime,
+			ReplacePlan(entry->second, translated);
+			if (!ShaderRecompiler::IR::MaterializeResources(*entry->second.resource_plan, runtime,
 			                                                 entry->second.resources, entry->second.specialization)) {
 				EXIT("shader resources could not be materialized (shader 0x%016" PRIx64 "): %s\n", params.hash,
 				     ShaderRecompiler::IR::LastMaterializeFailure());
@@ -630,6 +643,259 @@ struct PipelineCache::ProgramCache {
 			}
 		}
 	}
+
+	void ReplacePlan(SourceEntry& entry, const ShaderRecompiler::TranslateResult& translated) {
+		auto plan = std::make_shared<ShaderRecompiler::IR::ResourcePlan>(
+		    ShaderRecompiler::IR::ExtractResourcePlan(translated.program));
+		std::unique_lock lock(programs_mutex);
+		entry.resource_plan = std::move(plan);
+	}
+
+	// A materialization done ahead of the GPU thread, for one draw stage of one submission.
+	struct PrefetchResult {
+		const SourceEntry*                                  entry = nullptr;
+		std::shared_ptr<ShaderRecompiler::IR::ResourcePlan> plan;
+		uint64_t                                            submission = 0;
+		uint64_t                                            shader_base = 0;
+		uint64_t                                            epoch       = 0;
+		std::vector<uint32_t>                               user_data;
+		ShaderRecompiler::IR::ResourceSnapshot              snapshot;
+		ShaderRecompiler::IR::ResourceSpecialization        specialization;
+		std::vector<std::pair<uint64_t, uint64_t>>          reads;
+	};
+
+	static uint64_t PrefetchKey(const SourceEntry* entry, uint64_t shader_base,
+	                            std::span<const uint32_t> user_data) {
+		const uint64_t parts[] = {reinterpret_cast<uint64_t>(entry), shader_base,
+		                          XXH3_64bits(user_data.data(), user_data.size_bytes())};
+		return XXH3_64bits(parts, sizeof(parts));
+	}
+
+	// Readers of the prefetch thread: what guest memory holds now, recording each range so the GPU
+	// thread can check that nothing wrote it before the draw (GPU-written bytes the buffer cache
+	// still holds, emulator writes to guest memory).
+	struct PrefetchReads {
+		std::vector<std::pair<uint64_t, uint64_t>> ranges;
+		void Add(uint64_t address, uint64_t size) {
+			// Walks mostly read on from the last read: extend it then.
+			if (!ranges.empty() && address <= ranges.back().first + ranges.back().second &&
+			    address >= ranges.back().first) {
+				auto& last  = ranges.back();
+				last.second = std::max(last.second, address + size - last.first);
+				return;
+			}
+			ranges.emplace_back(address, size);
+		}
+		// Sorted, overlapping and adjacent ranges merged.
+		void Finish() {
+			std::ranges::sort(ranges);
+			size_t out = 0;
+			for (size_t i = 0; i < ranges.size(); i++) {
+				if (out != 0 && ranges[i].first <= ranges[out - 1].first + ranges[out - 1].second) {
+					auto& last  = ranges[out - 1];
+					last.second = std::max(last.second, ranges[i].first + ranges[i].second - last.first);
+				} else {
+					ranges[out++] = ranges[i];
+				}
+			}
+			ranges.resize(out);
+		}
+	};
+	static bool ReadPrefetchBacking(void* userdata, uint64_t address, std::span<uint32_t> values) {
+		if (values.empty() ||
+		    !Libs::LibKernel::Memory::TryReadBacking(address, values.data(), values.size_bytes())) {
+			return false;
+		}
+		static_cast<PrefetchReads*>(userdata)->Add(address, values.size_bytes());
+		return true;
+	}
+	static bool ReadPrefetchLive(void* userdata, uint64_t address, std::span<uint32_t> values) {
+		if (values.empty()) {
+			return false;
+		}
+		if (!Libs::LibKernel::Memory::TryReadBacking(address, values.data(), values.size_bytes()) &&
+		    !Libs::LibKernel::Memory::ReadGuestMemory(address, values.data(), values.size_bytes())) {
+			return false;
+		}
+		static_cast<PrefetchReads*>(userdata)->Add(address, values.size_bytes());
+		return true;
+	}
+
+	template <typename InputInfo>
+	void Prefetch(const ShaderParams& params, InputInfo& input_info, uint64_t submission) {
+		ShaderType stage;
+		if constexpr (std::is_same_v<InputInfo, ShaderVertexInputInfo>) {
+			stage = input_info.logical_stage;
+		} else {
+			static_assert(std::is_same_v<InputInfo, ShaderPixelInputInfo>);
+			stage = ShaderType::Pixel;
+		}
+		const auto user_data = std::span(params.user_data).first(params.user_data_count);
+		ProgramKey key;
+		key.stage           = stage;
+		key.hash            = params.hash;
+		key.user_data_count = params.user_data_count;
+		key.code_size       = static_cast<uint32_t>(params.code.size());
+		BuildStageStaticKey(input_info, key.static_state);
+		PrefetchResult result;
+		{
+			// Results come back from the GPU thread to be refilled here: it never frees what this
+			// thread allocated (freeing across threads costs the allocator page releases).
+			std::lock_guard lock(prefetch_mutex);
+			if (!recycled.empty()) {
+				result = std::move(recycled.back());
+				recycled.pop_back();
+			}
+		}
+		result.plan.reset();
+		{
+			std::shared_lock lock(programs_mutex);
+			const auto entry = programs.find(key);
+			if (entry == programs.end() || entry->second.call_source) {
+				prefetch_unknown.fetch_add(1, std::memory_order_relaxed);
+				return;
+			}
+			result.entry = &entry->second;
+			result.plan  = entry->second.resource_plan;
+		}
+		result.submission  = submission;
+		result.shader_base = params.Base();
+		result.epoch       = Libs::LibKernel::Memory::EmulatorGuestWriteEpoch();
+		result.user_data.assign(user_data.begin(), user_data.end());
+		PrefetchReads reads;
+		reads.ranges = std::move(result.reads);
+		reads.ranges.clear();
+		const ShaderRecompiler::IR::SrtRuntime runtime {
+		    .user_data                  = user_data,
+		    .shader_base                = params.Base(),
+		    .read_memory                = ReadPrefetchLive,
+		    .userdata                   = &reads,
+		    .read_specialization_memory = ReadPrefetchBacking,
+		};
+		if (!ShaderRecompiler::IR::MaterializeResources(*result.plan, runtime, result.snapshot,
+		                                                 result.specialization)) {
+			prefetch_failed.fetch_add(1, std::memory_order_relaxed);
+			result.reads = std::move(reads.ranges);
+			Recycle(std::move(result));
+			return;
+		}
+		reads.Finish();
+		result.reads = std::move(reads.ranges);
+		const auto hash = PrefetchKey(result.entry, result.shader_base, result.user_data);
+		std::lock_guard lock(prefetch_mutex);
+		if (prefetch_count >= MaxPrefetched || prefetched.size() >= 2 * MaxPrefetched) {
+			prefetched.clear();
+			prefetch_count = 0;
+		}
+		prefetched[hash].push_back(std::move(result));
+		prefetch_count++;
+	}
+
+	void Recycle(PrefetchResult&& result) {
+		std::lock_guard lock(prefetch_mutex);
+		RecycleLocked(std::move(result));
+	}
+	void RecycleLocked(PrefetchResult&& result) {
+		if (recycled.size() < MaxRecycled) {
+			recycled.push_back(std::move(result));
+		}
+	}
+
+	// GPU thread: adopt a prefetched materialization of this draw, if one still holds.
+	bool TakePrefetched(SourceEntry& entry, const ShaderRecompiler::IR::SrtRuntime& runtime) {
+		if (!prefetch_active.load(std::memory_order_relaxed)) {
+			return false;
+		}
+		const auto current = prefetch_submission.load(std::memory_order_relaxed);
+		const auto hash    = PrefetchKey(&entry, runtime.shader_base, runtime.user_data);
+		PrefetchResult result;
+		{
+			std::lock_guard lock(prefetch_mutex);
+			const auto bucket = prefetched.find(hash);
+			if (bucket == prefetched.end()) {
+				prefetch_missing++;
+				LogPrefetchStats();
+				return false;
+			}
+			auto& list  = bucket->second;
+			bool  found = false;
+			// Empty buckets stay (the prefetch thread clears the map): erasing frees its nodes here.
+			for (auto it = list.begin(); it != list.end();) {
+				if (it->submission < current) {
+					RecycleLocked(std::move(*it));
+					it = list.erase(it);
+					prefetch_count--;
+					continue;
+				}
+				if (it->submission == current && it->entry == &entry && it->plan == entry.resource_plan &&
+				    it->shader_base == runtime.shader_base &&
+				    std::ranges::equal(it->user_data, runtime.user_data)) {
+					result = std::move(*it);
+					list.erase(it);
+					prefetch_count--;
+					found = true;
+					break;
+				}
+				++it;
+			}
+			if (!found) {
+				prefetch_missing++;
+				LogPrefetchStats();
+				return false;
+			}
+		}
+		bool stale = Libs::LibKernel::Memory::EmulatorGuestWrittenSince(result.epoch, result.reads);
+		for (const auto& [address, size]: result.reads) {
+			if (stale) {
+				break;
+			}
+			stale = Libs::LibKernel::Memory::HasGpuDirtyBytes(address, size);
+		}
+		if (stale) {
+			prefetch_stale++;
+			LogPrefetchStats();
+			Recycle(std::move(result));
+			return false;
+		}
+		// Swapped, so the entry's previous materialization goes back with the result's storage.
+		std::swap(entry.resources, result.snapshot);
+		std::swap(entry.specialization, result.specialization);
+		prefetch_hits++;
+		LogPrefetchStats();
+		Recycle(std::move(result));
+		return true;
+	}
+
+	void LogPrefetchStats() {
+#if defined(__ANDROID__)
+		const auto now = std::chrono::steady_clock::now();
+		if (now < prefetch_next_log) {
+			return;
+		}
+		prefetch_next_log = now + std::chrono::seconds(2);
+		__android_log_print(ANDROID_LOG_WARN, "CapyPS5-Prefetch",
+		                    "hits %llu, missing %llu, stale %llu; prefetch unknown programs %llu, failed %llu",
+		                    static_cast<unsigned long long>(prefetch_hits),
+		                    static_cast<unsigned long long>(prefetch_missing),
+		                    static_cast<unsigned long long>(prefetch_stale),
+		                    static_cast<unsigned long long>(prefetch_unknown.exchange(0)),
+		                    static_cast<unsigned long long>(prefetch_failed.exchange(0)));
+		prefetch_hits = prefetch_missing = prefetch_stale = 0;
+#endif
+	}
+
+	static constexpr size_t MaxPrefetched = 4096;
+	static constexpr size_t MaxRecycled   = 1024;
+	std::vector<PrefetchResult> recycled;
+	std::shared_mutex       programs_mutex;
+	std::mutex              prefetch_mutex;
+	std::unordered_map<uint64_t, std::deque<PrefetchResult>> prefetched;
+	size_t                  prefetch_count = 0;
+	uint64_t                prefetch_hits = 0, prefetch_missing = 0, prefetch_stale = 0;
+	std::atomic<uint64_t>   prefetch_unknown {0}, prefetch_failed {0};
+	std::chrono::steady_clock::time_point prefetch_next_log {};
+	static inline std::atomic<bool>     prefetch_active {false};
+	static inline std::atomic<uint64_t> prefetch_submission {0};
 
 	std::unordered_map<ProgramKey, SourceEntry, ProgramKeyHash> programs;
 	ProgramKey                                                  lookup_key;
@@ -874,7 +1140,7 @@ PipelineCache::GraphicsPrograms PipelineCache::GetGraphicsPrograms(
     const HW::ShaderRegisters& sh, const HW::Context& context, const HW::UserConfig& user_config,
     std::span<const Prospero::ColorComponentMapping, 8> target_export_mapping, bool pixel_active,
     std::array<ShaderVertexInputInfo, 3>& vertex_info, ShaderPixelInputInfo& pixel_info,
-    uint32_t indirect_vertex_sgpr, uint32_t indirect_instance_sgpr) {
+    uint32_t indirect_vertex_sgpr, uint32_t indirect_instance_sgpr, uint64_t prefetch_submission) {
 	const bool tess_active = user_config.GetPrimType() == Prospero::PrimitiveType::kPatch;
 	std::array<ShaderParams, 3> vertex_params;
 	if (tess_active) {
@@ -892,6 +1158,9 @@ PipelineCache::GraphicsPrograms PipelineCache::GetGraphicsPrograms(
 		vertex_params[0] =
 		    PrepareProgram(vertex_regs, context, user_config, vertex_info[0], m_graphics.mesh_shader_enabled,
 		                   true);
+	}
+	if (prefetch_submission != 0 && ShaderPrefetchLookupFailed()) {
+		return {};
 	}
 	const bool mesh_active = vertex_info[0].logical_stage == ShaderType::Mesh;
 	if (indirect_vertex_sgpr != UINT32_MAX) {
@@ -1036,6 +1305,18 @@ PipelineCache::GraphicsPrograms PipelineCache::GetGraphicsPrograms(
 	        ? ShaderRecompiler::IR::PushData::UserClipPlaneDword +
 	              4u * static_cast<uint32_t>(std::bit_width(last_stage.user_clip_planes))
 	        : mesh_active ? ShaderRecompiler::IR::PushData::MeshDrawDwordCount : 0;
+	if (prefetch_submission != 0) {
+		if (ShaderPrefetchLookupFailed()) {
+			return {};
+		}
+		if (pixel_active) {
+			m_program_cache->Prefetch(pixel_params, pixel_info, prefetch_submission);
+		}
+		for (uint32_t i = 0; i < (tess_active ? 3u : 1u); i++) {
+			m_program_cache->Prefetch(vertex_params[i], vertex_info[i], prefetch_submission);
+		}
+		return {};
+	}
 	GraphicsPrograms  result;
 	if (pixel_active) {
 		result.pixel = m_program_cache->Get(pixel_params, pixel_info, push_data_cursor);
@@ -1044,6 +1325,16 @@ PipelineCache::GraphicsPrograms PipelineCache::GetGraphicsPrograms(
 		result.vertex[i] = m_program_cache->Get(vertex_params[i], vertex_info[i], push_data_cursor);
 	}
 	return result;
+}
+
+void PipelineCache::SetPrefetchSubmission(uint64_t submission) {
+	ProgramCache::prefetch_submission.store(submission, std::memory_order_relaxed);
+	ProgramCache::prefetch_active.store(submission != 0, std::memory_order_relaxed);
+}
+
+bool PipelineCache::PrefetchEnabled() {
+	static Common::DebugFlags::CachedValue prefetch("debug.capy.prefetch", 0);
+	return prefetch.Get() != 0;
 }
 
 ShaderProgram PipelineCache::GetComputeProgram(const HW::ComputeShaderInfo& regs,

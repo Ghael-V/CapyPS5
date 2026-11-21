@@ -19,6 +19,7 @@
 #include <array>
 #include <bit>
 #include <deque>
+#include <unordered_map>
 #include <list>
 #include <memory>
 #include <optional>
@@ -668,14 +669,27 @@ struct ResourcePlan {
 	ShaderInfo                          info;
 	UniformFillPlan                     uniform_fill;
 	std::unique_ptr<Xbyak::CodeGenerator> srt_code;
-	// GPU-thread scratch for nested clean/EXEC memos, activity and material keys.
-	mutable std::deque<EvaluationContext> evaluation_contexts;
-	mutable uint32_t                       evaluation_value_count = 0;
-	mutable uint32_t                       evaluation_depth       = 0;
-	mutable std::vector<uint8_t>            active_sources;
-	mutable std::vector<uint8_t>            visited_blocks;
-	mutable std::vector<uint32_t>           pending_blocks;
-	mutable std::vector<uint32_t>           material_keys;
+	// Scratch for nested clean/EXEC memos, activity and material keys. The GPU thread uses the
+	// plan's own; a thread that registered a scratch table (the draw prefetch) uses its own per
+	// plan, so both can materialize the same plan at once.
+	struct EvaluationScratch {
+		std::deque<EvaluationContext> evaluation_contexts;
+		uint32_t                      evaluation_depth = 0;
+		std::vector<uint8_t>          active_sources;
+		std::vector<uint8_t>          visited_blocks;
+		std::vector<uint32_t>         pending_blocks;
+		std::vector<uint32_t>         material_keys;
+	};
+	using ScratchTable = std::unordered_map<const ResourcePlan*, EvaluationScratch>;
+	[[nodiscard]] EvaluationScratch& Scratch() const;
+	// The calling thread evaluates with its own scratch (nullptr: the plans' own again).
+	static void UseThreadScratch(ScratchTable* table);
+	[[nodiscard]] static bool UsesThreadScratch();
+	// Evaluation slots are given out when the plan is extracted (AssignEvaluationSlots); a value
+	// evaluated later gets one lazily, on the GPU thread only.
+	void AssignEvaluationSlots();
+	mutable uint32_t          evaluation_value_count = 0;
+	mutable EvaluationScratch gpu_scratch;
 };
 
 struct Program: ResourcePlan {

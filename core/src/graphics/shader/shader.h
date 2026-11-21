@@ -34,6 +34,7 @@ namespace ShaderError {
 namespace HW {
 struct VertexShaderInfo;
 struct PixelShaderInfo;
+class Context;
 struct ComputeShaderInfo;
 struct ShaderRegisters;
 } // namespace HW
@@ -370,6 +371,16 @@ uint32_t ShaderCodeWords(uint64_t addr);
 // PS4 (gfx7) shaders come without AGC metadata: their code ends at the "OrbShdr" footer Gnm puts
 // after it. 0 when no footer is found in the first 256 KiB.
 uint32_t Gfx7ShaderCodeWords(uint64_t addr);
+/** True when every shader the draw would bind is registered already (no scan, no stop): the draw
+ *  prefetch only looks at draws whose programs it can find without side effects. */
+// Between these, on the calling thread, shader lookups fail (ShaderPrefetchLookupFailed) instead
+// of scanning, decoding or stopping on what the GPU thread has not seen yet. End returns whether
+// all of them succeeded.
+void ShaderBeginPrefetchLookup();
+bool ShaderEndPrefetchLookup();
+[[nodiscard]] bool ShaderPrefetchLookupFailed();
+bool ShaderDrawProgramsKnown(const HW::VertexShaderInfo& vs, const HW::PixelShaderInfo& ps,
+                             const HW::Context& context, bool tess_active, bool ps_active);
 // `setprop debug.capy.gfx7_disasm 1`: log each PS4 shader's disassembly once (tag CapyPS5-Gfx7).
 void ShaderDebugDisassembleGfx7(uint64_t addr, const char* stage);
 /** Called with each shader's code range before it is read; returns true when it brought in GPU

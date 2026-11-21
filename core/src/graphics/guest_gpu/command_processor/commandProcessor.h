@@ -41,6 +41,8 @@ struct IndirectDrawRegisters {
 class Pm4Execution {
 public:
 	[[nodiscard]] bool MadeProgress() const noexcept { return m_made_progress; }
+	// The draw prefetch follows the graphics DE stream by its packet count.
+	void PublishProgress(bool publish) noexcept { m_publish_progress = publish; }
 
 private:
 	friend class CommandProcessor;
@@ -71,6 +73,7 @@ private:
 	uint32_t m_last_write_bytes = 0;
 	uint64_t m_last_write_packet = 0;
 	uint64_t m_packet_counter    = 0;
+	bool     m_publish_progress  = false;
 };
 
 class CommandProcessor {

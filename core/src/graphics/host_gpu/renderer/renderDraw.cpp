@@ -1132,6 +1132,37 @@ static bool ResolvePrimitiveRestart(const CommandBuffer& buffer,
 	return false;
 }
 
+bool PrefetchDrawPrograms(RenderContext& context, const HW::Context& ctx, const HW::Shader& sh_ctx,
+                          const HW::UserConfig& ucfg, uint64_t submission) {
+	// As PrepareDrawRenderState and RefreshShaders decide, for a direct draw.
+	const auto& shader_regs       = ctx.GetShaderRegisters();
+	const auto  color_output_mask = DrawColorOutputMask(ctx);
+	const bool  ps_active         = sh_ctx.GetPs().ps_regs.data_addr != 0 &&
+	                       (color_output_mask != 0 || PixelShaderHasDepthOrCoverageSideEffects(shader_regs));
+	std::array<Prospero::ColorComponentMapping, RENDER_COLOR_ATTACHMENTS_MAX> target_export_mapping {};
+	for (uint32_t slot = 0; slot < RENDER_COLOR_ATTACHMENTS_MAX; slot++) {
+		const auto& rt = ctx.GetRenderTarget(slot);
+		if ((color_output_mask & (1u << slot)) != 0 && rt.base.addr != 0) {
+			target_export_mapping[slot] =
+			    TextureGetRenderTargetFormat(rt.info.format, rt.info.channel_type, rt.info.channel_order)
+			        .export_mapping;
+		}
+	}
+	// The prefetch's registers can be ahead of or behind the GPU thread's: skip a draw whose
+	// shaders are not all registered rather than scanning or stopping on them.
+	if (!ShaderDrawProgramsKnown(sh_ctx.GetVs(), sh_ctx.GetPs(), ctx,
+	                             ucfg.GetPrimType() == Prospero::PrimitiveType::kPatch, ps_active)) {
+		return false;
+	}
+	std::array<ShaderVertexInputInfo, 3> vertex_info {};
+	ShaderPixelInputInfo                 pixel_info {};
+	ShaderBeginPrefetchLookup();
+	(void)context.GetPipelineCache().GetGraphicsPrograms(
+	    sh_ctx.GetVs(), sh_ctx.GetPs(), shader_regs, ctx, ucfg, target_export_mapping, ps_active, vertex_info,
+	    pixel_info, UINT32_MAX, UINT32_MAX, submission);
+	return ShaderEndPrefetchLookup();
+}
+
 static void RefreshShaders(CommandBuffer& buffer, const DrawCallInfo& draw,
                            uint32_t color_output_mask, DrawRenderState& state) {
 	auto& ctx    = buffer.GetRegisters();

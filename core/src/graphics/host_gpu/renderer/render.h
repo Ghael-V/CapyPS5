@@ -270,6 +270,11 @@ private:
                                             ShaderBufferResource& descriptor,
                                             uint32_t& packed_clear, uint64_t& size);
 
+// Draw prefetch: materializes the shader resources of a draw with these registers ahead of the GPU
+// thread (see PipelineCache::GetGraphicsPrograms' `prefetch_submission`).
+bool PrefetchDrawPrograms(RenderContext& context, const HW::Context& ctx, const HW::Shader& sh_ctx,
+                          const HW::UserConfig& ucfg, uint64_t submission);
+
 } // namespace Libs::Graphics
 
 #endif /* EMULATOR_INCLUDE_EMULATOR_GRAPHICS_GRAPHICSRENDER_H_ */

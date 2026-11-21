@@ -31,6 +31,7 @@
 #include <memory>
 #include <mutex>
 #include <shared_mutex>
+#include <thread>
 #include <vector>
 
 #if KYTY_PLATFORM == KYTY_PLATFORM_WINDOWS
@@ -1123,7 +1124,90 @@ uint64_t GuestHostSpan(uint64_t vaddr, uint64_t size, uint64_t* contiguous) {
 	return vaddr + delta;
 }
 
+namespace {
+
+struct EmulatorWrite {
+	uint64_t start = 0;
+	uint64_t end   = 0;
+	uint64_t epoch = 0;
+};
+
+constexpr uint32_t                        EmulatorWriteSlots = 4096;
+std::atomic<bool>                         g_write_log_enabled {false};
+std::atomic<uint64_t>                     g_write_epoch {1};
+std::mutex                                g_write_log_mutex;
+std::array<EmulatorWrite, EmulatorWriteSlots> g_write_log {};
+uint64_t                                  g_write_log_count = 0;
+
+} // namespace
+
+void EnableEmulatorWriteLog(bool enable) {
+	g_write_log_enabled.store(enable, std::memory_order_release);
+}
+
+bool EmulatorWriteLogEnabled() {
+	return g_write_log_enabled.load(std::memory_order_acquire);
+}
+
+void NoteEmulatorGuestWrite(uint64_t vaddr, uint64_t size) {
+	if (!g_write_log_enabled.load(std::memory_order_acquire) || size == 0) {
+		return;
+	}
+	std::lock_guard lock(g_write_log_mutex);
+	const auto epoch = g_write_epoch.fetch_add(1, std::memory_order_acq_rel) + 1;
+	g_write_log[g_write_log_count % EmulatorWriteSlots] = {vaddr, vaddr + size, epoch};
+	g_write_log_count++;
+}
+
+uint64_t EmulatorGuestWriteEpoch() {
+	return g_write_epoch.load(std::memory_order_acquire);
+}
+
+bool EmulatorGuestWrittenSince(uint64_t epoch, std::span<const std::pair<uint64_t, uint64_t>> sorted_ranges) {
+	if (g_write_epoch.load(std::memory_order_acquire) == epoch || sorted_ranges.empty()) {
+		return false;
+	}
+	std::lock_guard lock(g_write_log_mutex);
+	const auto kept = std::min<uint64_t>(g_write_log_count, EmulatorWriteSlots);
+	for (uint64_t i = 0; i < kept; i++) {
+		const auto& write = g_write_log[(g_write_log_count - 1 - i) % EmulatorWriteSlots];
+		if (write.epoch <= epoch) {
+			return false;
+		}
+		// The first range ending after the write's start: the only one that can overlap it first.
+		const auto it = std::lower_bound(sorted_ranges.begin(), sorted_ranges.end(), write.start,
+		                                 [](const auto& range, uint64_t start) { return range.first + range.second <= start; });
+		if (it != sorted_ranges.end() && it->first < write.end) {
+			return true;
+		}
+	}
+	return g_write_log_count > EmulatorWriteSlots;
+}
+
+bool EmulatorGuestWrittenSince(uint64_t epoch, uint64_t vaddr, uint64_t size) {
+	std::lock_guard lock(g_write_log_mutex);
+	const auto end = vaddr + size;
+	const auto kept = std::min<uint64_t>(g_write_log_count, EmulatorWriteSlots);
+	for (uint64_t i = 0; i < kept; i++) {
+		const auto& write = g_write_log[(g_write_log_count - 1 - i) % EmulatorWriteSlots];
+		if (write.epoch <= epoch) {
+			return false;
+		}
+		if (write.start < end && vaddr < write.end) {
+			return true;
+		}
+	}
+	// Every kept write is newer than `epoch`: older ones may have been dropped.
+	return g_write_log_count > EmulatorWriteSlots;
+}
+
+bool HasGpuDirtyBytes(uint64_t vaddr, uint64_t size) {
+	return g_gpu_resources != nullptr && IsGpuAddressRange(vaddr, size) &&
+	       GetGpuResources().GetBufferCache().HasGpuDirtyBytes(vaddr, size);
+}
+
 bool TryWriteBacking(uint64_t vaddr, const void* data, uint64_t size) {
+	NoteEmulatorGuestWrite(vaddr, size);
 	return g_guest_address_space != nullptr &&
 	       ForGuestSpans(vaddr, size, [&](uint64_t host, uint64_t offset, uint64_t length) {
 		       return g_guest_address_space->TryWriteBacking(

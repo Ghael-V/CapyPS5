@@ -9,6 +9,9 @@
 #include "common/common.h"
 #include "common/virtualMemory.h"
 
+#include <span>
+#include <utility>
+
 namespace Libs::Graphics {
 class RenderContext;
 enum class PageFaultAccess;
@@ -124,7 +127,22 @@ int RemapIntoPrtMemory(uint64_t prt_vaddr, uint64_t old_vaddr, size_t size, int 
 // AMM unmap: like munmap, but holes in the range (even all of it) are not an error.
 int UnmapAmmMemory(uint64_t vaddr, size_t size);
 bool                   TryWriteBacking(uint64_t vaddr, const void* data, uint64_t size);
+// Emulator writes to guest memory (command processor labels and copies, GPU data written back),
+// remembered for speculative readers that ran ahead of them (the draw prefetch): a reader takes
+// the epoch, reads, and later asks whether anything it read was written since. Off until enabled.
+void                   EnableEmulatorWriteLog(bool enable);
+[[nodiscard]] bool     EmulatorWriteLogEnabled();
+void                   NoteEmulatorGuestWrite(uint64_t vaddr, uint64_t size);
+[[nodiscard]] uint64_t EmulatorGuestWriteEpoch();
+// True when [vaddr, vaddr + size) may have been written after `epoch` (also when the log no longer
+// reaches back that far).
+[[nodiscard]] bool     EmulatorGuestWrittenSince(uint64_t epoch, uint64_t vaddr, uint64_t size);
+// GPU thread: the buffer cache holds GPU-written bytes of the range that guest memory lacks.
+[[nodiscard]] bool     HasGpuDirtyBytes(uint64_t vaddr, uint64_t size);
 bool                   TryReadBacking(uint64_t vaddr, void* data, uint64_t size);
+// Whether an emulator write since `epoch` touched one of these ranges ({address, size}, sorted
+// and not overlapping). Lock-free when nothing was written since.
+bool EmulatorGuestWrittenSince(uint64_t epoch, std::span<const std::pair<uint64_t, uint64_t>> sorted_ranges);
 bool                   TryReadBufferBacking(uint64_t vaddr, void* data, uint64_t size);
 bool                   TryReadSparseBacking(uint64_t vaddr, void* data, uint64_t size);
 bool                   TryWriteSparseBacking(uint64_t vaddr, const void* data, uint64_t size);
