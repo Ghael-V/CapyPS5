@@ -608,31 +608,22 @@ static void SchedulerBackoffOnce() {
 #endif
 }
 
-static void SleepMicroWithSignalPoll(uint64_t microseconds) {
-	if (microseconds == 0) {
-		KernelDispatchPendingSignalForCurrentThread();
-		return;
-	}
-
-	while (microseconds > 0) {
-		const auto step = std::min<uint64_t>(microseconds, SIGNAL_APC_POLL_MICROS);
-		Common::Thread::SleepMicro(step);
-		microseconds -= step;
-		KernelDispatchPendingSignalForCurrentThread();
-	}
-}
-
 static void SleepNanoWithSignalPoll(uint64_t nanoseconds) {
 	if (nanoseconds == 0) {
 		KernelDispatchPendingSignalForCurrentThread();
 		return;
 	}
 
+	// One deadline: each slice oversleeps a little, and summing the requested slices made long
+	// sleeps end late.
 	constexpr uint64_t poll_nanos = static_cast<uint64_t>(SIGNAL_APC_POLL_MICROS) * 1000ull;
-	while (nanoseconds > 0) {
-		const auto step = std::min<uint64_t>(nanoseconds, poll_nanos);
-		Common::Thread::SleepNano(step);
-		nanoseconds -= step;
+	const auto         start      = std::chrono::steady_clock::now();
+	const auto         elapsed    = [start] {
+		return static_cast<uint64_t>(
+		    std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - start).count());
+	};
+	for (uint64_t slept = 0; slept < nanoseconds; slept = elapsed()) {
+		Common::Thread::SleepNano(std::min(nanoseconds - slept, poll_nanos));
 		KernelDispatchPendingSignalForCurrentThread();
 	}
 }
@@ -4054,12 +4045,12 @@ int KYTY_SYSV_ABI KernelUsleep(KernelUseconds microseconds) {
 		                             "usleep(%u us) from 0x%llx", static_cast<unsigned>(microseconds),
 		                             static_cast<unsigned long long>(caller));
 	}
-	SleepMicroWithSignalPoll(microseconds);
+	SleepNanoWithSignalPoll(static_cast<uint64_t>(microseconds) * 1000ull);
 	return OK;
 }
 
 unsigned int KYTY_SYSV_ABI KernelSleep(unsigned int seconds) {
-	SleepMicroWithSignalPoll(static_cast<uint64_t>(seconds) * 1000000ull);
+	SleepNanoWithSignalPoll(static_cast<uint64_t>(seconds) * 1000000000ull);
 	return OK;
 }
 
