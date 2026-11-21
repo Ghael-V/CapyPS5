@@ -669,6 +669,23 @@ struct ResourcePlan {
 	ShaderInfo                          info;
 	UniformFillPlan                     uniform_fill;
 	std::unique_ptr<Xbyak::CodeGenerator> srt_code;
+	// CompileSrtWalker's plan of the flattened SRT for any host: the tables reached from user
+	// data pointers (and pointers inside them), parents first. A table is read in one go and its
+	// dwords go to their flat slots and evaluation memos (SrtWalker::RefreshFlatTables).
+	struct SrtFlatRead {
+		int32_t  offset           = 0;
+		uint32_t flat_offset      = 0;
+		uint32_t evaluation_index = 0;
+	};
+	struct SrtFlatTable {
+		uint32_t                 parent         = UINT32_MAX; // UINT32_MAX: a user data pointer
+		int32_t                  pointer_offset = 0; // user data dword, or byte offset in the parent
+		int32_t                  first          = 0;
+		int32_t                  last           = 0;
+		std::vector<SrtFlatRead> reads;
+	};
+	std::vector<SrtFlatTable> srt_flat_tables;
+	uint32_t                  srt_flat_user_data_count = 0;
 	// Scratch for nested clean/EXEC memos, activity and material keys. The GPU thread uses the
 	// plan's own; a thread that registered a scratch table (the draw prefetch) uses its own per
 	// plan, so both can materialize the same plan at once.
@@ -679,6 +696,8 @@ struct ResourcePlan {
 		std::vector<uint8_t>          visited_blocks;
 		std::vector<uint32_t>         pending_blocks;
 		std::vector<uint32_t>         material_keys;
+		std::vector<uint32_t>         flat_words;
+		std::vector<size_t>           flat_bases;
 	};
 	using ScratchTable = std::unordered_map<const ResourcePlan*, EvaluationScratch>;
 	[[nodiscard]] EvaluationScratch& Scratch() const;

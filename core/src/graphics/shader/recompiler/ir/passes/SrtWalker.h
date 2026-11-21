@@ -72,6 +72,8 @@ public:
 	bool EvaluateDescriptor(uint32_t source, DescriptorValue& result);
 	// Refreshes reachable scalar reads and active descriptor sources in one walk.
 	bool RefreshFlatBuffer(std::vector<uint32_t>& flat);
+	bool RefreshFlatTables(std::vector<uint32_t>& flat);
+	bool RefreshFlatBufferInterpreted(std::vector<uint32_t>& flat);
 
 private:
 	static ResourcePlan::EvaluationContext& AcquireContext(const ResourcePlan& program);

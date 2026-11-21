@@ -6,11 +6,18 @@
 
 #include "common/abi.h"
 #include "common/assert.h"
+#include "common/debugFlags.h"
 #include "graphics/shader/recompiler/ir/ShaderIR.h"
 
 #include <xbyak/xbyak.h>
 
+#if defined(__ANDROID__)
+#include <android/log.h>
+#endif
+
 #include <algorithm>
+#include <atomic>
+#include <chrono>
 #include <bit>
 #include <cmath>
 #include <cstring>
@@ -438,6 +445,41 @@ void CompileSrtWalker(ResourcePlan& program) {
 		if (!reachable(reachable, reads)) return;
 	}
 	if (visited.size() != pointer_uses.size()) return;
+
+	// The portable plan. Reads the clean evaluator must do (specialization memory) stay with
+	// the interpreter.
+	const bool any_clean = std::ranges::any_of(program.srt_reads, [](const SrtRead& read) {
+		const auto* inst = read.value.ResolveInstruction();
+		return inst != nullptr && inst->Flags<SrtReadFlags>().clean != 0u;
+	});
+	if (!any_clean) {
+		program.srt_flat_tables.clear();
+		const auto build = [&](auto&& self, uint32_t parent, int32_t pointer_offset, const Reads& reads) -> void {
+			const auto table = static_cast<uint32_t>(program.srt_flat_tables.size());
+			{
+				auto& flat_table          = program.srt_flat_tables.emplace_back();
+				flat_table.parent         = parent;
+				flat_table.pointer_offset = pointer_offset;
+				flat_table.first          = reads.begin()->first;
+				flat_table.last           = reads.rbegin()->first;
+				for (const auto& [offset, read]: reads) {
+					flat_table.reads.push_back({offset, read->flat_offset,
+					                            read->value.ResolveInstruction()->EvaluationIndex(
+					                                program.evaluation_value_count)});
+				}
+			}
+			for (const auto& [offset, read]: reads) {
+				const auto child = pointer_uses.find(read->value.ResolveInstruction());
+				if (child != pointer_uses.end()) {
+					self(self, table, offset, child->second);
+				}
+			}
+		};
+		for (const auto& [reg, reads]: roots) {
+			build(build, UINT32_MAX, static_cast<int32_t>(reg), reads);
+		}
+		program.srt_flat_user_data_count = user_data_count;
+	}
 
 #if defined(__x86_64__) || defined(_M_X64)
 	program.srt_code = std::make_unique<Xbyak::CodeGenerator>(4096, Xbyak::AutoGrow);
@@ -1123,7 +1165,100 @@ bool SrtWalker::EvaluateDescriptor(uint32_t source, DescriptorValue& result) {
 	return true;
 }
 
+// Fills the flat buffer from srt_flat_tables: each table read whole with the runtime's reader,
+// its dwords copied to their slots and seeded into the memo (as evaluating them would).
+// False when anything does not hold; the interpreter then does the walk.
+bool SrtWalker::RefreshFlatTables(std::vector<uint32_t>& flat) {
+	const auto reader = m_runtime.read_memory != nullptr ? m_runtime.read_memory
+	                                                     : m_runtime.read_specialization_memory;
+	if (reader == nullptr || m_runtime.user_data.size() < m_program.srt_flat_user_data_count) {
+		return false;
+	}
+	const auto& tables  = m_program.srt_flat_tables;
+	auto&       scratch = m_program.Scratch();
+	auto&       words   = scratch.flat_words;
+	auto&       bases   = scratch.flat_bases;
+	words.clear();
+	bases.resize(tables.size());
+	flat.resize(m_program.srt_reads.size());
+	if (m_context.values.size() < m_program.evaluation_value_count) {
+		m_context.values.resize(m_program.evaluation_value_count);
+	}
+	for (size_t i = 0; i < tables.size(); i++) {
+		const auto& table   = tables[i];
+		uint64_t    pointer = 0;
+		if (table.parent == UINT32_MAX) {
+			const auto reg = static_cast<size_t>(table.pointer_offset);
+			pointer        = m_runtime.user_data[reg] | (static_cast<uint64_t>(m_runtime.user_data[reg + 1u]) << 32u);
+		} else {
+			const auto& parent = tables[table.parent];
+			const auto  at     = bases[table.parent] + static_cast<size_t>((table.pointer_offset - parent.first) / 4);
+			pointer            = words[at] | (static_cast<uint64_t>(words[at + 1u]) << 32u);
+		}
+		pointer &= AddressMask & ~uint64_t {3};
+		uint64_t start = 0;
+		uint64_t last  = 0;
+		if (!AddSignedAddress(pointer, table.first, start) || !AddSignedAddress(pointer, table.last, last)) {
+			return false;
+		}
+		const auto count = static_cast<size_t>((table.last - table.first) / 4 + 1);
+		bases[i]         = words.size();
+		words.resize(words.size() + count);
+		if (!reader(m_runtime.userdata, start, {words.data() + bases[i], count})) {
+			return false;
+		}
+		for (const auto& read: table.reads) {
+			const auto value = words[bases[i] + static_cast<size_t>((read.offset - table.first) / 4)];
+			if (read.flat_offset >= flat.size() || read.evaluation_index >= m_context.values.size()) {
+				return false;
+			}
+			flat[read.flat_offset] = value;
+			auto& memo             = m_context.values[read.evaluation_index];
+			memo.value             = value;
+			memo.generation        = m_context.generation;
+		}
+	}
+	return true;
+}
+
 bool SrtWalker::RefreshFlatBuffer(std::vector<uint32_t>& flat) {
+	// `setprop debug.capy.srt_flat 0` always walks with the interpreter; 2 runs both and logs
+	// any difference (tag CapyPS5-SrtFlat).
+	static Common::DebugFlags::CachedValue srt_flat("debug.capy.srt_flat", 1);
+	const auto mode = srt_flat.Get();
+	if (m_program.srt_flat_tables.empty() || !m_program.control_flow.empty() || !m_program.srt_plan_complete ||
+	    mode == 0) {
+		return RefreshFlatBufferInterpreted(flat);
+	}
+	if (mode == 2) {
+		if (!RefreshFlatBufferInterpreted(flat)) {
+			return false;
+		}
+		std::vector<uint32_t> tables;
+		const bool            ok = RefreshFlatTables(tables);
+		static std::atomic<uint64_t> checked {0}, failed {0}, different {0};
+		checked++;
+		failed += ok ? 0u : 1u;
+		different += ok && tables != flat ? 1u : 0u;
+#if defined(__ANDROID__)
+		static std::atomic<int64_t> next_log {0};
+		const auto now = std::chrono::duration_cast<std::chrono::seconds>(
+		                     std::chrono::steady_clock::now().time_since_epoch()).count();
+		if (now >= next_log.load()) {
+			next_log = now + 2;
+			__android_log_print(ANDROID_LOG_WARN, "CapyPS5-SrtFlat", "checked %llu, table read failed %llu, different %llu",
+			                    static_cast<unsigned long long>(checked.exchange(0)),
+			                    static_cast<unsigned long long>(failed.exchange(0)),
+			                    static_cast<unsigned long long>(different.exchange(0)));
+		}
+#endif
+		return true;
+	}
+	m_program.Scratch().active_sources.clear();
+	return RefreshFlatTables(flat) || RefreshFlatBufferInterpreted(flat);
+}
+
+bool SrtWalker::RefreshFlatBufferInterpreted(std::vector<uint32_t>& flat) {
 	t_srt_failed_opcode  = ValueOpcode::Void;
 	t_srt_failed_address = 0;
 	if (!m_program.srt_plan_complete) return false;
