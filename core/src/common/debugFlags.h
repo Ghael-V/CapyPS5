@@ -41,6 +41,7 @@ inline constexpr const char* kFlagNames[FlagCount] = {
 
 inline std::atomic<uint32_t> g_mask {0};
 inline std::atomic<int64_t>  g_next_refresh_ms {0};
+inline std::atomic<uint64_t> g_next_refresh_ticks {0};
 
 inline uint32_t ReadMask() {
 	uint32_t mask = 0;
@@ -56,6 +57,18 @@ inline uint32_t ReadMask() {
 }
 
 inline bool Enabled(Flag flag) {
+#if defined(__aarch64__)
+	// Called per draw and per buffer: check the virtual counter (a few cycles) instead of
+	// clock_gettime, as CachedValue does.
+	uint64_t ticks = 0;
+	asm volatile("mrs %0, cntvct_el0" : "=r"(ticks));
+	if (ticks < g_next_refresh_ticks.load(std::memory_order_relaxed)) {
+		return (g_mask.load(std::memory_order_relaxed) & (1u << flag)) != 0;
+	}
+	uint64_t frequency = 0;
+	asm volatile("mrs %0, cntfrq_el0" : "=r"(frequency));
+	g_next_refresh_ticks.store(ticks + frequency / 4, std::memory_order_relaxed);
+#endif
 	const auto now = std::chrono::duration_cast<std::chrono::milliseconds>(
 	                     std::chrono::steady_clock::now().time_since_epoch())
 	                     .count();
