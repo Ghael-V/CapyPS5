@@ -1101,6 +1101,7 @@ void PthreadInitSelfForMainThread() {
 
 	g_pthread_self = new PthreadPrivate {};
 	PthreadAttrInit(&g_pthread_self->attr);
+	g_pthread_self->attr->affinity = 0x1fff;
 	UpdateCurrentThreadStackAttr(&g_pthread_self->attr);
 	g_pthread_self->p               = pthread_self();
 	g_pthread_self->name            = "MainThread";
@@ -1964,7 +1965,6 @@ int KYTY_SYSV_ABI PthreadAttrInit(PthreadAttr* attr) {
 
 	int result = pthread_attr_init(&(*attr)->p);
 
-	(*attr)->affinity       = 0x7f;
 	(*attr)->guard_size     = 0x1000;
 	(*attr)->stack_addr     = nullptr;
 	(*attr)->stack_size     = PTHREAD_STACK_DEFAULT;
@@ -2028,7 +2028,8 @@ int KYTY_SYSV_ABI PthreadAttrGetaffinity(const PthreadAttr* attr, KernelCpumask*
 		return KERNEL_ERROR_EINVAL;
 	}
 
-	*mask = (*attr)->affinity;
+	// An attribute without a CPU set reads as all CPUs.
+	*mask = (*attr)->affinity != 0 ? (*attr)->affinity : ~KernelCpumask {0};
 
 	return OK;
 }
@@ -3403,6 +3404,11 @@ int KYTY_SYSV_ABI PthreadCreate(Pthread* thread, const PthreadAttr* attr,
 
 	if (result == 0) {
 		EXIT_IF(created_thread->free);
+
+		// A thread created without a CPU set runs on its creator's CPUs.
+		if ((*attr)->affinity == 0) {
+			created_thread->attr->affinity = PthreadSelf()->attr->affinity;
+		}
 
 		if (created_thread->attr->stack_addr == nullptr) {
 			created_thread->attr->stack_size += PTHREAD_STACK_EXTRA;
