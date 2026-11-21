@@ -826,7 +826,13 @@ std::pair<Buffer*, uint64_t> BufferCache::ObtainBuffer(uint64_t vaddr, uint64_t 
 			if (in_pass_fresh && split_on_fresh.Get() != 0) {
 				command.EndRendering();
 			}
-			if (!Libs::LibKernel::Memory::ReadGuestMemory(vaddr, mapped, size)) {
+			// The backing store aliases the same pages: a plain copy from it costs far less than
+			// ReadGuestMemory's process_vm_readv, which walks every page in the kernel. Memory
+			// outside the backing store still goes through ReadGuestMemory.
+			// `setprop debug.capy.fresh_backing 0` always uses ReadGuestMemory.
+			static Common::DebugFlags::CachedValue fresh_backing("debug.capy.fresh_backing", 1);
+			if (!(fresh_backing.Get() != 0 && Libs::LibKernel::Memory::TryReadBacking(vaddr, mapped, size)) &&
+			    !Libs::LibKernel::Memory::ReadGuestMemory(vaddr, mapped, size)) {
 				std::memset(mapped, 0, size);
 			}
 			m_stream_buffer.Commit();
