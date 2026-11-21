@@ -94,6 +94,9 @@ public:
 	[[nodiscard]] bool HasImagesInRegion(uint64_t address, uint64_t size);
 	[[nodiscard]] bool IsMetaCleared(uint64_t address, uint32_t slice);
 	[[nodiscard]] bool ClearMeta(uint64_t address);
+	// Size of the HTile range registered at the address while its depth image still owns it;
+	// 0 when no live image does.
+	[[nodiscard]] uint64_t MetaRangeSize(uint64_t address);
 	[[nodiscard]] bool TouchMeta(uint64_t address, uint32_t slice, bool is_clear);
 
 	void UnmapMemory(uint64_t address, uint64_t size);

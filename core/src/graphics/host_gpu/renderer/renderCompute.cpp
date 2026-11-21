@@ -26,6 +26,7 @@
 #include "graphics/host_gpu/renderer/render.h"
 #include "graphics/host_gpu/renderer/renderContext.h"
 #include "graphics/host_gpu/vulkanCommon.h"
+#include "graphics/shader/recompiler/frontend/decode/ShaderDecoder.h"
 #include "graphics/shader/recompiler/ir/ShaderIR.h"
 #include "graphics/shader/recompiler/ir/passes/ResourceMaterialization.h"
 #include "graphics/shader/shader.h"
@@ -80,13 +81,33 @@ bool RenderExecutor::TryConsumeComputeMetaClear(const ShaderComputeInputInfo& in
 		}
 	}
 
+	// Games reuse the memory of HTile ranges for other data, and a cached depth image can outlive
+	// that reuse. Only a write of exactly the live HTile range is a metadata clear; consuming any
+	// other drops the dispatch's real writes (a work queue that is then never reset hangs the
+	// GPU, a larger buffer is never filled). PS4 HTile sizes are our own estimate of the base
+	// console's layout, so PS4 clears keep the old rule by default.
+	// `setprop debug.capy.htile_clear_exact`: 1 PS5 only (default), 2 also PS4, 0 off (any write
+	// that starts at an HTile range is a clear, as before).
+	static Common::DebugFlags::CachedValue htile_clear_exact("debug.capy.htile_clear_exact", 1);
+	const auto                             exact_mode = htile_clear_exact.Get();
+	const bool                             exact =
+	    exact_mode >= 2 ||
+	    (exact_mode == 1 && ShaderRecompiler::Decoder::GetGuestIsa() !=
+	                            ShaderRecompiler::Decoder::GuestIsa::Gfx7);
 	if (!program.info.has_bitwise_xor) {
 		for (uint32_t i = 0; i < program.info.buffers.size(); i++) {
 			const auto& resource = program.info.buffers[i];
 			if (resource.written) {
 				const auto descriptor =
 				    DecodeNativeDescriptor<ShaderBufferResource>(resources.buffers[i]);
-				if (cache.ClearMeta(descriptor.Base48())) {
+				const auto base = descriptor.Base48();
+				if (exact) {
+					const auto meta_size = cache.MetaRangeSize(base);
+					if (meta_size == 0 || descriptor.GetSize() != meta_size) {
+						continue;
+					}
+				}
+				if (cache.ClearMeta(base)) {
 					return true;
 				}
 			}
