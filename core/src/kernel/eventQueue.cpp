@@ -239,7 +239,7 @@ int KernelEqueuePrivate::AddEvent(const KernelEqueueEvent& event) {
 		m_events.push_back(event);
 	}
 
-	m_cond_var.Signal();
+	m_cond_var.SignalAll();
 	return OK;
 }
 
@@ -261,7 +261,7 @@ int KernelEqueuePrivate::TriggerEvent(uintptr_t ident, int16_t filter, void* tri
 			event.triggered = true;
 		}
 
-		m_cond_var.Signal();
+		m_cond_var.SignalAll();
 
 		return OK;
 	}
