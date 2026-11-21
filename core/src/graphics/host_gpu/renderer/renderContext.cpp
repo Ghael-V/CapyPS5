@@ -290,10 +290,11 @@ void RenderContext::TriggerInterrupt(int event_id, uint32_t context_id) {
 	                             "TriggerInterrupt id=%d context=%u listeners=%zu", event_id,
 	                             context_id, registrations.size());
 	for (const auto& registration: registrations) {
+		// The event data is the context id above the event id (AgcDriverGetEqContextId).
+		const auto ident  = static_cast<uintptr_t>(registration.event_id);
 		const auto result = LibKernel::EventQueue::KernelTriggerEvent(
-		    registration.eq, static_cast<uintptr_t>(registration.event_id),
-		    LibKernel::EventQueue::KERNEL_EVFILT_GRAPHICS,
-		    reinterpret_cast<void*>(static_cast<uintptr_t>(context_id)));
+		    registration.eq, ident, LibKernel::EventQueue::KERNEL_EVFILT_GRAPHICS,
+		    reinterpret_cast<void*>((static_cast<uintptr_t>(context_id) << 16u) | ident));
 		if (result == LibKernel::KERNEL_ERROR_EBADF || result == LibKernel::KERNEL_ERROR_ENOENT) {
 			DeleteInterruptEq(registration.eq, registration.event_id);
 			continue;
