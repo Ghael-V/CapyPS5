@@ -65,9 +65,15 @@ public:
 	// Hosts without attachment feedback loops cannot sample a depth/stencil target that the draw
 	// writes. Copies `range` (the `aspects` given) of depth image `depth_id` into an image of its
 	// own, outside any render pass, for the draw to sample instead: the draw reads the values from
-	// before it ran. The copy lives until the depth image is deleted.
+	// before it ran, with the draw's pending load clear (`clear_aspects`, `clear`) applied over
+	// `render_area` and `render_layers` of `attachment_view`. The copy lives until the depth image
+	// is deleted.
 	[[nodiscard]] ImageId CopyDepthForFeedback(ImageId depth_id, const ImageSubresourceRange& range,
-	                                           vk::ImageAspectFlags aspects);
+	                                           vk::ImageAspectFlags aspects,
+	                                           vk::ImageAspectFlags clear_aspects,
+	                                           const vk::ClearDepthStencilValue& clear,
+	                                           const ImageViewInfo& attachment_view,
+	                                           vk::Extent2D render_area, uint32_t render_layers);
 	[[nodiscard]] Image&        GetImage(ImageId id) {
 		auto& image = m_slot_images[id];
 		TouchImage(image);

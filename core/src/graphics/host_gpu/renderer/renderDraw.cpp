@@ -675,10 +675,22 @@ RenderState RenderExecutor::AcquireRenderTargets(CommandBuffer& buffer, RenderCo
 						EXIT_IF(found == views.end());
 						mip_infos.push_back(found->info);
 					}
+					// The draw's pending load clear is applied to the copy over the area and
+					// layers the render pass will cover (clamped to the attachment there).
+					vk::ImageAspectFlags clear_aspects;
+					if (depth.depth_load_clear_enable) {
+						clear_aspects |= vk::ImageAspectFlagBits::eDepth;
+					}
+					if (depth.stencil_clear_enable) {
+						clear_aspects |= vk::ImageAspectFlagBits::eStencil;
+					}
+					const vk::ClearDepthStencilValue clear {
+					    depth.depth_clear_value, static_cast<uint32_t>(depth.stencil_clear_value)};
 					const auto copy_id = cache.CopyDepthForFeedback(
 					    depth.image_id,
 					    {info.base_level, info.level_count, info.base_layer, info.layer_count},
-					    info.aspect);
+					    info.aspect, clear_aspects, clear, depth.desc.view_info,
+					    {state.width, state.height}, state.num_layers);
 					auto& copy         = cache.GetImage(copy_id);
 					binding.image_id   = copy_id;
 					binding.image_view = copy.FindView(info);
