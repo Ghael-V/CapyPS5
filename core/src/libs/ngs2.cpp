@@ -359,6 +359,36 @@ struct Ngs2BufferAllocator {
 	uintptr_t              user_data     = 0;
 };
 
+// The lock a game holds around a batch of calls; rendering and voice calls do not take it. Its
+// mutex is held only inside Lock and Unlock, so a locked system or rack can be destroyed.
+struct Ngs2UserLock {
+	Common::Mutex   mutex;
+	Common::CondVar released;
+	int             owner = 0;
+	uint32_t        depth = 0;
+
+	void Lock() {
+		const int         self = Common::Thread::GetThreadIdUnique();
+		Common::LockGuard lock(mutex);
+		while (depth != 0 && owner != self) {
+			released.Wait(&mutex);
+		}
+		owner = self;
+		depth++;
+	}
+
+	// An unlock by a thread that does not hold the lock is ignored.
+	void Unlock() {
+		Common::LockGuard lock(mutex);
+		if (depth == 0 || owner != Common::Thread::GetThreadIdUnique()) {
+			return;
+		}
+		if (--depth == 0) {
+			released.Signal();
+		}
+	}
+};
+
 struct Ngs2Internal {
 	Ngs2SystemOption      option;
 	Ngs2ContextBufferInfo buffer_info;
@@ -367,6 +397,7 @@ struct Ngs2Internal {
 	uint64_t              render_count = 0;
 	uint32_t              uid          = 0;
 	Common::Mutex         mutex;
+	Ngs2UserLock          user_lock;
 };
 
 enum class Ngs2RackType {
@@ -444,6 +475,7 @@ struct Ngs2RackInternal {
 	Ngs2BufferAllocator                  allocator;
 	std::array<std::vector<uint8_t>, 24> common;
 	std::array<Ngs2UserFx2Option, 24>    fx {};
+	Ngs2UserLock                         user_lock;
 
 	[[nodiscard]] uint32_t NumBuffers() const {
 		return Ngs2RackIsCustom(type) ? option.custom_sampler.custom_rack_option.num_buffers : 1;
@@ -1505,7 +1537,8 @@ int KYTY_SYSV_ABI Ngs2SystemSetGrainSamples(uintptr_t system_handle, uint32_t nu
 
 	EXIT_NOT_IMPLEMENTED(system_handle == 0);
 
-	auto* ngs                     = reinterpret_cast<Ngs2Internal*>(system_handle);
+	auto*             ngs = reinterpret_cast<Ngs2Internal*>(system_handle);
+	Common::LockGuard lock(ngs->mutex);
 	ngs->option.num_grain_samples = num_samples;
 
 	return OK;
@@ -1876,11 +1909,12 @@ int KYTY_SYSV_ABI Ngs2RackLock(uintptr_t rack_handle) {
 	PRINT_NAME();
 	LOGF("\t rack_handle = 0x%016" PRIx64 "\n", static_cast<uint64_t>(rack_handle));
 
-	EXIT_NOT_IMPLEMENTED(rack_handle == 0);
+	auto* rack = Ngs2FindRack(rack_handle);
+	if (rack == nullptr) {
+		return NGS2_ERROR_INVALID_RACK_HANDLE;
+	}
 
-	auto* rack = reinterpret_cast<Ngs2RackInternal*>(rack_handle);
-
-	rack->ngs->mutex.Lock();
+	rack->user_lock.Lock();
 
 	return OK;
 }
@@ -1889,11 +1923,12 @@ int KYTY_SYSV_ABI Ngs2RackUnlock(uintptr_t rack_handle) {
 	PRINT_NAME();
 	LOGF("\t rack_handle = 0x%016" PRIx64 "\n", static_cast<uint64_t>(rack_handle));
 
-	EXIT_NOT_IMPLEMENTED(rack_handle == 0);
+	auto* rack = Ngs2FindRack(rack_handle);
+	if (rack == nullptr) {
+		return NGS2_ERROR_INVALID_RACK_HANDLE;
+	}
 
-	auto* rack = reinterpret_cast<Ngs2RackInternal*>(rack_handle);
-
-	rack->ngs->mutex.Unlock();
+	rack->user_lock.Unlock();
 
 	return OK;
 }
@@ -3658,7 +3693,7 @@ int KYTY_SYSV_ABI Ngs2SystemLock(uintptr_t system_handle) {
 		return NGS2_ERROR_INVALID_SYSTEM_HANDLE;
 	}
 
-	ngs->mutex.Lock();
+	ngs->user_lock.Lock();
 
 	return OK;
 }
@@ -3671,7 +3706,7 @@ int KYTY_SYSV_ABI Ngs2SystemUnlock(uintptr_t system_handle) {
 		return NGS2_ERROR_INVALID_SYSTEM_HANDLE;
 	}
 
-	ngs->mutex.Unlock();
+	ngs->user_lock.Unlock();
 
 	return OK;
 }
