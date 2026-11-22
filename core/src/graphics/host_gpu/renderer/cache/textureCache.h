@@ -12,6 +12,7 @@
 #include "graphics/host_gpu/pageManager.h"
 #include "graphics/host_gpu/regionManager.h"
 #include "graphics/host_gpu/renderer/cache/multiLevelPageTable.h"
+#include "graphics/host_gpu/renderer/cache/resolveStamp.h"
 #include "graphics/host_gpu/renderer/image/bcDecoder.h"
 #include "graphics/host_gpu/renderer/image/blitHelper.h"
 #include "graphics/host_gpu/renderer/image/image.h"
@@ -32,6 +33,7 @@ class BufferCache;
 class CommandBuffer;
 class CommandScheduler;
 class RenderExecutor;
+class ResolveCache;
 struct TextureCacheTestAccess;
 
 class TextureCache {
@@ -42,10 +44,12 @@ public:
 		ImageInfo     info;
 		ImageViewInfo view_info;
 		BindingType   type = BindingType::Texture;
+		// PS5: set by FindImage (see ResolveCache).
+		ResolveStamp stamp;
 	};
 
 	TextureCache(GraphicContext& graphics, CommandScheduler& scheduler, PageManager& page_manager,
-	             BufferCache& buffer_cache);
+	             BufferCache& buffer_cache, ResolveCache& resolve_cache);
 	~TextureCache();
 	KYTY_CLASS_NO_COPY(TextureCache);
 
@@ -260,6 +264,7 @@ private:
 	TileManager                                       m_tiler;
 	std::unique_ptr<BcDecoder>                        m_bc_decoder;
 	BufferCache&                                      m_buffer_cache;
+	ResolveCache&                                     m_resolve_cache;
 	Common::SlotVector<Image>                         m_slot_images;
 	ImagePageTable                                    m_image_page_table;
 	std::unordered_map<vk::Format, ImageId>           m_null_images;
@@ -284,6 +289,7 @@ private:
 	friend struct TextureCacheTestAccess;
 	friend class BufferCache;
 	friend class RenderExecutor;
+	friend class ResolveCache;
 };
 
 } // namespace Libs::Graphics

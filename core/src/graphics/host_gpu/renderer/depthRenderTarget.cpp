@@ -385,7 +385,11 @@ void RenderExecutor::ResolveRenderDepthTarget(CommandBuffer& buffer, RenderDepth
 	     rc.depth_clear_enable || rc.stencil_clear_enable)) {
 		DepthFatal("unsupported depth-to-color copy state");
 	}
-	r.desc = MakeDepthTargetDesc(buffer, z);
+	// The target depends only on the depth registers (debug.capy.resolve_cache).
+	const bool reused = m_context.GetResolveCache().FindDepth(z, r.desc, r.image_id);
+	if (!reused) {
+		r.desc = MakeDepthTargetDesc(buffer, z);
+	}
 	r.depth_clear_enable      = has_depth && rc.depth_clear_enable;
 	r.depth_load_clear_enable = r.depth_clear_enable;
 	r.depth_clear_value       = hw.GetDepthClearValue();
@@ -431,8 +435,11 @@ void RenderExecutor::ResolveRenderDepthTarget(CommandBuffer& buffer, RenderDepth
 			r.stencil_back = r.stencil_front;
 		}
 	}
-	auto& cache = m_context.GetTextureCache();
-	r.image_id = cache.FindImage(r.desc);
+	if (!reused) {
+		auto& cache = m_context.GetTextureCache();
+		r.image_id  = cache.FindImage(r.desc);
+		m_context.GetResolveCache().SetDepth(z, r.desc, r.image_id);
+	}
 	BindRenderTarget(r.image_id);
 }
 

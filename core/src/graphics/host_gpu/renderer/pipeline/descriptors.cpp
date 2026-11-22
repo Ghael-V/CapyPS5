@@ -949,10 +949,24 @@ void RenderExecutor::PrepareBindings(const ShaderStageRuntime& runtime,
 	prepared.shader_data_buffer = {};
 	prepared.shared_memory = {};
 	prepared.images.resize(program.info.images.size());
+	prepared.image_sources.resize(program.info.images.size());
 	prepared.samplers.clear();
 	prepared.shader_data.clear();
+	// `debug.capy.resolve_cache 1`: an image resolved from the same resource and descriptor is
+	// kept while ResolveCache::Reuse says FindImage would find it again. A frame trace resolves
+	// every image so that it logs them.
+	auto&      resolve_cache  = m_context.GetResolveCache();
+	const bool reuse_resolves = ResolveCache::Enabled() && !Common::DebugFlags::FrameTracing();
 	for (uint32_t i = 0; i < program.info.images.size(); i++) {
-		auto binding = ResolveTexture(program.info.images[i], snapshot.images[i]);
+		auto&       image    = prepared.images[i];
+		auto&       source   = prepared.image_sources[i];
+		const auto& resource = program.info.images[i];
+		if (reuse_resolves && source.valid && source.value == snapshot.images[i] &&
+		    source.resource == resource && resolve_cache.Reuse(image.image_id, image.desc.stamp)) {
+			BindImage(image.image_id, image.desc.type == TextureCache::BindingType::Storage);
+			continue;
+		}
+		auto binding = ResolveTexture(resource, snapshot.images[i]);
 		Common::DebugFlags::FrameTrace("    image[%u] class=%u vkfmt=%d dim=%u mips=%u conv=%u swz=%d%d%d%d aspect=0x%x storage=%d", i,
 		                               static_cast<uint32_t>(program.info.images[i].numeric_class),
 		                               static_cast<int>(binding.desc.view_info.format),
@@ -966,9 +980,14 @@ void RenderExecutor::PrepareBindings(const ShaderStageRuntime& runtime,
 		                               static_cast<uint32_t>(binding.desc.view_info.aspect),
 		                               binding.desc.type == TextureCache::BindingType::Storage ? 1 : 0);
 		BindImage(binding.image_id, binding.desc.type == TextureCache::BindingType::Storage);
-		binding.mip_views.swap(prepared.images[i].mip_views);
+		binding.mip_views.swap(image.mip_views);
 		binding.mip_views.clear();
-		prepared.images[i] = std::move(binding);
+		image = std::move(binding);
+		source.valid = reuse_resolves;
+		if (reuse_resolves) {
+			source.value    = snapshot.images[i];
+			source.resource = resource;
+		}
 	}
 	prepared.samplers.reserve(program.info.samplers.size());
 	for (uint32_t i = 0; i < program.info.samplers.size(); i++) {

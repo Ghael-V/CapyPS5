@@ -77,6 +77,13 @@ void RenderExecutor::ResolveRenderColorTarget(CommandBuffer& buffer, RenderColor
 
 		return;
 	}
+	// Past the mask check the resolve depends only on the registers, the draw's slice offset and
+	// exact_format (debug.capy.resolve_cache).
+	if (m_context.GetResolveCache().FindColor(rt_slot, rt, render_target_slice_offset, exact_format,
+	                                          r)) {
+		BindRenderTarget(r.image_id);
+		return;
+	}
 	const auto samples = render_sample_count(rt.attrib.num_fragments);
 	if (samples == 0 || rt.attrib.num_samples != rt.attrib.num_fragments) {
 		EXIT("unsupported render-target sample configuration: samples=%u fragments=%u\n",
@@ -293,6 +300,7 @@ void RenderExecutor::ResolveRenderColorTarget(CommandBuffer& buffer, RenderColor
 	}
 	r.export_mapping           = target_format.export_mapping;
 	BindRenderTarget(r.image_id);
+	m_context.GetResolveCache().SetColor(rt_slot, rt, render_target_slice_offset, exact_format, r);
 }
 
 } // namespace Libs::Graphics

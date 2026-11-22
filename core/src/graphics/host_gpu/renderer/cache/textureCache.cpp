@@ -23,6 +23,7 @@
 #include "graphics/host_gpu/renderer/image/tiler.h"
 #include "graphics/host_gpu/renderer/render.h"
 #include "graphics/host_gpu/renderer/renderContext.h"
+#include "graphics/host_gpu/renderer/resolveCache.h"
 #include "kernel/memory.h"
 
 #include <xxhash.h>
@@ -128,11 +129,12 @@ constexpr uint64_t NumFramesBeforeRemoval = 32;
 } // namespace
 
 TextureCache::TextureCache(GraphicContext& graphics, CommandScheduler& scheduler,
-                           PageManager& page_manager, BufferCache& buffer_cache)
+                           PageManager& page_manager, BufferCache& buffer_cache,
+                           ResolveCache& resolve_cache)
     : m_graphics(graphics), m_scheduler(scheduler), m_page_manager(page_manager),
       m_blit_helper(graphics, scheduler),
       m_tiler(graphics, scheduler, buffer_cache.GetUtilityBuffer(MemoryUsage::Stream)),
-      m_buffer_cache(buffer_cache),
+      m_buffer_cache(buffer_cache), m_resolve_cache(resolve_cache),
       m_readback_linear_images(Config::ReadbackLinearImagesEnabled()) {
 	if (m_graphics.bc_textures_decoded) {
 		m_bc_decoder = std::make_unique<BcDecoder>(graphics, scheduler);
@@ -375,6 +377,7 @@ void TextureCache::RegisterImage(ImageId id) {
 	});
 	image.registered = true;
 	image.lru_id     = m_lru_cache.Insert(id, m_gc_tick);
+	m_resolve_cache.Invalidate();
 	m_total_used_memory += image.AccountedSize();
 }
 
@@ -402,6 +405,7 @@ void TextureCache::UnregisterImage(ImageId id) {
 	}
 	m_total_used_memory -= accounted;
 	image.registered = false;
+	m_resolve_cache.Invalidate();
 }
 
 void TextureCache::DeleteImage(ImageId id) {
@@ -1898,6 +1902,7 @@ ImageId TextureCache::AssociateStencil(ImageId depth_id, GuestRange stencil) {
 	auto& record = m_slot_images[association];
 	TouchImage(record);
 	if (record.depth_id != depth_id || record.stencil_subresources != depth.stencil_subresources) {
+		m_resolve_cache.Invalidate();
 		// A standalone stencil target can become the stencil plane of this combined target.
 		// Preserve its last GPU writes before the record begins referring to its new owner.
 		// Scaled and multisampled images cannot move their stencil through a buffer copy.
@@ -2030,6 +2035,7 @@ ImageId TextureCache::FindImage(ImageDesc& desc, bool exact_format) {
 				result = id;
 			}
 		}
+		desc.stamp = m_resolve_cache.Stamp(desc.info, candidates.size(), result);
 
 		int32_t view_mip   = -1;
 		int32_t view_layer = -1;
@@ -2270,10 +2276,13 @@ vk::ImageView TextureCache::FindDepthTarget(ImageId id, const ImageDesc& desc) {
 	image.info.stencil = desc.info.stencil;
 	image.info.metadata = desc.info.metadata;
 	if (desc.info.HasMetadata()) {
-		const auto metadata =
+		const auto [metadata, inserted] =
 		    m_surface_metas.emplace(desc.info.metadata.range.address,
 		                            MetaDataInfo {.type       = MetaDataInfo::Type::HTile,
-		                                          .clear_mask = image.info.htile_clear_mask}).first;
+		                                          .clear_mask = image.info.htile_clear_mask});
+		if (inserted) {
+			m_resolve_cache.Invalidate();
+		}
 		metadata->second.owner = id;
 		if (desc.info.metadata.gfx7_htile != 0) {
 			m_has_gfx7_htile.store(true, std::memory_order_relaxed);
