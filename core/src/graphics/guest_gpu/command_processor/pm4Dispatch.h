@@ -34,6 +34,18 @@ extern const std::array<hw_uc_parser_func_t, Pm4::UC_NUM>  g_hw_uc_func;
 extern hw_uc_indirect_func_t                               g_hw_uc_indirect_func[Pm4::UC_NUM];
 extern const std::array<cp_op_parser_func_t, 256>          g_cp_op_func;
 extern const std::array<cp_op_parser_func_t, Pm4::R_NUM>   g_cp_op_custom_func;
+// Draw, state and command-buffer control packets keep the draw window; every other packet may
+// write guest memory or tell the guest CPU that earlier work ran. IT_NOP keeps it only for
+// markers and R_CONTEXT_STATE (see CpOpKeepsDrawWindow).
+extern const std::array<bool, 256>                         g_cp_op_keeps_draw_window;
+
+[[nodiscard]] inline bool CpOpKeepsDrawWindow(uint32_t opcode, uint32_t r) {
+	if (opcode == Pm4::IT_NOP) {
+		return r == Pm4::R_ZERO || r == Pm4::R_PUSH_MARKER || r == Pm4::R_POP_MARKER ||
+		       r == Pm4::R_CONTEXT_STATE;
+	}
+	return g_cp_op_keeps_draw_window[opcode & 0xffu];
+}
 
 void GraphicsInitJmpTables();
 void GraphicsInitJmpTablesCxIndirect();

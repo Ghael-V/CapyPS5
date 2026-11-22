@@ -840,6 +840,19 @@ std::pair<Buffer*, uint64_t> BufferCache::ObtainBuffer(uint64_t vaddr, uint64_t 
 	    !Common::DebugFlags::Enabled(Common::DebugFlags::NoStreamBuffer) &&
 	    !m_memory_tracker.IsRegionGpuModified(vaddr, size) &&
 	    m_memory_tracker.IsRegionCpuModified(vaddr, size))) {
+		// `setprop debug.capy.draw_window_reuse 1`: within one draw window (draw and state packets
+		// only, see EndDrawWindow) the guest has no signal to rewrite the range, so reuse a copy
+		// made in this tick at most an eighth of a lap ago: it is nearly a lap ahead of the ring's
+		// writes, like a fresh copy. Off by default (pass-wide reuse broke Asterix XXL2).
+		static Common::DebugFlags::CachedValue draw_window_reuse("debug.capy.draw_window_reuse", 0);
+		const bool reuse_window = draw_window_reuse.Get() != 0;
+		auto& copy = m_stream_copies[(vaddr * 0x9e3779b97f4a7c15ull) >> (64u - STREAM_COPY_BITS)];
+		const auto tick = m_scheduler.CurrentTick();
+		if (reuse_window && copy.vaddr == vaddr && copy.size == size &&
+		    copy.window == m_draw_window && copy.tick == tick &&
+		    m_stream_buffer.Position() - copy.position <= m_stream_buffer.Size() / 8) {
+			return {&m_stream_buffer, copy.offset};
+		}
 		const auto alignment = std::max<uint64_t>(
 		    m_graphics.physical_device_properties.limits.minUniformBufferOffsetAlignment, 1);
 		auto [mapped, offset] = m_stream_buffer.Map(size, alignment, false);
@@ -860,6 +873,9 @@ std::pair<Buffer*, uint64_t> BufferCache::ObtainBuffer(uint64_t vaddr, uint64_t 
 				std::memset(mapped, 0, size);
 			}
 			m_stream_buffer.Commit();
+			if (reuse_window) {
+				copy = {vaddr, size, m_draw_window, tick, offset, m_stream_buffer.Position()};
+			}
 			if (in_pass_fresh && fresh_copy) {
 				// A ring wrap may overwrite earlier copies of the pass.
 				if (m_pass_fresh_wraps != m_stream_buffer.Wraps()) {

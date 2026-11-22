@@ -1523,6 +1523,9 @@ void Pm4TraceAnomaly(const char* reason, const uint32_t* packet) {
 }
 
 void CommandProcessor::ProcessPm4(Pm4Execution& execution) {
+	// Submissions can share one host command buffer (batch_submits), so a tick may span several:
+	// the guest may have rewritten memory between them.
+	m_renderer.GetBufferCache().EndDrawWindow();
 	while (!execution.m_buffer_stack.empty()) {
 		if (g_gpu_state != nullptr) {
 			g_gpu_state->ProcessCommands();
@@ -1640,6 +1643,9 @@ void CommandProcessor::ProcessPm4(Pm4Execution& execution) {
 			continue;
 		}
 
+		if (!CpOpKeepsDrawWindow(opcode, KYTY_PM4_R(packet_header))) {
+			m_renderer.GetBufferCache().EndDrawWindow();
+		}
 		auto packet_dw =
 		    handler(*this, packet_header & ~1u, packet + 1, remaining_dw, total_dw) + 1;
 		// The type-3 header length is authoritative. A handler that consumes less (usually a

@@ -15,6 +15,7 @@
 #include "graphics/host_gpu/renderer/cache/multiLevelPageTable.h"
 #include "graphics/host_gpu/renderer/cache/streamBuffer.h"
 
+#include <array>
 #include <map>
 #include <unordered_map>
 #include <mutex>
@@ -64,6 +65,8 @@ public:
 	// the GPU copy instead of downloading it. False when the range is not page aligned.
 	[[nodiscard]] bool     FillMemory(uint64_t vaddr, uint64_t size, uint32_t value);
 	void                   ReadMemory(uint64_t vaddr, uint64_t size, bool is_write = false);
+	// Ends the draw window, whose draws may share the stream copies of CPU-written ranges.
+	void                   EndDrawWindow() noexcept { m_draw_window++; }
 	[[nodiscard]] Buffer&  GetBuffer(BufferId id) { return m_slot_buffers[id]; }
 	[[nodiscard]] BufferId FindBuffer(uint64_t vaddr, uint64_t size);
 	[[nodiscard]] std::pair<Buffer*, uint64_t> ObtainBuffer(uint64_t vaddr, uint64_t size,
@@ -185,6 +188,19 @@ private:
 	std::unordered_map<uint64_t, PassFreshCopy>       m_pass_fresh;
 	uint64_t                                          m_pass_fresh_serial = 0;
 	uint64_t                                          m_pass_fresh_wraps = 0;
+	// The stream copy of a CPU-written range made in the current draw window, in a slot picked by
+	// its address (`debug.capy.draw_window_reuse`).
+	struct StreamCopy {
+		uint64_t vaddr    = 0;
+		uint64_t size     = 0;
+		uint64_t window   = 0;
+		uint64_t tick     = 0;
+		uint64_t offset   = 0;
+		uint64_t position = 0;
+	};
+	static constexpr uint32_t STREAM_COPY_BITS = 10;
+	std::array<StreamCopy, 1u << STREAM_COPY_BITS>    m_stream_copies {};
+	uint64_t                                          m_draw_window = 0;
 	StreamBuffer                                      m_download_buffer;
 	StreamBuffer                                      m_device_buffer;
 	TextureCache&                                     m_texture_cache;
