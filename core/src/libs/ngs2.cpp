@@ -26,6 +26,7 @@
 #include <memory>
 #include <numbers>
 #include <numeric>
+#include <optional>
 #include <string_view>
 #include <tuple>
 #include <vector>
@@ -252,8 +253,8 @@ struct Ngs2WaveformFormat {
 	uint32_t num_channels  = 0;
 	uint32_t sample_rate   = 0;
 	uint32_t config_data   = 0;
-	uint32_t frame_offset  = 0;
 	uint32_t frame_margin  = 0;
+	uint32_t frame_offset  = 0;
 };
 
 struct Ngs2WaveformBlock {
@@ -1224,8 +1225,8 @@ static_assert(sizeof(Ngs2CustomMasteringVoiceState) == 16);
 static_assert(sizeof(Ngs2SamplerVoiceState) == 56);
 static_assert(sizeof(Ngs2CustomSamplerVoiceState) == 48);
 static_assert(sizeof(Ngs2WaveformFormat) == 24);
-static_assert(offsetof(Ngs2WaveformFormat, frame_offset) == 16 &&
-              offsetof(Ngs2WaveformFormat, frame_margin) == 20);
+static_assert(offsetof(Ngs2WaveformFormat, frame_margin) == 16 &&
+              offsetof(Ngs2WaveformFormat, frame_offset) == 20);
 static_assert(sizeof(Ngs2WaveformBlock) == 40);
 static_assert(sizeof(Ngs2WaveformInfo) == 232);
 
@@ -3282,6 +3283,194 @@ int KYTY_SYSV_ABI Ngs2SystemRender(uintptr_t system_handle, const Ngs2RenderBuff
 	return OK;
 }
 
+static bool Ngs2FourCcEquals(const uint8_t* data, const char* four_cc) {
+	return std::memcmp(data, four_cc, 4) == 0;
+}
+
+struct Ngs2Atrac9Frames {
+	uint32_t size    = 0;
+	uint32_t samples = 0;
+	uint32_t count   = 0;
+};
+
+// The frame size, frame samples and frames per superframe of an ATRAC9 config of one stream (sync
+// 0xfe) or of several (sync 0x30). Other sync bytes have no frames; only 12, 24 and 48 kHz have
+// frame samples.
+static Ngs2Atrac9Frames Ngs2Atrac9Geometry(uint32_t config) {
+	constexpr std::array<uint32_t, 16> FRAME_SAMPLES = {0, 64, 0, 0, 128, 0, 0, 256};
+
+	const uint32_t samples = FRAME_SAMPLES[(config >> 20u) & 0xfu];
+	if (config >> 24u == 0xfe) {
+		return {((config >> 5u) & 0x7ffu) + 1u, samples, 1u << ((config >> 3u) & 3u)};
+	}
+	if (config >> 24u == 0x30) {
+		return {(((config >> 14u) & 0x3fu) + 1u) * (((config >> 2u) & 0x7ffu) + 1u), samples,
+		        1u << (config & 3u)};
+	}
+	return {};
+}
+
+// Zeroes the block, then fills it with the data and skip of `num_samples` samples from
+// `sample_pos`, in 32-bit math.
+static int Ngs2CalcBlock(const Ngs2WaveformFormat* format, uint32_t sample_pos,
+                         uint32_t num_samples, Ngs2WaveformBlock& block) {
+	block = {};
+	if (format == nullptr) {
+		return NGS2_ERROR_INVALID_WAVEFORM_FORMAT;
+	}
+	if (format->waveform_type == NGS2_WAVEFORM_TYPE_ATRAC9) {
+		const auto     frame              = Ngs2Atrac9Geometry(format->config_data);
+		const uint32_t superframe_samples = frame.samples * frame.count;
+		const uint32_t superframe_size    = frame.size * frame.count;
+		if (superframe_samples == 0) {
+			return NGS2_ERROR_UNKNOWN_WAVEFORM_FORMAT;
+		}
+		// Decoded samples lag the superframes by one frame.
+		const uint32_t first = sample_pos / superframe_samples;
+		const uint32_t last  = sample_pos + frame.samples + num_samples + superframe_samples - 1;
+
+		block.data_offset      = first * superframe_size;
+		block.data_size        = (last / superframe_samples - first) * superframe_size;
+		block.num_skip_samples = sample_pos + frame.samples - first * superframe_samples;
+	} else if (const uint32_t bytes = Ngs2PcmSampleBytes(format->waveform_type); bytes != 0) {
+		// PCM has fixed-size frames, so the block starts exactly at the sample; the math wraps at
+		// 32 bits.
+		const uint32_t frame_size = format->num_channels * bytes;
+		block.data_offset         = sample_pos * frame_size;
+		block.data_size           = num_samples * frame_size;
+	} else {
+		return NGS2_ERROR_UNKNOWN_WAVEFORM_FORMAT;
+	}
+	block.num_samples = num_samples;
+	return OK;
+}
+
+struct Ngs2RiffChunk {
+	uint32_t body = 0;
+	uint32_t size = 0;
+};
+
+// A waveform in guest memory, read at offsets from its start.
+struct Ngs2WaveformReader {
+	const uint8_t* data = nullptr;
+	size_t         size = 0;
+
+	// Copies `n` bytes at `offset` into `out`; false when they are not all inside the data.
+	bool ReadAt(uint64_t offset, void* out, size_t n) const {
+		if (data == nullptr || offset + n > size) {
+			return false;
+		}
+		std::memcpy(out, data + offset, n);
+		return true;
+	}
+
+	// Copies up to `cap` bytes of the first chunk `id` into `out`. Every search walks the RIFF list
+	// from offset 12 and fails at a list size of 4 to 16, at a zero-size chunk before the match,
+	// past the list size and on a failed read.
+	std::optional<Ngs2RiffChunk> FindChunk(const char* id, void* out, size_t cap) const {
+		uint8_t header[12];
+		if (!ReadAt(0, header, sizeof(header))) {
+			return {};
+		}
+		const uint32_t list = Ngs2Load<uint32_t>(header + 4);
+		if (list - 4u <= 12u) {
+			return {};
+		}
+		for (uint64_t position = 12;;) {
+			if (!ReadAt(position, header, 8)) {
+				return {};
+			}
+			const uint32_t chunk_size = Ngs2Load<uint32_t>(header + 4);
+			const uint64_t body       = position + 8;
+			if (Ngs2FourCcEquals(header, id)) {
+				const size_t n = std::min<size_t>(chunk_size, cap);
+				if (n != 0 && !ReadAt(body, out, n)) {
+					return {};
+				}
+				return Ngs2RiffChunk {static_cast<uint32_t>(body), chunk_size};
+			}
+			// Odd sizes are padded; a walk past 4 GiB fails instead of wrapping.
+			position = body + ((chunk_size + 1u) & ~1u);
+			if (chunk_size == 0 || uint64_t(list) - 4u <= position) {
+				return {};
+			}
+		}
+	}
+};
+
+// Parses an ATRAC9 RIFF waveform from its first fmt, fact and data chunks; a failed parse writes
+// nothing.
+static int Ngs2ParseWaveform(const Ngs2WaveformReader& reader, Ngs2WaveformInfo* info) {
+	static constexpr uint8_t PCM_GUID[16]    = {0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x10, 0x00,
+	                                            0x80, 0x00, 0x00, 0xaa, 0x00, 0x38, 0x9b, 0x71};
+	static constexpr uint8_t ATRAC9_GUID[16] = {0xd2, 0x42, 0xe1, 0x47, 0xba, 0x36, 0x8d, 0x4d,
+	                                            0x88, 0xfc, 0x61, 0x65, 0x4f, 0x8c, 0x83, 0x6c};
+	if (info == nullptr) {
+		return NGS2_ERROR_INVALID_OUT_ADDRESS;
+	}
+	uint8_t magic[4];
+	if (!reader.ReadAt(0, magic, sizeof(magic)) || !Ngs2FourCcEquals(magic, "RIFF")) {
+		return NGS2_ERROR_INVALID_WAVEFORM_DATA;
+	}
+	uint8_t    fmt[52]   = {};
+	const auto fmt_chunk = reader.FindChunk("fmt ", fmt, sizeof(fmt));
+	if (!fmt_chunk) {
+		return NGS2_ERROR_INVALID_WAVEFORM_DATA;
+	}
+	// An extensible format with a subformat other than PCM is ATRAC9 at exactly 52 bytes or with
+	// the ATRAC9 subformat.
+	if (Ngs2Load<uint16_t>(fmt) != 0xfffe || fmt_chunk->size < 40 ||
+	    std::memcmp(fmt + 24, PCM_GUID, sizeof(PCM_GUID)) == 0 ||
+	    (fmt_chunk->size != sizeof(fmt) &&
+	     std::memcmp(fmt + 24, ATRAC9_GUID, sizeof(ATRAC9_GUID)) != 0)) {
+		return NGS2_ERROR_UNKNOWN_WAVEFORM_FORMAT;
+	}
+	uint8_t fact[12] = {};
+	if (!reader.FindChunk("fact", fact, sizeof(fact))) {
+		return NGS2_ERROR_INVALID_WAVEFORM_DATA;
+	}
+	const auto data = reader.FindChunk("data", nullptr, 0);
+	if (!data) {
+		return NGS2_ERROR_INVALID_WAVEFORM_DATA;
+	}
+	const uint32_t config = Ngs2LoadBigEndian<uint32_t>(fmt + 44);
+	const auto     frame  = Ngs2Atrac9Geometry(config);
+
+	// One block holds every sample.
+	const Ngs2WaveformFormat format {NGS2_WAVEFORM_TYPE_ATRAC9, Ngs2Load<uint16_t>(fmt + 2),
+	                                 Ngs2Load<uint32_t>(fmt + 4), config};
+	Ngs2WaveformBlock        block;
+	const int                result = Ngs2CalcBlock(&format, 0, Ngs2Load<uint32_t>(fact), block);
+	if (result != OK) {
+		return result;
+	}
+	info->format                   = format;
+	info->data_offset              = data->body;
+	info->data_size                = data->size;
+	info->loop_begin_position      = 0;
+	info->loop_end_position        = 0;
+	info->num_samples              = block.num_samples;
+	info->audio_unit_size          = frame.size;
+	info->num_audio_unit_samples   = frame.samples;
+	info->num_audio_unit_per_frame = frame.count;
+	info->audio_frame_size         = frame.size * frame.count;
+	info->num_audio_frame_samples  = frame.samples * frame.count;
+	// The decoder delay is one frame, whatever the fact chunk holds.
+	info->num_delay_samples = frame.samples;
+	info->num_blocks        = 1;
+	info->blocks[0]         = block;
+	info->blocks[0].data_offset += data->body;
+	return OK;
+}
+
+// CapyPS5: `debug.capy.ngs2_at9_delay 0` computes ATRAC9 blocks and parses ATRAC9 RIFF data as
+// before the decoder delay was counted: the codec's channel and rate checks, no delay, and the
+// fact chunk's delay and skip.
+static bool Ngs2LegacyAtrac9Blocks() {
+	static Common::DebugFlags::CachedValue at9_delay("debug.capy.ngs2_at9_delay", 1);
+	return at9_delay.Get() == 0;
+}
+
 static uint16_t Ngs2ReadLe16(const uint8_t* data) {
 	return static_cast<uint16_t>(data[0]) | (static_cast<uint16_t>(data[1]) << 8u);
 }
@@ -3291,16 +3480,37 @@ static uint32_t Ngs2ReadLe32(const uint8_t* data) {
 	       (static_cast<uint32_t>(data[2]) << 16u) | (static_cast<uint32_t>(data[3]) << 24u);
 }
 
-static bool Ngs2FourCcEquals(const uint8_t* data, const char* four_cc) {
-	return std::memcmp(data, four_cc, 4) == 0;
-}
-
 static bool Ngs2GetAtrac9CodecInfo(const std::array<uint8_t, ATRAC9_CONFIG_DATA_SIZE>& config,
                                    Atrac9CodecInfo& codec) {
 	return Ajm::AjmAt9GetCodecInfo(config.data(), codec);
 }
 
-static int Ngs2ParseAtrac9Riff(const void* data, size_t data_size, Ngs2WaveformInfo* info) {
+static int Ngs2CalcAtrac9BlockLegacy(const Ngs2WaveformFormat& format, uint32_t sample_pos,
+                                     uint32_t num_samples, Ngs2WaveformBlock& block) {
+	block = {};
+	std::array<uint8_t, ATRAC9_CONFIG_DATA_SIZE> config {
+	    static_cast<uint8_t>(format.config_data >> 24u),
+	    static_cast<uint8_t>(format.config_data >> 16u),
+	    static_cast<uint8_t>(format.config_data >> 8u), static_cast<uint8_t>(format.config_data)};
+	Atrac9CodecInfo codec {};
+	if (format.num_channels == 0 || format.num_channels > 8 || format.sample_rate == 0 ||
+	    format.sample_rate > 192000 || !Ngs2GetAtrac9CodecInfo(config, codec) ||
+	    codec.channels != format.num_channels || codec.samplingRate != format.sample_rate) {
+		return NGS2_ERROR_INVALID_WAVEFORM_FORMAT;
+	}
+	const uint64_t frame_samples = uint64_t(codec.frameSamples) * codec.framesInSuperframe;
+	const uint64_t skip          = sample_pos % frame_samples;
+	block.data_offset            = uint64_t(sample_pos / frame_samples) * codec.superframeSize;
+	block.data_size              = num_samples == 0
+	                                   ? 0
+	                                   : ((skip + num_samples + frame_samples - 1) / frame_samples) *
+	                                         codec.superframeSize;
+	block.num_skip_samples = num_samples == 0 ? 0 : static_cast<uint32_t>(skip);
+	block.num_samples      = num_samples;
+	return OK;
+}
+
+static int Ngs2ParseAtrac9RiffLegacy(const void* data, size_t data_size, Ngs2WaveformInfo* info) {
 	static constexpr uint8_t ATRAC9_GUID[16] = {0xd2, 0x42, 0xe1, 0x47, 0xba, 0x36,
 	                                            0x8d, 0x4d, 0x88, 0xfc, 0x61, 0x65,
 	                                            0x4f, 0x8c, 0x83, 0x6c};
@@ -3409,12 +3619,19 @@ int KYTY_SYSV_ABI Ngs2ParseWaveformData(const void* data, size_t data_size,
 	LOGF("\t data = 0x%016" PRIx64 ", data_size = 0x%016" PRIx64 "\n",
 	     reinterpret_cast<uint64_t>(data), static_cast<uint64_t>(data_size));
 
-	if (info == nullptr) {
-		return NGS2_ERROR_INVALID_OUT_ADDRESS;
+	if (Ngs2LegacyAtrac9Blocks()) {
+		if (info == nullptr) {
+			return NGS2_ERROR_INVALID_OUT_ADDRESS;
+		}
+		std::memset(info, 0, sizeof(Ngs2WaveformInfo));
+		return Ngs2ParseAtrac9RiffLegacy(data, data_size, info);
 	}
-
-	std::memset(info, 0, sizeof(Ngs2WaveformInfo));
-	return Ngs2ParseAtrac9Riff(data, data_size, info);
+	// Only the waveform type and channel count are cleared before parsing.
+	if (info != nullptr) {
+		info->format.waveform_type = 0;
+		info->format.num_channels  = 0;
+	}
+	return Ngs2ParseWaveform({static_cast<const uint8_t*>(data), data_size}, info);
 }
 
 int KYTY_SYSV_ABI Ngs2CalcWaveformBlock(const Ngs2WaveformFormat* format, uint32_t sample_pos,
@@ -3427,71 +3644,11 @@ int KYTY_SYSV_ABI Ngs2CalcWaveformBlock(const Ngs2WaveformFormat* format, uint32
 		return NGS2_ERROR_INVALID_OUT_ADDRESS;
 	}
 
-	std::memset(block, 0, sizeof(Ngs2WaveformBlock));
-	if (format == nullptr) {
-		return NGS2_ERROR_INVALID_WAVEFORM_FORMAT;
+	if (format != nullptr && format->waveform_type == NGS2_WAVEFORM_TYPE_ATRAC9 &&
+	    Ngs2LegacyAtrac9Blocks()) {
+		return Ngs2CalcAtrac9BlockLegacy(*format, sample_pos, num_samples, *block);
 	}
-	// CapyPS5: `debug.capy.ngs2_at9_delay 0` computes ATRAC9 blocks as before the decoder delay
-	// was counted (no delay, and the channel and rate checks).
-	static Common::DebugFlags::CachedValue at9_delay("debug.capy.ngs2_at9_delay", 1);
-	if (format->waveform_type == NGS2_WAVEFORM_TYPE_ATRAC9 && at9_delay.Get() == 0) {
-		std::array<uint8_t, ATRAC9_CONFIG_DATA_SIZE> config {
-		    static_cast<uint8_t>(format->config_data >> 24u),
-		    static_cast<uint8_t>(format->config_data >> 16u),
-		    static_cast<uint8_t>(format->config_data >> 8u),
-		    static_cast<uint8_t>(format->config_data)};
-		Atrac9CodecInfo codec {};
-		if (!Ngs2GetAtrac9CodecInfo(config, codec) ||
-		    codec.channels != format->num_channels || codec.samplingRate != format->sample_rate) {
-			return NGS2_ERROR_INVALID_WAVEFORM_FORMAT;
-		}
-		const uint64_t frame_samples = uint64_t(codec.frameSamples) * codec.framesInSuperframe;
-		const uint64_t skip          = sample_pos % frame_samples;
-		block->data_offset = uint64_t(sample_pos / frame_samples) * codec.superframeSize;
-		block->data_size   = num_samples == 0
-		                         ? 0
-		                         : ((skip + num_samples + frame_samples - 1) / frame_samples) *
-		                               codec.superframeSize;
-		block->num_skip_samples = num_samples == 0 ? 0 : static_cast<uint32_t>(skip);
-	} else if (format->waveform_type == NGS2_WAVEFORM_TYPE_ATRAC9) {
-		// The superframe of one stream (sync 0xfe) or of several (sync 0x30), in 32-bit math.
-		const uint32_t config = format->config_data;
-		uint32_t       frames = 0, superframe_size = 0;
-		if (config >> 24u == 0xfe) {
-			frames          = 1u << ((config >> 3u) & 3u);
-			superframe_size = (((config >> 5u) & 0x7ffu) + 1u) * frames;
-		} else if (config >> 24u == 0x30) {
-			const uint32_t streams = ((config >> 14u) & 0x3fu) + 1u;
-			frames                 = 1u << (config & 3u);
-			superframe_size        = streams * (((config >> 2u) & 0x7ffu) + 1u) * frames;
-		}
-		// Frame samples by sample rate index; only 12, 24 and 48 kHz have frames.
-		constexpr std::array<uint32_t, 16> FRAME_SAMPLES = {0, 64, 0, 0, 128, 0, 0, 256};
-
-		const uint32_t frame_samples      = FRAME_SAMPLES[(config >> 20u) & 0xfu];
-		const uint32_t superframe_samples = frame_samples * frames;
-		if (superframe_samples == 0) {
-			return NGS2_ERROR_UNKNOWN_WAVEFORM_FORMAT;
-		}
-		// Decoded samples lag the superframes by one frame.
-		const uint32_t first = sample_pos / superframe_samples;
-		const uint32_t last  = sample_pos + frame_samples + num_samples + superframe_samples - 1;
-
-		block->data_offset      = first * superframe_size;
-		block->data_size        = (last / superframe_samples - first) * superframe_size;
-		block->num_skip_samples = sample_pos + frame_samples - first * superframe_samples;
-	} else if (const uint32_t bytes = Ngs2PcmSampleBytes(format->waveform_type); bytes != 0) {
-		// PCM has fixed-size frames, so the block starts exactly at the sample; the math wraps at
-		// 32 bits. (The Binding of Isaac streams 16-bit PCM and sent the zeroed block on, which
-		// played nothing.)
-		const uint32_t frame_size = format->num_channels * bytes;
-		block->data_offset        = sample_pos * frame_size;
-		block->data_size          = num_samples * frame_size;
-	} else {
-		return NGS2_ERROR_UNKNOWN_WAVEFORM_FORMAT;
-	}
-	block->num_samples = num_samples;
-	return OK;
+	return Ngs2CalcBlock(format, sample_pos, num_samples, *block);
 }
 
 int KYTY_SYSV_ABI Ngs2PanInit(Ngs2PanWork* work, const float* speaker_angles, float unit_angle,
