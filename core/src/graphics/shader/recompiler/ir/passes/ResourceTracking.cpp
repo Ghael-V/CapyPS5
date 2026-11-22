@@ -2075,7 +2075,9 @@ private:
 				    SelectorMaximum(inst->Arg(arg ^ 1u), bounds, depth + 1u) < target) return true;
 			}
 		}
-		return false;
+		uint32_t target;
+		return inst->GetOpcode() == ValueOpcode::ULessThan32 && ImmediateU32(inst->Arg(0), target) &&
+		       SelectorMaximum(inst->Arg(1), bounds, depth + 1u) <= target;
 	}
 
 	uint32_t SelectorMaximum(Value value, SelectorBounds bounds = {}, uint32_t depth = 0) const {
