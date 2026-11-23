@@ -246,4 +246,11 @@
     <string name="reset_to_global">Use global settings</string>
     <string name="reset_to_global_desc">Removes this game\'s own values so it follows the global settings again</string>
     <string name="game_uses_global">This game follows the global settings</string>
+    <string name="edit_controls">Edit controls</string>
+    <string name="vpad_hint">Drag a control to move it; tap it to select it and change its size</string>
+    <string name="vpad_reset_item">Reset this one</string>
+    <string name="vpad_reset_all">Reset all</string>
+    <string name="vpad_save_global">Save for all games</string>
+    <string name="vpad_save_game">Save for this game</string>
+    <string name="cancel">Cancel</string>
 </resources>

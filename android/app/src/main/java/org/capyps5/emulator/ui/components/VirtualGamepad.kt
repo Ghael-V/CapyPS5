@@ -44,13 +44,19 @@ import kotlinx.coroutines.launch
 import org.capyps5.emulator.NativeBridge
 import kotlin.math.hypot
 
-/** On-screen DualSense: shoulders, d-pad, both sticks, face buttons, Create/Options and touchpad. */
+/**
+ * On-screen DualSense: shoulders, d-pad, both sticks, face buttons, Create/Options and touchpad.
+ * Each element sits at its [layout] placement; with an [editor] the pad is being laid out and
+ * sends no input.
+ */
 @Composable
 fun VirtualGamepad(
     modifier: Modifier = Modifier,
     alpha: Float = 0.65f,
     showTouchpad: Boolean = true,
     onMenuClick: () -> Unit = {},
+    layout: VpadLayout = VpadLayout(),
+    editor: VpadEditor? = null,
 ) {
     var buttons by remember { mutableIntStateOf(0) }
     val axes = remember { FloatArray(6) } // lx, ly, rx, ry, l2, r2
@@ -61,20 +67,22 @@ fun VirtualGamepad(
         send()
     }
 
-    Box(modifier.fillMaxSize().alpha(alpha).padding(16.dp)) {
-        // Left: L2/L1, d-pad and left stick.
+    Box(modifier.fillMaxSize().alpha(if (editor != null) maxOf(alpha, 0.85f) else alpha).padding(16.dp)) {
+        // Left: L2/L1, d-pad and left stick. Kept off the bottom edge, where touches near the
+        // bezel register poorly.
         Column(
-            // Kept off the bottom edge, where touches near the bezel register poorly.
             Modifier.align(Alignment.BottomStart).padding(start = 8.dp, bottom = 24.dp),
             verticalArrangement = Arrangement.spacedBy(10.dp),
         ) {
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                GamepadButton("L2", 56.dp, 36.dp) { axes[4] = if (it) 1f else 0f; button(NativeBridge.BTN_L2, it) }
-                GamepadButton("L1", 56.dp, 36.dp) { button(NativeBridge.BTN_L1, it) }
+                PlacedElement(layout = layout, editor = editor, element = VpadElement.L2) {
+                    GamepadButton("L2", 56.dp, 36.dp) { axes[4] = if (it) 1f else 0f; button(NativeBridge.BTN_L2, it) }
+                }
+                PlacedElement(layout = layout, editor = editor, element = VpadElement.L1) { GamepadButton("L1", 56.dp, 36.dp) { button(NativeBridge.BTN_L1, it) } }
             }
             Row(horizontalArrangement = Arrangement.spacedBy(14.dp), verticalAlignment = Alignment.Bottom) {
-                DPad(onButton = ::button)
-                AnalogStick { x, y -> axes[0] = x; axes[1] = y; send() }
+                PlacedElement(layout = layout, editor = editor, element = VpadElement.DPad) { DPad(onButton = ::button) }
+                PlacedElement(layout = layout, editor = editor, element = VpadElement.LeftStick) { AnalogStick { x, y -> axes[0] = x; axes[1] = y; send() } }
             }
         }
 
@@ -85,12 +93,14 @@ fun VirtualGamepad(
             horizontalAlignment = Alignment.End,
         ) {
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                GamepadButton("R1", 56.dp, 36.dp) { button(NativeBridge.BTN_R1, it) }
-                GamepadButton("R2", 56.dp, 36.dp) { axes[5] = if (it) 1f else 0f; button(NativeBridge.BTN_R2, it) }
+                PlacedElement(layout = layout, editor = editor, element = VpadElement.R1) { GamepadButton("R1", 56.dp, 36.dp) { button(NativeBridge.BTN_R1, it) } }
+                PlacedElement(layout = layout, editor = editor, element = VpadElement.R2) {
+                    GamepadButton("R2", 56.dp, 36.dp) { axes[5] = if (it) 1f else 0f; button(NativeBridge.BTN_R2, it) }
+                }
             }
             Row(horizontalArrangement = Arrangement.spacedBy(14.dp), verticalAlignment = Alignment.Bottom) {
-                AnalogStick { x, y -> axes[2] = x; axes[3] = y; send() }
-                FaceButtons(onButton = ::button)
+                PlacedElement(layout = layout, editor = editor, element = VpadElement.RightStick) { AnalogStick { x, y -> axes[2] = x; axes[3] = y; send() } }
+                PlacedElement(layout = layout, editor = editor, element = VpadElement.FaceButtons) { FaceButtons(onButton = ::button) }
             }
         }
 
@@ -100,10 +110,14 @@ fun VirtualGamepad(
             horizontalArrangement = Arrangement.spacedBy(12.dp),
             verticalAlignment = Alignment.Top,
         ) {
-            GamepadButton("CREATE", 70.dp, 30.dp, textSize = 10) { button(NativeBridge.BTN_SELECT, it) }
-            if (showTouchpad) Touchpad(Modifier.size(width = 220.dp, height = 96.dp))
-            GamepadButton("OPTIONS", 70.dp, 30.dp, textSize = 10) { button(NativeBridge.BTN_START, it) }
-            GamepadButton("☰", 36.dp, 30.dp, textSize = 14) { if (it) onMenuClick() }
+            PlacedElement(layout = layout, editor = editor, element = VpadElement.Create) {
+                GamepadButton("CREATE", 70.dp, 30.dp, textSize = 10) { button(NativeBridge.BTN_SELECT, it) }
+            }
+            if (showTouchpad) PlacedElement(layout = layout, editor = editor, element = VpadElement.Touchpad) { Touchpad(Modifier.size(width = 220.dp, height = 96.dp)) }
+            PlacedElement(layout = layout, editor = editor, element = VpadElement.Options) {
+                GamepadButton("OPTIONS", 70.dp, 30.dp, textSize = 10) { button(NativeBridge.BTN_START, it) }
+            }
+            PlacedElement(layout = layout, editor = editor, element = VpadElement.Menu) { GamepadButton("☰", 36.dp, 30.dp, textSize = 14) { if (it) onMenuClick() } }
         }
     }
 }

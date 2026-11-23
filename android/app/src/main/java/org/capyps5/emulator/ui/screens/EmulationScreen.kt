@@ -88,6 +88,11 @@ import org.capyps5.emulator.ui.components.PerfOverlay
 import org.capyps5.emulator.ui.components.SettingsPanel
 import org.capyps5.emulator.ui.components.TouchpadOverlay
 import org.capyps5.emulator.ui.components.VirtualGamepad
+import org.capyps5.emulator.ui.components.VpadEditBar
+import org.capyps5.emulator.ui.components.VpadEditor
+import org.capyps5.emulator.ui.components.VpadElement
+import org.capyps5.emulator.ui.components.VpadLayout
+import androidx.compose.material.icons.outlined.SportsEsports
 import org.capyps5.emulator.ui.theme.Capy
 import org.capyps5.emulator.R
 import androidx.compose.ui.res.stringResource
@@ -108,6 +113,11 @@ fun EmulationScreen(
     var showPauseMenu by remember { mutableStateOf(false) }
     var showSettings by remember { mutableStateOf(false) }
     var showLayers by remember { mutableStateOf(false) }
+    // On-screen pad editor: the layout being edited and its selected element.
+    var editingPad by remember { mutableStateOf(false) }
+    var padDraft by remember { mutableStateOf(VpadLayout()) }
+    var padSelected by remember { mutableStateOf<VpadElement?>(null) }
+    val padLayout = remember(settings.coreOptionsVersion) { settings.vpadLayout(game.titleId) }
     var loadError by remember { mutableStateOf<String?>(null) }
     var gamepadConnected by remember { mutableStateOf(hasPhysicalGamepad()) }
     var snapshot by remember { mutableStateOf(PerfSnapshot()) }
@@ -151,7 +161,7 @@ fun EmulationScreen(
     }
 
     // While any menu is open, controller input drives the UI instead of the game.
-    val uiHasInput = showPauseMenu || showSettings || showLayers || loadError != null
+    val uiHasInput = showPauseMenu || showSettings || showLayers || editingPad || loadError != null
     LaunchedEffect(uiHasInput) { InputRouter.setRouteToUi(uiHasInput) }
     DisposableEffect(Unit) {
         InputRouter.onPauseRequested = { showPauseMenu = true }
@@ -342,12 +352,53 @@ fun EmulationScreen(
                 },
         )
 
-        if (showTouch && !overlayActive) {
+        if (editingPad) {
+            // Shown even with a physical controller: the layout is for when it is not.
+            VirtualGamepad(
+                modifier = Modifier.fillMaxSize(),
+                alpha = settings.controlsOpacity,
+                showTouchpad = settings.touchpadOverlay != TouchControlsMode.Never,
+                layout = padDraft,
+                editor = VpadEditor(
+                    selected = padSelected,
+                    onSelect = { padSelected = it },
+                    onMove = { element, dx, dy ->
+                        val p = padDraft[element]
+                        padDraft = padDraft.with(element, p.copy(dx = p.dx + dx, dy = p.dy + dy))
+                    },
+                ),
+            )
+            VpadEditBar(
+                selected = padSelected,
+                onScale = { delta ->
+                    padSelected?.let { element ->
+                        val p = padDraft[element]
+                        val scale = (p.scale + delta).coerceIn(VpadLayout.MinScale, VpadLayout.MaxScale)
+                        padDraft = padDraft.with(element, p.copy(scale = scale))
+                    }
+                },
+                onResetElement = { padSelected?.let { padDraft = padDraft.with(it, padDraft[it].copy(0f, 0f, 1f)) } },
+                onResetAll = { padDraft = VpadLayout() },
+                onSaveGlobal = {
+                    settings.saveVpadLayout(null, padDraft)
+                    // A game with its own layout would hide the new global one.
+                    settings.clearGameVpadLayout(game.titleId)
+                    editingPad = false
+                },
+                onSaveGame = {
+                    settings.saveVpadLayout(game.titleId, padDraft)
+                    editingPad = false
+                },
+                onCancel = { editingPad = false },
+                modifier = Modifier.align(Alignment.Center),
+            )
+        } else if (showTouch && !overlayActive) {
             VirtualGamepad(
                 modifier = Modifier.fillMaxSize(),
                 alpha = settings.controlsOpacity,
                 showTouchpad = settings.touchpadOverlay != TouchControlsMode.Never,
                 onMenuClick = { showPauseMenu = true },
+                layout = padLayout,
             )
         } else if (settings.touchpadOverlay == TouchControlsMode.Always && !overlayActive) {
             TouchpadOverlay(Modifier.fillMaxSize(), alpha = settings.controlsOpacity)
@@ -369,6 +420,12 @@ fun EmulationScreen(
                 onLayers = {
                     showPauseMenu = false
                     showLayers = true
+                },
+                onEditControls = {
+                    showPauseMenu = false
+                    padDraft = padLayout
+                    padSelected = null
+                    editingPad = true
                 },
                 onExit = onExit,
             )
@@ -401,6 +458,7 @@ private fun PauseMenu(
     onResume: () -> Unit,
     onSettings: () -> Unit,
     onLayers: () -> Unit,
+    onEditControls: () -> Unit,
     onExit: () -> Unit,
 ) {
     val context = LocalContext.current
@@ -423,6 +481,7 @@ private fun PauseMenu(
         // The pass skipper breaks the image on purpose: only with the developer tools on.
         if (settings.developerTools) Triple(stringResource(R.string.layers), Icons.Outlined.Layers, onLayers) else null,
         Triple(frameGenLabel, Icons.Outlined.Tune, cycleFrameGen),
+        Triple(stringResource(R.string.edit_controls), Icons.Outlined.SportsEsports, onEditControls),
         Triple(stringResource(R.string.exit), Icons.AutoMirrored.Outlined.Logout, onExit),
     )
     var focused by remember { mutableIntStateOf(0) }

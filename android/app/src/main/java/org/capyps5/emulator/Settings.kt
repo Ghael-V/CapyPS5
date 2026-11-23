@@ -11,6 +11,7 @@ import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import org.capyps5.emulator.ui.components.VpadLayout
 import java.io.File
 
 enum class OverlayMode(@StringRes val labelRes: Int) {
@@ -282,16 +283,36 @@ class Settings(context: Context) {
         coreOptionsVersion++
     }
 
-    /** Whether the game has any value of its own (core options or GPU driver). */
+    /** Whether the game has any value of its own (core options, GPU driver or pad layout). */
     fun hasGameOverrides(titleId: String): Boolean =
-        CoreOption.entries.any { gameOption(titleId, it) != null } || gameGpuDriver(titleId) != null
+        CoreOption.entries.any { gameOption(titleId, it) != null } || gameGpuDriver(titleId) != null ||
+            hasGameVpadLayout(titleId)
 
     /** Drops every value of the game's own so it follows the global settings again. */
     fun resetGameOptions(titleId: String) {
         prefs.edit().apply {
             CoreOption.entries.forEach { remove("game_${titleId}_${it.name}") }
             remove("game_${titleId}_gpu_driver")
+            remove("game_${titleId}_vpad")
         }.apply()
+        coreOptionsVersion++
+    }
+
+    /** On-screen pad layout a game uses: its own, else the global one. */
+    fun vpadLayout(titleId: String): VpadLayout =
+        VpadLayout.decode(prefs.getString("game_${titleId}_vpad", null) ?: prefs.getString("vpad_layout", null))
+
+    fun hasGameVpadLayout(titleId: String): Boolean = prefs.contains("game_${titleId}_vpad")
+
+    /** Saves [layout] for every game ([titleId] null) or as one game's own. */
+    fun saveVpadLayout(titleId: String?, layout: VpadLayout) {
+        prefs.edit().putString(if (titleId == null) "vpad_layout" else "game_${titleId}_vpad", layout.encode()).apply()
+        coreOptionsVersion++
+    }
+
+    /** Drops a game's own pad layout so it uses the global one again. */
+    fun clearGameVpadLayout(titleId: String) {
+        prefs.edit().remove("game_${titleId}_vpad").apply()
         coreOptionsVersion++
     }
 

@@ -211,4 +211,11 @@
     <string name="reset_to_global">Usar la configuración global</string>
     <string name="reset_to_global_desc">Quita los valores propios de este juego para que vuelva a seguir la configuración global</string>
     <string name="game_uses_global">Este juego sigue la configuración global</string>
+    <string name="edit_controls">Editar controles</string>
+    <string name="vpad_hint">Arrastra un control para moverlo; tócalo para elegirlo y cambiar su tamaño</string>
+    <string name="vpad_reset_item">Restablecer este</string>
+    <string name="vpad_reset_all">Restablecer todo</string>
+    <string name="vpad_save_global">Guardar para todos los juegos</string>
+    <string name="vpad_save_game">Guardar para este juego</string>
+    <string name="cancel">Cancelar</string>
 </resources>
