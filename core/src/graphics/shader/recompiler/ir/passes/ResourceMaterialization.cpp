@@ -919,12 +919,15 @@ static bool MatchFillGuard(const Program& program, Value guard, Value index,
 static std::string FillValueText(Value v, int depth = 0) {
 	v = v.Resolve();
 	if (v.IsImmediate()) {
-		return v.GetType() == Type::U1 ? (v == Value(true) ? "true" : "false") : fmt::format("{:#x}", v.U32());
+		if (v.GetType() == Type::U1) return v == Value(true) ? "true" : "false";
+		if (v.GetType() == Type::U32) return fmt::format("{:#x}", v.U32());
+		if (v.GetType() == Type::U64) return fmt::format("{:#x}", v.U64());
+		return "imm";
 	}
 	const auto* i = v.TryInstruction();
 	if (i == nullptr) return "?";
 	std::string out(ValueOpcodeName(i->GetOpcode()));
-	if (depth >= 6) return out + "(..)";
+	if (depth >= 10) return out + "(..)";
 	out += "(";
 	for (size_t a = 0; a < i->NumArgs(); ++a) out += (a ? ", " : "") + FillValueText(i->Arg(a), depth + 1);
 	return out + ")";
@@ -1049,7 +1052,19 @@ static UniformFillPlan AnalyzeUniformFill(const Program& program) {
 		    memory.data_dwords != static_cast<uint32_t>(store_op - stores.begin() + 1))
 			return FillReject(program, __LINE__);
 		const auto address = FillIndex(store->Arg(1), 0, guard);
-		if (!address || (*address)[0] != 0 || (*address)[1] != 1 || (*address)[2] == 0) return FillReject(program, __LINE__);
+		if (!address || (*address)[0] != 0 || (*address)[1] != 1 || (*address)[2] == 0) {
+			static Common::DebugFlags::CachedValue fill_why("debug.capy.fill_why", 0);
+			if (fill_why.Get() != 0) {
+				Common::DebugFlags::NoteOnce("CapyPS5-Fill", program.shader_hash ^ 0x696e646578ull,
+				                             "cs %016llx index %s | terms %lld,%lld,%lld",
+				                             static_cast<unsigned long long>(program.shader_hash),
+				                             FillValueText(store->Arg(1)).c_str(),
+				                             address ? static_cast<long long>((*address)[0]) : -1ll,
+				                             address ? static_cast<long long>((*address)[1]) : -1ll,
+				                             address ? static_cast<long long>((*address)[2]) : -1ll);
+			}
+			return FillReject(program, __LINE__);
+		}
 		result.fill.kind = UniformFillKind::Buffer;
 		result.fill.group_stride[0] = static_cast<uint32_t>((*address)[2]);
 		result.fill.words = memory.data_dwords;

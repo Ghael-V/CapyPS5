@@ -1420,6 +1420,18 @@ void TextureCache::MaterializeColorClear(ImageId id, const ImageDesc& desc,
 	// Finish native metadata writes before reading backing bytes. This can submit the scheduler,
 	// so discovery runs before final draw uploads and never holds the texture lock across it.
 	if (m_buffer_cache.IsRegionGpuModified(range.address, range.size)) {
+		// `setprop debug.capy.meta_wait_log 1`: note each color metadata range this waits for and
+		// watch the first one, so CapyPS5-Watch names the GPU write that dirtied it next time.
+		static Common::DebugFlags::CachedValue meta_wait_log("debug.capy.meta_wait_log", 0);
+		if (meta_wait_log.Get() != 0) {
+			Common::DebugFlags::NoteOnce("CapyPS5-Meta", range.address ^ 0x77616974ull,
+			                             "metadata 0x%llx size=%llu waits for the GPU: dirty bytes %d",
+			                             static_cast<unsigned long long>(range.address),
+			                             static_cast<unsigned long long>(range.size),
+			                             m_buffer_cache.HasGpuDirtyBytes(range.address, range.size) ? 1 : 0);
+			uint64_t none = 0;
+			(void)Common::DebugFlags::g_watch_addr.compare_exchange_strong(none, range.address);
+		}
 		m_buffer_cache.ReadMemory(range.address, range.size, false);
 	}
 	const auto slice_size = range.size / layers;

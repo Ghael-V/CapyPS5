@@ -494,12 +494,30 @@ void RenderExecutor::DispatchDirect(uint64_t submit_id, CommandBuffer& buffer,
 
 	const auto& program   = *input_info.stage.program;
 	const auto& resources = *input_info.stage.resources;
+	// Names this dispatch in CapyPS5-Watch logs until it returns.
+	struct WatchShader {
+		explicit WatchShader(uint64_t hash) { Common::DebugFlags::t_watch_shader = hash; }
+		~WatchShader() { Common::DebugFlags::t_watch_shader = 0; }
+	} watch_shader {program.shader_hash};
 	if (resources.specialization_reads.empty() &&
 	    (TryConsumeComputeMetaClear(input_info, buffer) ||
 	     TryConsumeComputeImageClear(input_info, buffer, thread_group_x, thread_group_y,
 	                                 thread_group_z, mode))) {
 		ResetBindings();
 		return;
+	}
+	{
+		// `debug.capy.meta_wait_log 1` also notes uniform fills that still run as dispatches.
+		static Common::DebugFlags::CachedValue meta_wait_log("debug.capy.meta_wait_log", 0);
+		if (meta_wait_log.Get() != 0 && resources.uniform_fill.kind != ShaderRecompiler::IR::UniformFillKind::None) {
+			Common::DebugFlags::NoteOnce("CapyPS5-Fill", program.shader_hash ^ 0x6469737061746368ull,
+			                             "cs %016llx: uniform fill kind %d dispatched on the GPU "
+			                             "(specialization reads %zu, groups %u,%u,%u, mode 0x%x)",
+			                             static_cast<unsigned long long>(program.shader_hash),
+			                             static_cast<int>(resources.uniform_fill.kind),
+			                             resources.specialization_reads.size(), thread_group_x,
+			                             thread_group_y, thread_group_z, mode);
+		}
 	}
 
 	if (use_thread_dimensions) {

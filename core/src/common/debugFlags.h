@@ -196,6 +196,8 @@ inline void RegisterAvPlayerVideoBuffer(uint64_t address, uint64_t size) {
 
 // Address being watched for writes (set automatically when a GPU wait on it times out).
 inline std::atomic<uint64_t> g_watch_addr {0};
+// The compute shader being dispatched on this thread (0 outside dispatches), for WatchWrite.
+inline thread_local uint64_t t_watch_shader = 0;
 
 /** Logs writes that touch the watched address; used to find who should signal a label. */
 inline void FrameTrace(const char* fmt, ...);
@@ -215,9 +217,10 @@ inline void WatchWrite(const char* who, uint64_t addr, uint64_t size, uint64_t v
 	}
 #if defined(__ANDROID__)
 	__android_log_print(ANDROID_LOG_WARN, "CapyPS5-Watch",
-	                    "%s writes 0x%016llx size=%llu value=0x%llx (watching 0x%016llx)", who,
+	                    "%s writes 0x%016llx size=%llu value=0x%llx (watching 0x%016llx) cs=%016llx", who,
 	                    static_cast<unsigned long long>(addr), static_cast<unsigned long long>(size),
-	                    static_cast<unsigned long long>(value), static_cast<unsigned long long>(watch));
+	                    static_cast<unsigned long long>(value), static_cast<unsigned long long>(watch),
+	                    static_cast<unsigned long long>(t_watch_shader));
 #endif
 }
 
