@@ -7,8 +7,8 @@ PS4 games through backward compatibility, the way a PS5 does.
 
 **Website:** <https://capyps5.org> · **Discord:** <https://discord.com/invite/PEE7Q5TVM5>
 
-> **Alpha (v0.0.6).** Many games work, but many don't run at full speed. This release is for testing
-> and reporting problems. The app tells you when a new version is out.
+> **Beta (v0.1.0).** Many games work, but many don't run at full speed yet, and PS4 backward
+> compatibility is experimental. Please report problems. The app tells you when a new version is out.
 
 Source code: <https://git.capyps5.org/CapyPS5/CapyPS5> (mirror: <https://github.com/Ghael-V/CapyPS5>).
 Every release has a tag (`v0.0.1`, …) with the exact code it was built from.

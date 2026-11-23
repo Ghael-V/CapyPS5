@@ -7,8 +7,8 @@ juegos de PS4 mediante retrocompatibilidad, como hace una PS5.
 
 **Web:** <https://capyps5.org/es/> · **Discord:** <https://discord.com/invite/PEE7Q5TVM5>
 
-> **Alpha (v0.0.6).** Muchos juegos funcionan, pero muchos no van a velocidad completa. Es una versión
-> para probar y reportar fallos. La app avisa cuando hay una versión nueva.
+> **Beta (v0.1.0).** Muchos juegos funcionan, pero muchos aún no van a velocidad completa, y la
+> retrocompatibilidad con PS4 es experimental. Reporta los fallos. La app avisa cuando hay una versión nueva.
 
 Código fuente: <https://git.capyps5.org/CapyPS5/CapyPS5> (mirror:
 <https://github.com/Ghael-V/CapyPS5>). Cada release tiene su etiqueta (`v0.0.1`, …) con el código
