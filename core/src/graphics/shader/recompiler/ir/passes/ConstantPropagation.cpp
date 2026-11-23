@@ -613,10 +613,25 @@ void FoldInstruction(Block& block, Block::iterator instruction,
 			});
 			return;
 		case ValueOpcode::UMin32:
-			FoldU32(inst, [](uint32_t a, uint32_t b) { return std::min(a, b); });
+			if (!FoldU32(inst, [](uint32_t a, uint32_t b) { return std::min(a, b); }) &&
+			    !ReplaceBinaryIdentity(inst, Type::U32, 0xffffffffu)) {
+				// umin(x, 0) is 0. PS4 code computes x - 0 as umax(x, 0) - umin(x, 0) (an absolute
+				// difference), which kept the SDK fill shader's index from matching.
+				if ((IsImmediate(Arg(inst, 0), Type::U32) && Arg(inst, 0).U32() == 0u) ||
+				    (IsImmediate(Arg(inst, 1), Type::U32) && Arg(inst, 1).U32() == 0u)) {
+					Replace(inst, Value(0u));
+				}
+			}
 			return;
 		case ValueOpcode::UMax32:
-			FoldU32(inst, [](uint32_t a, uint32_t b) { return std::max(a, b); });
+			// umax(x, 0) is x; umax(x, ~0) is ~0.
+			if (!FoldU32(inst, [](uint32_t a, uint32_t b) { return std::max(a, b); }) &&
+			    !ReplaceBinaryIdentity(inst, Type::U32, 0u)) {
+				if ((IsImmediate(Arg(inst, 0), Type::U32) && Arg(inst, 0).U32() == 0xffffffffu) ||
+				    (IsImmediate(Arg(inst, 1), Type::U32) && Arg(inst, 1).U32() == 0xffffffffu)) {
+					Replace(inst, Value(0xffffffffu));
+				}
+			}
 			return;
 		case ValueOpcode::IEqual32:
 			FoldU32Compare(inst, [](uint32_t a, uint32_t b) { return a == b; });
