@@ -8,7 +8,8 @@
 // numbering). What differs is handled here by rewriting the instruction into its gfx10 encoding
 // and decoding that, then restoring the original words:
 // - SMRD (one dword, 8-bit offset) instead of SMEM;
-// - VOP3 with prefix 0x34, a 9-bit opcode at bit 17 and clamp at bit 11;
+// - VOP3 with prefix 0x34, a 9-bit opcode at bit 17 and clamp at bit 11 (PS4 Pro code adds a
+//   tenth opcode bit at bit 16 for a few gfx10-numbered operations);
 // - a few VOP2 opcodes: V_CNDMASK_B32 is 0, and the lane, carry, BFM, LDEXP and packing ops that
 //   gfx10 only has as VOP3;
 // - MIMG without a dimension field (2D, or 2D array when DA is set);
@@ -21,6 +22,7 @@
 #include "graphics/shader/recompiler/frontend/decode/MemoryOps.h"
 #include "graphics/shader/recompiler/frontend/decode/VectorAluOps.h"
 
+#include <algorithm>
 #include <array>
 
 namespace Libs::Graphics::ShaderRecompiler::Decoder {
@@ -65,6 +67,15 @@ bool IsVop3b(uint32_t opcode) {
 
 // A gfx7 VOP3 opcode as the gfx10 VOP3 opcode of the same operation.
 uint32_t Vop3Opcode(uint32_t opcode) {
+	if (opcode >= 0x200u) {
+		// With bit 16 set (PS4 Pro), the opcode is the gfx10 number of these operations
+		// (V_ADD_NC_U16, V_MAD_U32_U16, V_ADD3_U32, V_LSHL_OR_B32, V_AND_OR_B32, V_OR3_B32...).
+		// List from AnyPS5 (AnyPS5 contributors, GPL-2.0-only), GcnOpcodeTables.hpp.
+		constexpr std::array<uint16_t, 16> Extended {0x303, 0x307, 0x308, 0x30d, 0x30e, 0x314,
+		                                             0x346, 0x347, 0x351, 0x354, 0x357, 0x35e,
+		                                             0x36d, 0x36f, 0x371, 0x372};
+		return std::ranges::find(Extended, opcode) != Extended.end() ? opcode : Unsupported;
+	}
 	if (opcode >= 0x100u && opcode <= 0x13fu) {
 		const auto vop2 = opcode - 0x100u;
 		if (vop2 == 0x00u) {
@@ -92,9 +103,13 @@ uint32_t WordAt(std::span<const uint32_t> code, uint32_t index) {
 
 void DecodeVop3Gfx7(uint32_t pc, std::span<const uint32_t> code, uint32_t word_index,
                     Instruction& inst) {
-	const uint32_t word0  = code[word_index];
-	const uint32_t opcode = (word0 >> 17u) & 0x1ffu;
-	const uint32_t gfx10  = Vop3Opcode(opcode);
+	const uint32_t word0 = code[word_index];
+	// Bit 16 is the opcode's tenth bit: without it V_ADD3_U32 (0x36d) decoded as V_DIV_SCALE_F32
+	// (0x16d) and wrote an SGPR pair.
+	const uint32_t opcode = ((word0 >> 17u) & 0x1ffu) | (((word0 >> 16u) & 1u) << 9u);
+	// Those operations' OP_SEL bits (15:12) select 16-bit halves, which this path drops.
+	const uint32_t gfx10 =
+	    opcode >= 0x200u && ((word0 >> 12u) & 0xfu) != 0u ? Unsupported : Vop3Opcode(opcode);
 	if (gfx10 == Unsupported) {
 		inst.pc = pc;
 		SetRawWords(inst, code, word_index, 2);
