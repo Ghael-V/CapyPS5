@@ -198,13 +198,13 @@
     <string name="trophies_card_next">Still to earn</string>
     <string name="whats_new_title">What\'s new in v%1$s</string>
     <string-array name="whats_new_items">
-        <item>PS4 backward compatibility: PS4 games run on the same layers as PS5 games, like on a real PS5. They are marked PS4 in the library.</item>
-        <item>PS4 graphics: GCN shaders, PS4 render targets and texture tiling, fast clears, cube and volume textures, and PS4 save data and trophies.</item>
-        <item>Framegen can be changed from the pause menu while a game runs, and it now works with games whose two screen buffers use different formats.</item>
-        <item>Console language option, following the device language by default (global and per game).</item>
-        <item>Games that load shaders over freed ones or rebuild their pipelines no longer crash the renderer.</item>
-        <item>Audio: Opus with up to 8 channels, MP3 frame parsing and fuller AudioOut2 queues; network: getpeername.</item>
-        <item>Many kernel, memory and graphics fixes from KytyPS5, and faster GPU tracking of guest memory.</item>
+        <item>First beta. PS4 backward compatibility stays experimental.</item>
+        <item>Faster in every game: the GPU thread runs on the fastest cores, preparing each draw costs about half, and fewer waits for the GPU (fast-clear fills, GPU-driven draws of PS4 games).</item>
+        <item>Unreal Engine games that closed with a corrupt memory error a few seconds into a level no longer do.</item>
+        <item>Edit controls (pause menu): move and resize every on-screen control, and save the layout for all games or just this one.</item>
+        <item>In-game settings: frame limit, Framegen, background shaders, button layout and touchpad, saved for this game, with Use global settings to drop them.</item>
+        <item>Resolution 33 % (a 4K game at about 720p), frame limit 15 FPS, global console language, and on-screen buttons away from the screen edge.</item>
+        <item>Many fixes from KytyPS5, decoding of PS4 Pro shaders, and a clear message when a downloaded GPU driver cannot show images.</item>
     </string-array>
     <string name="option_language">Console language</string>
     <string name="option_language_desc">The language games are told the console uses. Games without it fall back to their own default.</string>
