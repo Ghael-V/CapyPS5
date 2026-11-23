@@ -144,6 +144,9 @@ bool                   TryReadBacking(uint64_t vaddr, void* data, uint64_t size)
 // and not overlapping). Lock-free when nothing was written since.
 bool EmulatorGuestWrittenSince(uint64_t epoch, std::span<const std::pair<uint64_t, uint64_t>> sorted_ranges);
 bool                   TryReadBufferBacking(uint64_t vaddr, void* data, uint64_t size);
+// Copies guest memory like a direct read, except that the GPU thread reads a page holding
+// GPU-written bytes through the backing, which waits only when the copied bytes are GPU-written.
+void                   CopyGuestMemory(uint64_t vaddr, void* data, uint64_t size);
 bool                   TryReadSparseBacking(uint64_t vaddr, void* data, uint64_t size);
 bool                   TryWriteSparseBacking(uint64_t vaddr, const void* data, uint64_t size);
 // Reads guest memory as the guest sees it, failing (not faulting) on unmapped pages.

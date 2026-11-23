@@ -1236,6 +1236,15 @@ bool TryReadBufferBacking(uint64_t vaddr, void* data, uint64_t size) {
 	return TryReadBacking(vaddr, data, size);
 }
 
+void CopyGuestMemory(uint64_t vaddr, void* data, uint64_t size) {
+	if (g_gpu_resources == nullptr || !IsGpuAddressRange(vaddr, size) ||
+	    !Graphics::GuestGpu::IsGpuThread() ||
+	    !GetGpuResources().GetBufferCache().IsRegionGpuModified(vaddr, size) ||
+	    !TryReadBufferBacking(vaddr, data, size)) {
+		std::memcpy(data, reinterpret_cast<const void*>(vaddr), size);
+	}
+}
+
 uint64_t ClampRangeSize(uint64_t vaddr, uint64_t size) {
 	EXIT_IF(g_virtual_ranges == nullptr);
 
