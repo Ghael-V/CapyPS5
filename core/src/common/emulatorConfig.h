@@ -31,6 +31,9 @@ enum class LogDirection { Silent, Console, File };
 
 enum class PresentMode { Fifo, Mailbox, Immediate };
 
+// Values are the speaker types games read.
+enum class AudioOutput { TV, AVReceiver, SoundBar, Headphones };
+
 using Keymap = std::vector<std::string>;
 using ControllerColor = std::array<uint8_t, 3>;
 
@@ -51,6 +54,7 @@ struct ConfigOptions {
 	std::string            user_name                   = "CapyPS5";
 	int32_t                user_id                     = DEFAULT_USER_ID;
 	std::string            audio_input_device;
+	AudioOutput            audio_output                = AudioOutput::TV;
 	std::optional<ControllerColor> controller_color;
 	uint32_t               controller_speaker_volume      = 50;
 	uint32_t               controller_vibration_intensity = 100;
@@ -100,6 +104,7 @@ uint32_t GetScreenHeight();
 const std::string& GetUserName();
 int32_t  GetUserId();
 const std::string& GetAudioInputDevice();
+AudioOutput GetAudioOutput();
 const std::optional<ControllerColor>& GetControllerColor();
 uint32_t GetControllerSpeakerVolume();
 uint32_t GetControllerVibrationIntensity();
