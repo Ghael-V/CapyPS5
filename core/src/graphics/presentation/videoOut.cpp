@@ -535,17 +535,15 @@ static int DeleteVideoOutEvent(int handle, EventQueue::KernelEqueue eq, VideoOut
 	return result == LibKernel::KERNEL_ERROR_ENOENT ? OK : result;
 }
 
-// `debug.capy.fps_limit N` (read once): vsync flips are shown at most N times per second, as
-// if the game had asked for a lower flip rate. A game that paces itself on its flips then runs
-// its frames at N per second with correct timing. 0 keeps the game's own rate.
+// `debug.capy.fps_limit N`: vsync flips are shown at most N times per second, as if the game had
+// asked for a lower flip rate. A game that paces itself on its flips then runs its frames at N per
+// second with correct timing. 0 keeps the game's own rate. It can change while the game runs (the
+// in-game menu sets it).
 static int FrameLimitInterval() {
-	static const int interval = [] {
-		Common::DebugFlags::CachedValue limit("debug.capy.fps_limit", 0);
-		const auto fps     = limit.Get();
-		const auto refresh = static_cast<int64_t>(std::max(Config::GetVblankFrequency(), 1u));
-		return fps <= 0 || fps >= refresh ? 1 : static_cast<int>((refresh + fps - 1) / fps);
-	}();
-	return interval;
+	static Common::DebugFlags::CachedValue limit("debug.capy.fps_limit", 0);
+	const auto fps     = limit.Get();
+	const auto refresh = static_cast<int64_t>(std::max(Config::GetVblankFrequency(), 1u));
+	return fps <= 0 || fps >= refresh ? 1 : static_cast<int>((refresh + fps - 1) / fps);
 }
 
 // `debug.capy.fps_log N`: every N seconds log the game's frame rate and the worst frame time of
