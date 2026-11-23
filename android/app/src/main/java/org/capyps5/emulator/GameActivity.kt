@@ -8,6 +8,7 @@ import android.content.Intent
 import android.os.Bundle
 import android.os.Process
 import androidx.activity.compose.setContent
+import androidx.compose.runtime.LaunchedEffect
 import org.capyps5.emulator.model.GameItem
 import org.libsdl.app.SDL
 import org.capyps5.emulator.ui.screens.EmulationScreen
@@ -88,6 +89,10 @@ class GameActivity : CapyActivity() {
         )
         val versionText = Updater.versionText(this)
         setContent {
+            // The in-game settings can change the button layout while the game runs.
+            LaunchedEffect(settings.buttonLayout) {
+                swapFaceButtons = settings.buttonLayout == ButtonLayout.Nintendo
+            }
             CapyPS5Theme {
                 EmulationScreen(
                     game = game,

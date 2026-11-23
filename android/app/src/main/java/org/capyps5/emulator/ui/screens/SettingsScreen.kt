@@ -125,7 +125,9 @@ fun SettingsScreen(
         )
     }
 
-    val categories = remember(optionsVersion, settings.libraryPaths, message, driverMessage, settings.updateChecks) {
+    val categories = remember(
+        optionsVersion, settings.libraryPaths, message, driverMessage, settings.updateChecks, settings.developerTools,
+    ) {
         listOf(
             SettingsCategory(context.getString(R.string.category_graphics), Icons.Outlined.Image) {
                 val drivers = GpuDrivers.list(context)
@@ -229,10 +231,17 @@ fun SettingsScreen(
             },
             SettingsCategory(context.getString(R.string.category_system), Icons.Outlined.Settings) {
                 listOf(
+                    // The console language every game gets unless it has its own.
+                    coreItem(CoreOption.Language),
                     SettingItem(
                         context.getString(R.string.update_checks), context.getString(R.string.update_checks_desc),
                         context.getString(if (settings.updateChecks) R.string.enabled else R.string.disabled),
                         onStep = { settings.updateUpdateChecks(!settings.updateChecks) },
+                    ),
+                    SettingItem(
+                        context.getString(R.string.developer_tools), context.getString(R.string.developer_tools_desc),
+                        context.getString(if (settings.developerTools) R.string.enabled else R.string.disabled),
+                        onStep = { settings.updateDeveloperTools(!settings.developerTools) },
                     ),
                     SettingItem(
                         context.getString(R.string.clear_shader_cache), context.getString(R.string.clear_shader_cache_desc),

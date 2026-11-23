@@ -126,6 +126,8 @@ enum class CoreOption(
             0L to R.string.frame_limit_off,
             30L to R.string.frame_limit_30,
             20L to R.string.frame_limit_20,
+            // Whole divisions of the 60 Hz vblank only: other values would round to one of these.
+            15L to R.string.frame_limit_15,
         ),
         0L,
     ),
@@ -277,6 +279,28 @@ class Settings(context: Context) {
         val key = "game_${titleId}_${option.name}"
         prefs.edit().apply { if (value == null) remove(key) else putLong(key, value) }.apply()
         coreOptionsVersion++
+    }
+
+    /** Whether the game has any value of its own (core options or GPU driver). */
+    fun hasGameOverrides(titleId: String): Boolean =
+        CoreOption.entries.any { gameOption(titleId, it) != null } || gameGpuDriver(titleId) != null
+
+    /** Drops every value of the game's own so it follows the global settings again. */
+    fun resetGameOptions(titleId: String) {
+        prefs.edit().apply {
+            CoreOption.entries.forEach { remove("game_${titleId}_${it.name}") }
+            remove("game_${titleId}_gpu_driver")
+        }.apply()
+        coreOptionsVersion++
+    }
+
+    /** Debugging tools in the in-game menu (the Layers pass skipper); off for normal use. */
+    var developerTools by mutableStateOf(prefs.getBoolean("developer_tools", false))
+        private set
+
+    fun updateDeveloperTools(value: Boolean) {
+        developerTools = value
+        prefs.edit().putBoolean("developer_tools", value).apply()
     }
 
     /** Global GPU driver id ("" = system driver). */

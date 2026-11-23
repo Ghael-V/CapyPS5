@@ -45,7 +45,7 @@
 
     <!-- Opciones del núcleo -->
     <string name="option_resolution">Resolución interna</string>
-    <string name="option_resolution_desc">Por eje: un juego 4K al 50 % se dibuja a 1080p (un cuarto del trabajo). Menos resolución alivia la GPU; algunos juegos no la admiten</string>
+    <string name="option_resolution_desc">Por eje: un juego 4K al 50 % se dibuja a 1080p (un cuarto del trabajo). Menos resolución alivia la GPU; algunos juegos no la admiten. Se aplica al volver a abrir el juego</string>
     <string name="resolution_native">Nativa</string>
     <string name="resolution_75">75 % (4K → 1620p)</string>
     <string name="resolution_50">50 % (4K → 1080p)</string>
@@ -56,12 +56,12 @@
     <string name="option_async_shaders">Compilar shaders en segundo plano</string>
     <string name="option_async_shaders_desc">Evita tirones; un objeto puede tardar un instante en aparecer</string>
     <string name="option_shadows">Resolución de sombras</string>
-    <string name="option_shadows_desc">Dibuja los mapas de sombras más pequeños, aparte de la resolución interna. Las sombras se ven más suaves o pixeladas; no afecta a los motores que dibujan sombras con compute (Unreal Engine 5)</string>
+    <string name="option_shadows_desc">Dibuja los mapas de sombras más pequeños, aparte de la resolución interna. Las sombras se ven más suaves o pixeladas; no afecta a los motores que dibujan sombras con compute (Unreal Engine 5). Se aplica al volver a abrir el juego</string>
     <string name="shadows_full">Completa</string>
     <string name="shadows_half">50 %</string>
     <string name="shadows_quarter">25 %</string>
     <string name="option_early_depth">Test de profundidad temprano</string>
-    <string name="option_early_depth_desc">Deja que la GPU descarte los píxeles ocultos antes de sombrearlos cuando el juego lo permite. Más rápido en escenas con mucha superposición; con algunos drivers Adreno pueden desaparecer objetos en bloques pequeños</string>
+    <string name="option_early_depth_desc">Deja que la GPU descarte los píxeles ocultos antes de sombrearlos cuando el juego lo permite. Más rápido en escenas con mucha superposición; con algunos drivers Adreno pueden desaparecer objetos en bloques pequeños. Se aplica al volver a abrir el juego</string>
     <string name="option_frame_limit">Límite de FPS</string>
     <string name="option_frame_limit_desc">Limita las imágenes por segundo que muestra el juego. 30 estables se sienten mejor que unos FPS que saltan entre 25 y 40, y dejan margen a la GPU</string>
     <string name="frame_limit_off">El del juego</string>
@@ -203,4 +203,11 @@
     <string name="option_language">Idioma de la consola</string>
     <string name="option_language_desc">El idioma que el juego cree que usa la consola. Si el juego no lo incluye, usará el suyo por defecto.</string>
     <string name="language_auto">Igual que el dispositivo</string>
+    <string name="frame_limit_15">15 FPS</string>
+    <string name="developer_tools">Herramientas de desarrollador</string>
+    <string name="developer_tools_desc">Muestra herramientas de depuración en el menú del juego (Capas: omitir pases de dibujo para encontrar los que fallan). Omitir pases rompe la imagen hasta que se vuelven a activar</string>
+    <string name="ingame_option_saved">Se guarda para este juego y se aplica al momento</string>
+    <string name="reset_to_global">Usar la configuración global</string>
+    <string name="reset_to_global_desc">Quita los valores propios de este juego para que vuelva a seguir la configuración global</string>
+    <string name="game_uses_global">Este juego sigue la configuración global</string>
 </resources>

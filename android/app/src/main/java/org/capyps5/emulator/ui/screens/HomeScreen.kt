@@ -488,6 +488,12 @@ private fun GameOptionsPanel(
                 onStep = { settings.updateGameOption(game.titleId, option, cycle(choices, override, it)) },
             )
         } + listOfNotNull(
+            if (settings.hasGameOverrides(game.titleId)) {
+                SettingItem(
+                    context.getString(R.string.reset_to_global), context.getString(R.string.reset_to_global_desc),
+                    onConfirm = { settings.resetGameOptions(game.titleId) },
+                )
+            } else null,
             if (Trophies.hasTrophies(game.directoryPath)) {
                 SettingItem(context.getString(R.string.trophies), context.getString(R.string.trophies_desc), onConfirm = onTrophies)
             } else null,
