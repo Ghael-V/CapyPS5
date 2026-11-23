@@ -676,6 +676,17 @@ int KYTY_SYSV_ABI KernelFcntl(int d, int command, int arg) {
 		case 2: // F_SETFD, FD_CLOEXEC
 			file->close_on_exec.store((arg & 1) != 0, std::memory_order_relaxed);
 			return OK;
+		case 3: { // F_GETFL: access mode, O_APPEND (0x8) and O_FSYNC (0x80)
+			const bool readable = file->readable.load(std::memory_order_relaxed);
+			const bool writable = file->writable.load(std::memory_order_relaxed);
+			int        flags    = readable && writable ? 2 : writable ? 1 : 0;
+			flags |= file->append.load(std::memory_order_relaxed) ? 0x0008 : 0;
+			flags |= file->sync_writes.load(std::memory_order_relaxed) ? 0x0080 : 0;
+			return flags;
+		}
+		case 4: // F_SETFL: only O_APPEND changes how this backend writes (writes seek to the end)
+			file->append.store((static_cast<uint32_t>(arg) & 0x0008u) != 0, std::memory_order_relaxed);
+			return OK;
 		default: return KERNEL_ERROR_EINVAL;
 	}
 }
