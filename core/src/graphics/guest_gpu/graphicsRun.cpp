@@ -1856,8 +1856,9 @@ bool CommandProcessor::TryGpuIndirectDraw(uint64_t args_addr, uint32_t draw_coun
 		return reject(2);
 	}
 	switch (CurrentBuffer().GetUserConfig().GetPrimType()) {
-		// Rect lists draw as 3-vertex patches with the same vertex count.
+		// Rect lists draw as 3-vertex patches with the same vertex count (gfx7 numbers them 17).
 		case Prospero::PrimitiveType::kRectList:
+		case Prospero::PrimitiveType::kRectListLegacy:
 		case Prospero::PrimitiveType::kPointList:
 		case Prospero::PrimitiveType::kLineList:
 		case Prospero::PrimitiveType::kLineStrip:
@@ -1867,7 +1868,9 @@ bool CommandProcessor::TryGpuIndirectDraw(uint64_t args_addr, uint32_t draw_coun
 	}
 	// The offsets must land in the vertex stage's user SGPRs, which start at s8.
 	const auto user_sgpr = [](uint32_t location) {
-		if (location == Pm4::SH_NOP) {
+		// PS4 packets leave unused offset registers at 0 rather than SH_NOP; every PS4 indirect
+		// draw was rejected here and read its GPU-written arguments on the CPU.
+		if (location == Pm4::SH_NOP || location == 0u) {
 			return ShaderVertexInputInfo::IndirectNoSgpr;
 		}
 		return location >= Pm4::SPI_SHADER_USER_DATA_GS_0 && location <= Pm4::SPI_SHADER_USER_DATA_GS_31
