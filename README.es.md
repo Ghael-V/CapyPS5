@@ -63,8 +63,25 @@ no arrancan. Los reportes ayudan, igual que con los de PS5.
 
 ## Compilar
 
-Ver `tools/build_android.ps1` (NDK 28.2, CMake 3.31, Ninja). `tools/sign_release.ps1` genera y
-firma la APK de release.
+Requisitos: Android NDK 28.2, CMake 3.31, Ninja y un JDK 17.
+
+1. Configura y compila el núcleo:
+
+   ```
+   cmake -S core -B build-android-arm64 -G Ninja \
+     -DCMAKE_TOOLCHAIN_FILE=<ndk>/build/cmake/android.toolchain.cmake \
+     -DANDROID_ABI=arm64-v8a -DANDROID_PLATFORM=android-31 -DCMAKE_BUILD_TYPE=Release \
+     -DKYTY_BUILD_LAUNCHER=OFF
+   ninja -C build-android-arm64 capyps5
+   ```
+
+2. Copia en `android/app/src/main/jniLibs/arm64-v8a/`, pasadas por `llvm-strip --strip-debug`:
+   `libcapyps5.so`, los cuatro hooks de libadrenotools que se compilan con ella (`libmain_hook.so`,
+   `libfile_redirect_hook.so`, `libgsl_alloc_hook.so`, `libhook_impl.so`) y `libc++_shared.so` del
+   NDK (`<ndk>/toolchains/llvm/prebuilt/<host>/sysroot/usr/lib/aarch64-linux-android/`).
+
+3. Genera la APK desde `android/`: `./gradlew assembleDebug` (o `assembleRelease`, firmada con tu
+   propia clave).
 
 ## Créditos
 

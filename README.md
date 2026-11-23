@@ -61,8 +61,25 @@ but are slow, and many games don't boot yet. Reports help, as for PS5 games.
 
 ## Building
 
-See `tools/build_android.ps1` (NDK 28.2, CMake 3.31, Ninja). `tools/sign_release.ps1` builds and
-signs the release APK.
+Requirements: Android NDK 28.2, CMake 3.31, Ninja and a JDK 17.
+
+1. Configure and build the core:
+
+   ```
+   cmake -S core -B build-android-arm64 -G Ninja \
+     -DCMAKE_TOOLCHAIN_FILE=<ndk>/build/cmake/android.toolchain.cmake \
+     -DANDROID_ABI=arm64-v8a -DANDROID_PLATFORM=android-31 -DCMAKE_BUILD_TYPE=Release \
+     -DKYTY_BUILD_LAUNCHER=OFF
+   ninja -C build-android-arm64 capyps5
+   ```
+
+2. Copy into `android/app/src/main/jniLibs/arm64-v8a/`, stripped with `llvm-strip --strip-debug`:
+   `libcapyps5.so`, the four libadrenotools hooks built with it (`libmain_hook.so`,
+   `libfile_redirect_hook.so`, `libgsl_alloc_hook.so`, `libhook_impl.so`), and the NDK's
+   `libc++_shared.so` (`<ndk>/toolchains/llvm/prebuilt/<host>/sysroot/usr/lib/aarch64-linux-android/`).
+
+3. Build the APK from `android/`: `./gradlew assembleDebug` (or `assembleRelease`, signed with
+   your own key).
 
 ## Credits
 

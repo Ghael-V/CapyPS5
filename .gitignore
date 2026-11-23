@@ -61,3 +61,6 @@ GEMINI.md
 .clinerules
 # RenderDoc capture layer for debug builds (tools/setup: from RenderDoc's Android APK)
 android/app/src/debug/jniLibs/
+
+# Local tools (build and signing helpers, analysis scripts with local paths): never published.
+tools/
