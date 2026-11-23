@@ -353,9 +353,32 @@ void BufferCache::InvalidateMemory(uint64_t vaddr, uint64_t size) {
 }
 
 bool BufferCache::FillMemory(uint64_t vaddr, uint64_t size, uint32_t value) {
-	if (!GuestGpu::IsGpuThread() || !GuestRange {vaddr, size}.Valid() ||
-	    vaddr % TRACKER_PAGE_SIZE != 0 || size % TRACKER_PAGE_SIZE != 0) {
+	if (!GuestGpu::IsGpuThread() || size == 0 || !GuestRange {vaddr, size}.Valid() ||
+	    vaddr % sizeof(uint32_t) != 0 || size % sizeof(uint32_t) != 0) {
 		return false;
+	}
+	// The tracker keeps GPU and CPU ownership per 4 KiB page, so taking the fill's pages from the
+	// GPU takes all of them. A fill of part of a page (PS4 CMASK comes in 128-byte blocks) runs
+	// here only while no other byte of those pages holds GPU-written data: the rest of each page
+	// is then current in guest memory and reaches the GPU with the fill on the next upload.
+	// Refusing these kept every PS4 CMASK fill on the GPU, and the fast-clear check after it
+	// waited for the GPU to read the keys back.
+	// `setprop debug.capy.cpu_fill_partial 0` keeps partial-page fills on the GPU.
+	const uint64_t page_low  = Common::AlignDown(vaddr, TRACKER_PAGE_SIZE);
+	const uint64_t page_high = Common::AlignUp(vaddr + size, TRACKER_PAGE_SIZE);
+	if (page_low != vaddr || page_high != vaddr + size) {
+		static Common::DebugFlags::CachedValue cpu_fill_partial("debug.capy.cpu_fill_partial", 1);
+		if (cpu_fill_partial.Get() == 0) {
+			return false;
+		}
+		if ((vaddr != page_low && m_gpu_modified_ranges.Intersects(page_low, vaddr - page_low)) ||
+		    (vaddr + size != page_high && m_gpu_modified_ranges.Intersects(vaddr + size, page_high - vaddr - size))) {
+			Common::DebugFlags::NoteOnce("CapyPS5-Fill", (vaddr >> 12u) ^ 0x7061727469616cull,
+			                             "fill of 0x%llx size=%llu shares a page with GPU-written bytes: GPU fill",
+			                             static_cast<unsigned long long>(vaddr),
+			                             static_cast<unsigned long long>(size));
+			return false;
+		}
 	}
 	std::vector<uint32_t> words(size / sizeof(uint32_t), value);
 	// Partially resident (sparse) ranges keep only the bytes over mapped pages. Flexible memory
@@ -368,9 +391,10 @@ bool BufferCache::FillMemory(uint64_t vaddr, uint64_t size, uint32_t value) {
 		                             static_cast<unsigned long long>(size));
 		return false;
 	}
-	// The fill supersedes earlier GPU writes to the range; none may be downloaded over it.
+	// The fill supersedes earlier GPU writes to the range; none may be downloaded over it. On a
+	// partial page this also drops the page's GPU ownership, which held no other GPU bytes.
 	DiscardGpuWrites(vaddr, size);
-	// The next GPU use uploads the new contents.
+	// The next GPU use uploads the new contents (whole pages).
 	m_memory_tracker.MarkRegionAsCpuModified(vaddr, size);
 	return true;
 }
