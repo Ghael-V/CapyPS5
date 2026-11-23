@@ -1376,8 +1376,21 @@ bool GuestGpu::Process(Submission& submission, bool& progressed) {
 			m_renderer.RunGarbageCollector();
 			cp.PrepareCpuFlip(submission.flip_request_id);
 			break;
-		case SubmissionType::SuspendPoint:
+		case SubmissionType::SuspendPoint: {
+			// `setprop debug.capy.suspend_early 1`: like completion labels, the point has executed
+			// once the CP has submitted every packet before it, so release it without waiting for
+			// the host GPU (the guest CPU may then run up to a frame ahead). Off by default: GPU
+			// write-backs that complete later (texture downloads) could then land after the guest
+			// already reused that memory, and it is unmeasured on the device.
+			static Common::DebugFlags::CachedValue suspend_early("debug.capy.suspend_early", 0);
 			cp.EmitGlobalBarrier();
+			if (suspend_early.Get() != 0) {
+				cp.BufferFlush();
+				cp.Reset();
+				SyncRecord("SuspendPoint reached (parsed)");
+				m_suspend_point_ready->Release();
+				break;
+			}
 			m_renderer.GetCommandScheduler().DeferPriorityOperation(
 			    [ready = m_suspend_point_ready] {
 			    SyncRecord("SuspendPoint reached");
@@ -1386,6 +1399,7 @@ bool GuestGpu::Process(Submission& submission, bool& progressed) {
 			cp.BufferFlush();
 			cp.Reset();
 			break;
+		}
 	}
 
 	if (complete) {
