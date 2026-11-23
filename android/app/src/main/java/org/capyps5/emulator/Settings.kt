@@ -88,6 +88,7 @@ enum class CoreOption(
             1000L to R.string.resolution_native,
             750L to R.string.resolution_75,
             500L to R.string.resolution_50,
+            333L to R.string.resolution_33,
             250L to R.string.resolution_25,
         ),
         1000L,

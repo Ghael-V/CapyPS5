@@ -51,6 +51,7 @@
     <string name="resolution_native">Native</string>
     <string name="resolution_75">75 % (4K → 1620p)</string>
     <string name="resolution_50">50 % (4K → 1080p)</string>
+    <string name="resolution_33">33 % (4K → 720p)</string>
     <string name="resolution_25">25 % (4K → 540p)</string>
     <string name="ue_resolution">Default resolution for Unreal games</string>
     <string name="ue_resolution_desc">Unreal Engine games render near 4K and are slow on mobile GPUs; used unless the game has its own setting</string>

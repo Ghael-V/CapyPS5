@@ -64,7 +64,8 @@ fun VirtualGamepad(
     Box(modifier.fillMaxSize().alpha(alpha).padding(16.dp)) {
         // Left: L2/L1, d-pad and left stick.
         Column(
-            Modifier.align(Alignment.BottomStart).padding(start = 8.dp, bottom = 8.dp),
+            // Kept off the bottom edge, where touches near the bezel register poorly.
+            Modifier.align(Alignment.BottomStart).padding(start = 8.dp, bottom = 24.dp),
             verticalArrangement = Arrangement.spacedBy(10.dp),
         ) {
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -79,7 +80,7 @@ fun VirtualGamepad(
 
         // Right: R1/R2, right stick and face buttons.
         Column(
-            Modifier.align(Alignment.BottomEnd).padding(end = 8.dp, bottom = 8.dp),
+            Modifier.align(Alignment.BottomEnd).padding(end = 8.dp, bottom = 24.dp),
             verticalArrangement = Arrangement.spacedBy(10.dp),
             horizontalAlignment = Alignment.End,
         ) {
@@ -234,18 +235,18 @@ private fun DPad(onButton: (Int, Boolean) -> Unit) {
 
 @Composable
 private fun FaceButtons(onButton: (Int, Boolean) -> Unit) {
-    Box(Modifier.size(124.dp), contentAlignment = Alignment.Center) {
+    Box(Modifier.size(132.dp), contentAlignment = Alignment.Center) {
         Box(Modifier.align(Alignment.TopCenter)) {
-            GamepadButton("△", 44.dp, 44.dp, color = Color(0xFF00FF7F)) { onButton(NativeBridge.BTN_TRIANGLE, it) }
+            GamepadButton("△", 48.dp, 48.dp, color = Color(0xFF00FF7F)) { onButton(NativeBridge.BTN_TRIANGLE, it) }
         }
         Box(Modifier.align(Alignment.BottomCenter)) {
-            GamepadButton("✕", 44.dp, 44.dp, color = Color(0xFF4169E1)) { onButton(NativeBridge.BTN_CROSS, it) }
+            GamepadButton("✕", 48.dp, 48.dp, color = Color(0xFF4169E1)) { onButton(NativeBridge.BTN_CROSS, it) }
         }
         Box(Modifier.align(Alignment.CenterStart)) {
-            GamepadButton("□", 44.dp, 44.dp, color = Color(0xFFFF69B4)) { onButton(NativeBridge.BTN_SQUARE, it) }
+            GamepadButton("□", 48.dp, 48.dp, color = Color(0xFFFF69B4)) { onButton(NativeBridge.BTN_SQUARE, it) }
         }
         Box(Modifier.align(Alignment.CenterEnd)) {
-            GamepadButton("○", 44.dp, 44.dp, color = Color(0xFFFF4500)) { onButton(NativeBridge.BTN_CIRCLE, it) }
+            GamepadButton("○", 48.dp, 48.dp, color = Color(0xFFFF4500)) { onButton(NativeBridge.BTN_CIRCLE, it) }
         }
     }
 }
