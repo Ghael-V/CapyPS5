@@ -58,8 +58,11 @@ private:
 	bool                      m_suspended     = false;
 	bool                      m_made_progress = false;
 	uint32_t                  m_wait_retries  = 0;
-	// When the current unsatisfied WAIT_REG_MEM started; drives the time-based timeout.
+	// When the current unsatisfied WAIT_REG_MEM started, or last saw other GPU work progress;
+	// drives the time-based timeout.
 	std::chrono::steady_clock::time_point m_wait_start {};
+	std::chrono::steady_clock::time_point m_wait_first {};
+	uint64_t                              m_wait_progress = 0;
 	// Header of the packet we suspended on; a different value on resume means the guest
 	// reused the command buffer while it was still in flight.
 	uint32_t m_suspend_header = 0;

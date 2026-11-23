@@ -485,6 +485,10 @@ bool TestWaitRegMemValue(uint64_t value, uint64_t ref, uint64_t mask, uint32_t f
 	return false;
 }
 
+// Label and memory writes any queue has made (END_OF_PIPE, WRITE_DATA, DMA_DATA). A WAIT_REG_MEM
+// only times out while this stays still: a label another queue writes late is still coming.
+static std::atomic<uint64_t> g_gpu_progress {0};
+
 template <typename T>
 void CommandProcessor::WaitRegMem(uint32_t func, const T* addr, T ref, T mask, uint32_t poll,
                                   uint32_t wait_op) {
@@ -550,14 +554,25 @@ void CommandProcessor::WaitRegMem(uint32_t func, const T* addr, T ref, T mask, u
 		// Upstream waits forever. Keep a long safety net so a label we never emulate cannot hang
 		// the GPU thread, and log it: every timeout is a missing write that needs fixing.
 		// Tunable on device with `adb shell setprop debug.capy.wait_us <microseconds>`.
+		// The timeout counts from the last progress of any queue (bounded by MaxWait): cutting a
+		// wait for a label that was only late let the GPU run ahead of its data, and Unreal
+		// games then found their heap corrupt (a label written 2 s after its wait began).
 		static Common::DebugFlags::CachedValue wait_us("debug.capy.wait_us", 1000000);
-		const auto kWaitTimeout = std::chrono::microseconds(wait_us.Get());
+		const auto     kWaitTimeout = std::chrono::microseconds(wait_us.Get());
+		constexpr auto MaxWait      = std::chrono::seconds(10);
 		if (g_current_execution != nullptr) {
-			const auto now = std::chrono::steady_clock::now();
+			const auto now      = std::chrono::steady_clock::now();
+			const auto progress = g_gpu_progress.load(std::memory_order_relaxed);
 			if (g_current_execution->m_wait_retries++ == 0) {
-				g_current_execution->m_wait_start = now;
+				g_current_execution->m_wait_start    = now;
+				g_current_execution->m_wait_first    = now;
+				g_current_execution->m_wait_progress = progress;
 				SyncRecord("WAIT begin", reinterpret_cast<uint64_t>(addr), static_cast<uint64_t>(val),
 				           static_cast<uint64_t>(ref));
+			} else if (progress != g_current_execution->m_wait_progress &&
+			           now - g_current_execution->m_wait_first < MaxWait) {
+				g_current_execution->m_wait_start    = now;
+				g_current_execution->m_wait_progress = progress;
 			} else if (now - g_current_execution->m_wait_start > kWaitTimeout) {
 				const auto timeouts = Common::Telemetry::g_wait_reg_mem_timeouts.fetch_add(1) + 1;
 				if (timeouts <= 32 || (timeouts & (timeouts - 1)) == 0) {
@@ -669,6 +684,7 @@ void CommandProcessor::WriteData(uint32_t* dst, const uint32_t* src, uint32_t dw
 	if (dst == nullptr) {
 		return;
 	}
+	g_gpu_progress.fetch_add(1, std::memory_order_relaxed);
 	Common::DebugFlags::WatchWrite("WRITE_DATA", reinterpret_cast<uint64_t>(dst), dw_num * 4ull, src[0]);
 	SyncRecord("WRITE_DATA", reinterpret_cast<uint64_t>(dst), src[0], dw_num);
 	PrepareGuestWrite(dst, (write_one_address ? 1ull : dw_num) * sizeof(uint32_t));
@@ -719,6 +735,7 @@ void CommandProcessor::DmaData(uint8_t engine, uint8_t dst_sel, uint8_t dst_cach
 	if (engine > 1 || num_bytes == 0) {
 		return;
 	}
+	g_gpu_progress.fetch_add(1, std::memory_order_relaxed);
 	Common::DebugFlags::WatchWrite("DMA_DATA", dst_address_or_offset, num_bytes,
 	                               src_address_or_offset_or_immediate);
 	if (dst_cache_policy > 3 || src_cache_policy > 3 || wait_for_previous > 1 ||
@@ -2088,6 +2105,7 @@ void CommandProcessor::WriteAtEndOfPipe(uint32_t cache_policy, uint32_t event_wr
                                         void* dst_gpu_addr, T value, uint32_t interrupt_selector,
                                         uint32_t interrupt_context_id) {
 	static_assert(sizeof(T) == sizeof(uint32_t) || sizeof(T) == sizeof(uint64_t));
+	g_gpu_progress.fetch_add(1, std::memory_order_relaxed);
 	Common::DebugFlags::WatchWrite("END_OF_PIPE", reinterpret_cast<uint64_t>(dst_gpu_addr), sizeof(T),
 	                               static_cast<uint64_t>(value));
 	SyncRecord("END_OF_PIPE", reinterpret_cast<uint64_t>(dst_gpu_addr), static_cast<uint64_t>(value),
