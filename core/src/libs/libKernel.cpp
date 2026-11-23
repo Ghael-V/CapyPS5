@@ -1455,6 +1455,20 @@ static void* KYTY_SYSV_ABI KernelGetProcParam() {
 	return reinterpret_cast<void*>(rt->GetProcParam());
 }
 
+int KYTY_SYSV_ABI KernelGetProsperoCompiledSdkVersion(uint32_t* version) {
+	PRINT_NAME();
+
+	if (version == nullptr) {
+		return KERNEL_ERROR_EINVAL;
+	}
+	// The procparam starts with its u64 size and holds the compiled SDK version at +0x14.
+	const auto param = Common::Singleton<Loader::RuntimeLinker>::Instance()->GetProcParam(); // NOLINT
+	*version = param != 0 && *reinterpret_cast<const uint64_t*>(param) >= 0x18
+	               ? *reinterpret_cast<const uint32_t*>(param + 0x14)
+	               : 0;
+	return OK;
+}
+
 static int KYTY_SYSV_ABI KernelIsTrinityMode() {
 	static std::atomic_uint32_t call_count {0};
 
@@ -3975,6 +3989,7 @@ LIB_DEFINE(InitLibKernel_1) {
 	LIB_FUNC("6Z83sYWFlA8", LibKernel::exit);
 	LIB_FUNC("8OnWXlgQlvo", LibKernel::KernelRtldThreadAtexitDecrement);
 	LIB_FUNC("959qrazPIrg", LibKernel::KernelGetProcParam);
+	LIB_FUNC("GGeRJk1XdWc", LibKernel::KernelGetProsperoCompiledSdkVersion);
 	LIB_FUNC("tU5e3f9gSiU", LibKernel::KernelIsTrinityMode);
 	LIB_FUNC("yu17wG8L5FI", LibKernel::KernelIsTrinityHardware);
 	LIB_FUNC("NH6xARDOVv8", LibKernel::KernelGetOperationMode);
