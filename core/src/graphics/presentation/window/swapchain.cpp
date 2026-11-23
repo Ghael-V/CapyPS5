@@ -547,6 +547,13 @@ void Swapchain::Create() {
 		m_handle = nullptr;
 		return;
 	}
+	if (created == vk::Result::eErrorInvalidExternalHandle) {
+		// Android builds the swapchain on window buffers the driver must import. Drivers loaded
+		// from the app (PanVK on Mali has been reported) can fail that before anything is drawn.
+		EXIT("vkCreateSwapchainKHR failed: the GPU driver cannot use this device's screen buffers "
+		     "(ErrorInvalidExternalHandle). Choose the system GPU driver in the settings or in the "
+		     "game's options\n");
+	}
 	RequireVulkanSuccess(created, "vkCreateSwapchainKHR");
 	EXIT_IF(m_handle == nullptr);
 
