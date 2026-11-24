@@ -611,8 +611,6 @@ TextureBinding RenderExecutor::ResolveTexture(const ShaderRecompiler::IR::ImageR
 	const auto depth          = static_cast<uint32_t>(descriptor.Depth()) + 1u;
 	const auto format         = descriptor.Format();
 	const auto surface_format = TextureGetSurfaceFormatInfo(format);
-	const bool shader_conversion =
-	    surface_format.conversion_format != Prospero::BufferFormat::kInvalid;
 	const bool sampled_numeric_class =
 	    storage || resource.numeric_class == Prospero::SampledTextureNumericClass(format);
 	if (!storage && resource.resource_class == ShaderRecompiler::IR::ImageResourceClass::Sampled &&
@@ -839,7 +837,7 @@ TextureBinding RenderExecutor::ResolveTexture(const ShaderRecompiler::IR::ImageR
 			    static_cast<uint32_t>(tile));
 		}
 	}
-	auto       id                  = texture_cache.FindImage(desc, shader_conversion);
+	auto       id                  = texture_cache.FindImage(desc);
 #if defined(__ANDROID__)
 	// Save one selected sampled texture after its upload, before the draw reads it.
 	static Common::DebugFlags::CachedValue dump_tex_addr("debug.capy.dump_tex_addr", 0);
