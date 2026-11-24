@@ -272,6 +272,11 @@ static constexpr uint32_t AUDIO_OUT2_MASTERING_STATES_STRUCT_ID_COMPRESSOR_V2   
 static constexpr uint32_t AUDIO_OUT2_MASTERING_STATES_STRUCT_ID_LIMITER_DEFAULT    = 0x01010003;
 static constexpr uint32_t AUDIO_OUT2_GET_SPEAKER_INFO_FLAG_FOLLOW_HEADPHONE_CONNECT = 1;
 
+// CapyPS5: games see 3D audio support only while the spatial renderer can render it.
+static bool audioout2_3d_enabled() {
+	return Config::Audio3dEnabled() && SpatialRenderer::Enabled();
+}
+
 static AudioOut2ContextState* audioout2_find_context_locked(AudioOut2ContextHandle ctx) {
 	for (auto& state: g_audioout2_contexts) {
 		if (state.used && state.handle == ctx) {
@@ -1030,10 +1035,14 @@ int KYTY_SYSV_ABI AudioOut2PortGetState(AudioOut2PortHandle port, AudioOut2PortS
 		const auto channels = audioout2_data_format_channels(port_state->data_format);
 		state->output       = route.output;
 		state->volume       = route.volume;
+		auto route_channels = route.channels;
+		if (audioout2_3d_enabled() && (route.output & (1 | 0x40)) != 0) {
+			if (type != AUDIO_OUT_PORT_TYPE_VOICE || route.output != 0x40) state->flags = 1;
+			if (type == AUDIO_OUT_PORT_TYPE_MAIN || type == AUDIO_OUT_PORT_TYPE_BGM) route_channels = 8;
+		}
 		// Object ports report the route's channels, channel ports at most their own.
 		state->num_channels = audioout2_port_type_is_object(port_state->port_type)
-		                          ? route.channels
-		                          : std::min(channels, route.channels);
+		                          ? route_channels : std::min(channels, route_channels);
 	}
 	g_audioout2_state_mutex.Unlock();
 
@@ -1089,7 +1098,7 @@ int KYTY_SYSV_ABI AudioOut2UserGetSupportedAttributes(AudioOut2UserHandle handle
 	if (context_attributes == nullptr && port_attributes == nullptr) {
 		return AUDIO_OUT2_ERROR_INVALID_PARAM;
 	}
-	// The system's attributes without 3D audio; games compiled before 9.00 lack those 9.00 added.
+	// Games compiled before 9.00 lack the later debug, height and proximity attributes.
 	uint32_t sdk_version = 0;
 	LibKernel::KernelGetProsperoCompiledSdkVersion(&sdk_version);
 	const bool        sdk_9 = sdk_version >= 0x09000000;
@@ -1102,7 +1111,8 @@ int KYTY_SYSV_ABI AudioOut2UserGetSupportedAttributes(AudioOut2UserHandle handle
 		*context_attributes = sdk_9 ? 0x13 : 0x3;
 	}
 	if (port_attributes != nullptr) {
-		*port_attributes = sdk_9 ? 0xe53 : 0x653;
+		*port_attributes = audioout2_3d_enabled() ? 0x3f7f : 0xe53;
+		if (!sdk_9) *port_attributes &= 0x7ff;
 	}
 	return OK;
 }
@@ -1233,11 +1243,14 @@ int KYTY_SYSV_ABI AudioOut2GetSpeakerInfo(AudioOut2SpeakerInfo* info, uint32_t f
 	if (output != Config::AudioOutput::Headphones || flags != 0) {
 		info->type = static_cast<uint8_t>(output);
 	}
-	info->available_bits = (1u << main.channels) - 1;
+	const bool spatial = audioout2_3d_enabled() && (output != Config::AudioOutput::Headphones || flags != 0);
+	const auto channels = spatial ? 8 : main.channels;
+	info->flags = spatial ? 1 : 0;
+	info->available_bits = (1u << channels) - 1;
 	for (uint32_t i = 0; i < std::size(info->speaker_angle); i++) {
-		info->speaker_angle[i] = i < main.channels ? ANGLES[i] : AudioOut2SpeakerAngle {-360, -360};
+		info->speaker_angle[i] = i < channels ? ANGLES[i] : AudioOut2SpeakerAngle {-360, -360};
 	}
-	if (info->type == 3) {
+	if (info->type == 3 && !spatial) {
 		info->speaker_angle[0] = {90, 0};
 		info->speaker_angle[1] = {-90, 0};
 	}

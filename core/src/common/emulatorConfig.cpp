@@ -57,6 +57,12 @@ AudioOutput GetAudioOutput() {
 	return g_config->audio_output;
 }
 
+bool Audio3dEnabled() {
+	// CapyPS5: Android has no launcher; `debug.capy.audio_3d 1` reports 3D audio support too.
+	static Common::DebugFlags::CachedValue audio_3d("debug.capy.audio_3d", 0);
+	return g_config->audio_3d_enabled || audio_3d.Get() != 0;
+}
+
 const std::optional<ControllerColor>& GetControllerColor() {
 	return g_config->controller_color;
 }
