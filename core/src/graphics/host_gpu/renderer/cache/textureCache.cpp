@@ -1594,6 +1594,23 @@ ImageId TextureCache::AssociateStencil(ImageId depth_id, GuestRange stencil) {
 	auto& record = m_slot_images[association];
 	TouchImage(record);
 	if (record.depth_id != depth_id || record.stencil_subresources != depth.stencil_subresources) {
+		// A standalone stencil target can become the stencil plane of this combined target.
+		// Preserve its last GPU writes before the record begins referring to its new owner.
+		// Scaled and multisampled images cannot move their stencil through a buffer copy.
+		if (!record.depth_id && record.backing.format == vk::Format::eS8Uint &&
+		    record.IsGpuModified() && record.backing.samples == 1 && depth.backing.samples == 1 &&
+		    !record.IsScaled() && !depth.IsScaled() &&
+		    record.info.resources.levels == 1 &&
+		    record.info.resources.layers <= depth.stencil_subresources.layer_count) {
+			RefreshImage(association);
+			const auto linear = m_tiler.GetScratchBuffer(record.info.LinearSize());
+			auto       copies = record.info.BufferCopies(linear.offset);
+			record.Download(copies, linear.buffer, linear.offset, linear.size);
+			for (auto& copy: copies) {
+				copy.imageSubresource.baseArrayLayer += depth.stencil_subresources.base_layer;
+			}
+			depth.Upload(copies, linear.buffer, linear.offset, linear.size);
+		}
 		ImageInfo plane {};
 		plane.data         = stencil;
 		plane.pixel_format = vk::Format::eS8Uint;
