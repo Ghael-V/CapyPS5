@@ -887,6 +887,21 @@ bool TextureCache::CopyD16(Image& destination, Image& source) {
 	return true;
 }
 
+// maintenance8 allows bitwise copies between these color formats and a D16 or D32 depth aspect.
+// D24 is left out: its bit layout in a 32-bit texel is implementation-defined.
+static bool CanCopyDepthAspectToColor(vk::Format depth, vk::Format color) {
+	switch (DepthAspectTransferFormat(depth)) {
+		case vk::Format::eD16Unorm:
+			return color == vk::Format::eR16Uint || color == vk::Format::eR16Sint ||
+			       color == vk::Format::eR16Unorm || color == vk::Format::eR16Snorm ||
+			       color == vk::Format::eR16Sfloat;
+		case vk::Format::eD32Sfloat:
+			return color == vk::Format::eR32Uint || color == vk::Format::eR32Sint ||
+			       color == vk::Format::eR32Sfloat;
+		default: return false;
+	}
+}
+
 void TextureCache::CopyImage(ImageId destination_id, ImageId source_id) {
 	Common::DebugFlags::FrameTrace("  tc %s id=%u addr=0x%llx", "copy-to", static_cast<uint32_t>(destination_id.index),
 	                               static_cast<unsigned long long>(m_slot_images[destination_id].info.data.address));
@@ -906,6 +921,21 @@ void TextureCache::CopyImage(ImageId destination_id, ImageId source_id) {
 	}
 	const bool source_depth = source.info.IsDepth();
 	const bool dest_depth   = destination.info.IsDepth();
+	static Common::DebugFlags::CachedValue depth_color_direct("debug.capy.depth_color_direct_copy", 1);
+	const auto& depth_side = source_depth ? source : destination;
+	const auto& color_side = source_depth ? destination : source;
+	// With maintenance8 a depth aspect copies bit for bit to and from a matching color format,
+	// skipping the buffer round trip. Scaled pairs, size mismatches and other cases keep the
+	// buffer path.
+	const bool depth_color_copy =
+	    m_graphics.depth_color_copy_enabled && depth_color_direct.Get() != 0 &&
+	    source_depth != dest_depth && source.scale == destination.scale &&
+	    source.backing.image_type == destination.backing.image_type &&
+	    source.info.bytes_per_block == destination.info.bytes_per_block &&
+	    source.backing.extent.width <= destination.backing.extent.width &&
+	    source.backing.extent.height <= destination.backing.extent.height &&
+	    source.backing.extent.depth <= destination.backing.extent.depth &&
+	    CanCopyDepthAspectToColor(depth_side.backing.format, color_side.backing.format);
 	const bool direct_copy =
 	    source.info.GetColorTransform() == destination.info.GetColorTransform() &&
 	    (source.backing.image_type == destination.backing.image_type ||
@@ -913,7 +943,8 @@ void TextureCache::CopyImage(ImageId destination_id, ImageId source_id) {
 	      destination.backing.image_type != vk::ImageType::e1D)) &&
 	    (source.backing.format == destination.backing.format ||
 	     (!source_depth && !dest_depth &&
-	      vk::blockSize(source.backing.format) == vk::blockSize(destination.backing.format)));
+	      vk::blockSize(source.backing.format) == vk::blockSize(destination.backing.format)) ||
+	     depth_color_copy);
 	if (direct_copy) {
 		destination.CopyImage(source);
 	} else if (!CopyD16(destination, source)) {
