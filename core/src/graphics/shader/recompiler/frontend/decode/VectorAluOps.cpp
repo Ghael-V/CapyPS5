@@ -315,10 +315,12 @@ constexpr VopcOpcodeInfo VOPC_OPCODE_LIST[] = {
     {0xccu, Opcode::V_CMP_GT_F16},         {0xcdu, Opcode::V_CMP_LG_F16},
     {0xceu, Opcode::V_CMP_GE_F16},         {0xe8u, Opcode::V_CMP_U_F16},
     {0xe9u, Opcode::V_CMP_NGE_F16},        {0xebu, Opcode::V_CMP_NGT_F16},
+    {0xecu, Opcode::V_CMP_NLE_F16},
     {0xedu, Opcode::V_CMP_NEQ_F16},        {0xeeu, Opcode::V_CMP_NLT_F16},
     {0xd9u, Opcode::V_CMPX_LT_F16},        {0xdau, Opcode::V_CMPX_EQ_F16},
     {0xdbu, Opcode::V_CMPX_LE_F16},        {0xdcu, Opcode::V_CMPX_GT_F16},
-    {0xdeu, Opcode::V_CMPX_GE_F16},        {0xfbu, Opcode::V_CMPX_NGT_F16},
+    {0xdeu, Opcode::V_CMPX_GE_F16},        {0xf9u, Opcode::V_CMPX_NGE_F16},
+    {0xfbu, Opcode::V_CMPX_NGT_F16},
     {0xfcu, Opcode::V_CMPX_NLE_F16},       {0xfdu, Opcode::V_CMPX_NEQ_F16},
     {0xfeu, Opcode::V_CMPX_NLT_F16},
 };
@@ -993,6 +995,7 @@ bool IsVopcFloatCompareOpcode(Opcode opcode) {
 		case Opcode::V_CMP_U_F16:
 		case Opcode::V_CMP_NGE_F16:
 		case Opcode::V_CMP_NGT_F16:
+		case Opcode::V_CMP_NLE_F16:
 		case Opcode::V_CMP_NEQ_F16:
 		case Opcode::V_CMP_NLT_F16:
 		case Opcode::V_CMPX_LT_F16:
@@ -1000,6 +1003,7 @@ bool IsVopcFloatCompareOpcode(Opcode opcode) {
 		case Opcode::V_CMPX_LE_F16:
 		case Opcode::V_CMPX_GT_F16:
 		case Opcode::V_CMPX_GE_F16:
+		case Opcode::V_CMPX_NGE_F16:
 		case Opcode::V_CMPX_NGT_F16:
 		case Opcode::V_CMPX_NLE_F16:
 		case Opcode::V_CMPX_NEQ_F16:
@@ -1713,6 +1717,7 @@ bool IsVopcCompareExec(Opcode opcode) {
 		case Opcode::V_CMPX_LE_F16:
 		case Opcode::V_CMPX_GT_F16:
 		case Opcode::V_CMPX_GE_F16:
+		case Opcode::V_CMPX_NGE_F16:
 		case Opcode::V_CMPX_NGT_F16:
 		case Opcode::V_CMPX_NLE_F16:
 		case Opcode::V_CMPX_NEQ_F16:
