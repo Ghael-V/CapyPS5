@@ -217,10 +217,18 @@ LIB_DEFINE(InitAudio_1_AudioOut2) {
 	LIB_FUNC("IaZXJ9M79uo", AudioOut2::AudioOut2UserDestroy);
 	LIB_FUNC("iE8trxPKnAg", AudioOut2::AudioOut2UserGetSupportedAttributes);
 	LIB_FUNC("G1YOKDJYX2Y", AudioOut2::AudioOut2GetSpeakerArrayMemorySize);
-	LIB_FUNC("+k91hoTuoA8", AudioOut2::AudioOut2SpeakerArrayCreate);
-	LIB_FUNC("erCWQR5eKiQ", AudioOut2::AudioOut2SpeakerArrayDestroy);
-	LIB_FUNC("4BlZurolOAo", AudioOut2::AudioOut2GetSpeakerArrayCoefficients);
-	LIB_FUNC("28QqMnuuJ9Y", AudioOut2::AudioOut2GetSpeakerArrayAmbisonicsCoefficients);
+	// CapyPS5: the calculated speaker array panning only with `debug.capy.audio2_openal 1`.
+	if (Audio::SpatialRenderer::Enabled()) {
+		LIB_FUNC("+k91hoTuoA8", AudioOut2::AudioOut2SpeakerArrayCreate);
+		LIB_FUNC("erCWQR5eKiQ", AudioOut2::AudioOut2SpeakerArrayDestroy);
+		LIB_FUNC("4BlZurolOAo", AudioOut2::AudioOut2GetSpeakerArrayCoefficients);
+		LIB_FUNC("28QqMnuuJ9Y", AudioOut2::AudioOut2GetSpeakerArrayAmbisonicsCoefficients);
+	} else {
+		LIB_FUNC("+k91hoTuoA8", AudioOut2::AudioOut2SpeakerArrayCreateLegacy);
+		LIB_FUNC("erCWQR5eKiQ", AudioOut2::AudioOut2SpeakerArrayDestroyLegacy);
+		LIB_FUNC("4BlZurolOAo", AudioOut2::AudioOut2GetSpeakerArrayCoefficientsLegacy);
+		LIB_FUNC("28QqMnuuJ9Y", AudioOut2::AudioOut2GetSpeakerArrayAmbisonicsCoefficientsLegacy);
+	}
 	LIB_FUNC("DImz2Ft9E2g", AudioOut2::AudioOut2GetSpeakerInfo);
 	LIB_FUNC("b1HWDUC8zaE", AudioOut2::AudioOut2SetSystemDebugState);
 	LIB_FUNC("TViD1EZXkNI", AudioOut2::AudioOut2Set3DLatency);

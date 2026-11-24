@@ -64,12 +64,6 @@ struct AudioOut2Pcm {
 	const void* data;
 };
 
-struct AudioOut2Position {
-	float x;
-	float y;
-	float z;
-};
-
 struct AudioOut2PortState {
 	uint16_t output;
 	uint8_t  num_channels;
@@ -205,7 +199,7 @@ struct AudioOut2ContextState {
 	// spatializes them.
 	bool                   spatial             = false;
 	int                    object_audio_handle = 0;
-	std::shared_ptr<SpatialRenderer> renderer;
+	std::unique_ptr<SpatialRenderer> renderer;
 	uint32_t               max_ports           = 0;
 	// Channel slots precede object slots; each partition has its own creation limit.
 	std::vector<AudioOut2PortStateEntry> ports;
@@ -260,8 +254,8 @@ static constexpr int AUDIO_OUT2_ERROR_INVALID_POINTER             = -2144960500;
 static constexpr int AUDIO_OUT2_ERROR_INVALID_USER                = -2144960496; /* 0x80268010 */
 static constexpr uint32_t AUDIO_OUT2_PORT_ATTRIBUTE_ID_PCM        = 0;
 static constexpr uint32_t AUDIO_OUT2_PORT_ATTRIBUTE_ID_GAIN       = 1;
-static constexpr uint32_t AUDIO_OUT2_PORT_ATTRIBUTE_ID_POSITION   = 3;
-static constexpr uint32_t AUDIO_OUT2_PORT_ATTRIBUTE_ID_SPREAD     = 4;
+static constexpr uint32_t AUDIO_OUT2_PORT_ATTRIBUTE_ID_POSITION        = 3;
+static constexpr uint32_t AUDIO_OUT2_PORT_ATTRIBUTE_ID_SPREAD          = 4;
 static constexpr uint32_t AUDIO_OUT2_PORT_ATTRIBUTE_ID_AMBISONICS = 8;
 static constexpr uint32_t AUDIO_OUT2_MASTERING_OUTPUT_RECORDING   = 2;
 static constexpr uint32_t AUDIO_OUT2_MASTERING_STATES_ID_DEFAULT  = 1;
@@ -477,7 +471,7 @@ static void audioout2_collect_stereo_locked(AudioOut2ContextState* context, Audi
 }
 
 static int audioout2_queue_context_audio(AudioOut2ContextHandle ctx, AudioOut2Submission& out,
-                                          bool blocking) {
+                                         bool blocking) {
 	Common::LockGuard submit_lock(out.mutex);
 	g_audioout2_state_mutex.Lock();
 	auto* context = audioout2_find_context_locked(ctx);
@@ -496,17 +490,17 @@ static int audioout2_queue_context_audio(AudioOut2ContextHandle ctx, AudioOut2Su
 		}
 		return OK;
 	}
-	const auto renderer = context->renderer;
+	auto* renderer = context->renderer.get(); // Context destruction waits for this submission.
 	out.objects.resize(context->ports.size() - context->max_ports);
 	// A port's PCM covers one grain: the push consumes it, so a port the game stops feeding
 	// falls silent.
 	for (size_t i = 0; i < context->ports.size(); ++i) {
 		auto& state = context->ports[i];
 		if (i >= context->max_ports) {
-			auto& object = out.objects[i - context->max_ports];
+			auto& object      = out.objects[i - context->max_ports];
 			object.attributes = state.spatial;
-			object.gain = state.gains[0];
-			object.is_float = state.audio_format == AudioInternal::Format::FloatMono;
+			object.gain       = state.gains[0];
+			object.is_float   = state.audio_format == AudioInternal::Format::FloatMono;
 			object.pcm.swap(state.pcm_data);
 		} else if (state.audio_handle > 0 && !state.pcm_data.empty()) {
 			const auto j = params.size();
@@ -519,10 +513,12 @@ static int audioout2_queue_context_audio(AudioOut2ContextHandle ctx, AudioOut2Su
 	g_audioout2_state_mutex.Unlock();
 	if (renderer) {
 		if (!renderer->Render(out.objects, out.object_mix)) return AUDIO_OUT2_ERROR_OUT_OF_RESOURCE;
-		if (!out.object_mix.empty()) params.push_back({renderer->OutputHandle(), out.object_mix.data()});
+		if (!out.object_mix.empty())
+			params.push_back({renderer->OutputHandle(), out.object_mix.data()});
 	}
 	if (!params.empty()) {
-		(void)AudioInternal::AudioOutOutputs(params.data(), static_cast<uint32_t>(params.size()), blocking);
+		(void)AudioInternal::AudioOutOutputs(params.data(), static_cast<uint32_t>(params.size()),
+		                                     blocking);
 	}
 	return OK;
 }
@@ -587,7 +583,9 @@ int KYTY_SYSV_ABI AudioOut2ContextCreate(const AudioOut2ContextParam* params, vo
 
 	const auto num_grains = params->num_grains == 0 ? 512u : params->num_grains;
 	const bool spatial    = SpatialRenderer::Enabled();
-	auto renderer = spatial && params->max_object_ports ? SpatialRenderer::Open(num_grains, params->max_object_ports) : nullptr;
+	auto       renderer   = spatial && params->max_object_ports
+	                            ? SpatialRenderer::Open(num_grains, params->max_object_ports)
+	                            : nullptr;
 	if (spatial && params->max_object_ports && !renderer) return AUDIO_OUT2_ERROR_OUT_OF_RESOURCE;
 	const int object_audio_handle =
 	    spatial || params->max_object_ports == 0
@@ -636,7 +634,7 @@ int KYTY_SYSV_ABI AudioOut2ContextDestroy(AudioOut2ContextHandle ctx) {
 
 	std::array<int, AUDIOOUT2_CHANNEL_PORTS_MAX + 1> audio_handles {};
 	size_t                                           audio_handles_num = 0;
-	std::shared_ptr<SpatialRenderer> renderer;
+	std::unique_ptr<SpatialRenderer>                 renderer;
 
 	g_audioout2_state_mutex.Lock();
 	auto* state = audioout2_find_context_locked(ctx);
@@ -939,7 +937,8 @@ static int PortSetAttributesImpl(AudioOut2PortHandle port, const AudioOut2Attrib
 		const auto& attribute = attributes[i];
 		const auto  id        = attribute.attribute_id;
 		if (id != AUDIO_OUT2_PORT_ATTRIBUTE_ID_PCM && id != AUDIO_OUT2_PORT_ATTRIBUTE_ID_GAIN &&
-		    id != AUDIO_OUT2_PORT_ATTRIBUTE_ID_POSITION && id != AUDIO_OUT2_PORT_ATTRIBUTE_ID_SPREAD &&
+		    id != AUDIO_OUT2_PORT_ATTRIBUTE_ID_POSITION &&
+		    id != AUDIO_OUT2_PORT_ATTRIBUTE_ID_SPREAD &&
 		    id != AUDIO_OUT2_PORT_ATTRIBUTE_ID_AMBISONICS) {
 			continue;
 		}
@@ -954,6 +953,9 @@ static int PortSetAttributesImpl(AudioOut2PortHandle port, const AudioOut2Attrib
 		if (id != AUDIO_OUT2_PORT_ATTRIBUTE_ID_PCM && state->attributes_locked) {
 			continue;
 		}
+		if (id != AUDIO_OUT2_PORT_ATTRIBUTE_ID_PCM && id != AUDIO_OUT2_PORT_ATTRIBUTE_ID_GAIN &&
+		    !audioout2_port_type_is_object(state->port_type))
+			return AUDIO_OUT2_ERROR_INVALID_PARAM;
 		if (attribute.value == nullptr) {
 			return AUDIO_OUT2_ERROR_INVALID_PARAM;
 		}
@@ -981,26 +983,22 @@ static int PortSetAttributesImpl(AudioOut2PortHandle port, const AudioOut2Attrib
 				break;
 			}
 			case AUDIO_OUT2_PORT_ATTRIBUTE_ID_POSITION:
-				if (!audioout2_port_type_is_object(state->port_type) || attribute.value_size != sizeof(spatial.position))
+				if (!spatial.SetPosition(attribute.value, attribute.value_size))
 					return AUDIO_OUT2_ERROR_INVALID_PARAM;
-				std::memcpy(&spatial.position, attribute.value, sizeof(spatial.position));
-				if (!spatial.position.IsFinite()) return AUDIO_OUT2_ERROR_INVALID_PARAM;
 				break;
 			case AUDIO_OUT2_PORT_ATTRIBUTE_ID_SPREAD:
-				if (!audioout2_port_type_is_object(state->port_type) ||
-				    !spatial.SetSpread(attribute.value, attribute.value_size)) return AUDIO_OUT2_ERROR_INVALID_PARAM;
+				if (!spatial.SetSpread(attribute.value, attribute.value_size))
+					return AUDIO_OUT2_ERROR_INVALID_PARAM;
 				break;
 			case AUDIO_OUT2_PORT_ATTRIBUTE_ID_AMBISONICS:
-				if (!audioout2_port_type_is_object(state->port_type) || attribute.value_size != sizeof(spatial.ambisonics))
+				if (!spatial.SetAmbisonics(attribute.value, attribute.value_size, true))
 					return AUDIO_OUT2_ERROR_INVALID_PARAM;
-				std::memcpy(&spatial.ambisonics, attribute.value, sizeof(spatial.ambisonics));
-				if (!SpatialAttributes::ValidAmbisonics(spatial.ambisonics)) return AUDIO_OUT2_ERROR_INVALID_PARAM;
 				break;
 		}
 	}
 
-	state->gains      = gains;
-	state->spatial    = spatial;
+	state->gains   = gains;
+	state->spatial = spatial;
 	if ((seen & (1u << AUDIO_OUT2_PORT_ATTRIBUTE_ID_PCM)) != 0) {
 		if (pcm_data != nullptr && state->audio_format != AudioInternal::Format::Unknown) {
 			const auto* bytes = static_cast<const uint8_t*>(pcm_data);
@@ -1034,11 +1032,13 @@ int KYTY_SYSV_ABI AudioOut2PortGetState(AudioOut2PortHandle port, AudioOut2PortS
 		auto route_channels = route.channels;
 		if (audioout2_3d_enabled() && (route.output & (1 | 0x40)) != 0) {
 			if (type != AUDIO_OUT_PORT_TYPE_VOICE || route.output != 0x40) state->flags = 1;
-			if (type == AUDIO_OUT_PORT_TYPE_MAIN || type == AUDIO_OUT_PORT_TYPE_BGM) route_channels = 8;
+			if (type == AUDIO_OUT_PORT_TYPE_MAIN || type == AUDIO_OUT_PORT_TYPE_BGM)
+				route_channels = 8;
 		}
 		// Object ports report the route's channels, channel ports at most their own.
 		state->num_channels = audioout2_port_type_is_object(port_state->port_type)
-		                          ? route_channels : std::min(channels, route_channels);
+		                          ? route_channels
+		                          : std::min(channels, route_channels);
 	}
 	g_audioout2_state_mutex.Unlock();
 
@@ -1113,25 +1113,10 @@ int KYTY_SYSV_ABI AudioOut2UserGetSupportedAttributes(AudioOut2UserHandle handle
 	return OK;
 }
 
-size_t KYTY_SYSV_ABI AudioOut2GetSpeakerArrayMemorySize(uint32_t num_speakers, uint8_t is_3d,
-                                                        uint8_t is_ambisonics) {
-	PRINT_NAME();
-
-	const auto speakers = std::clamp<uint32_t>(num_speakers, 1, 32);
-	const auto size = static_cast<size_t>(0x400 + speakers * (is_ambisonics != 0 ? 0x100 : 0x40) +
-	                                      (is_3d != 0 ? 0x200 : 0));
-
-	LOGF("\t num_speakers  = %" PRIu32 "\n"
-	     "\t is_3d         = %" PRIu8 "\n"
-	     "\t is_ambisonics = %" PRIu8 "\n"
-	     "\t memory_size   = 0x%016" PRIx64 "\n",
-	     num_speakers, is_3d, is_ambisonics, static_cast<uint64_t>(size));
-
-	return size;
-}
-
-int KYTY_SYSV_ABI AudioOut2SpeakerArrayCreate(AudioOut2SpeakerArrayHandle* handle,
-                                              const void* vbap_params, const void* ambi_params) {
+// CapyPS5: the speaker arrays before audioSpeakerArray.cpp (fixed front-pair gains). They stay
+// registered unless `debug.capy.audio2_openal 1` selects the calculated panning.
+int KYTY_SYSV_ABI AudioOut2SpeakerArrayCreateLegacy(AudioOut2SpeakerArrayHandle* handle,
+                                                    const void* vbap_params, const void* ambi_params) {
 	PRINT_NAME();
 	EXIT_NOT_IMPLEMENTED(handle == nullptr);
 
@@ -1159,7 +1144,7 @@ int KYTY_SYSV_ABI AudioOut2SpeakerArrayCreate(AudioOut2SpeakerArrayHandle* handl
 	return (*handle != nullptr ? OK : AUDIO_OUT2_ERROR_PORT_FULL);
 }
 
-int KYTY_SYSV_ABI AudioOut2SpeakerArrayDestroy(AudioOut2SpeakerArrayHandle handle) {
+int KYTY_SYSV_ABI AudioOut2SpeakerArrayDestroyLegacy(AudioOut2SpeakerArrayHandle handle) {
 	PRINT_NAME();
 	LOGF("\t handle = 0x%016" PRIx64 "\n", reinterpret_cast<uint64_t>(handle));
 
@@ -1175,7 +1160,7 @@ int KYTY_SYSV_ABI AudioOut2SpeakerArrayDestroy(AudioOut2SpeakerArrayHandle handl
 	return OK;
 }
 
-int KYTY_SYSV_ABI AudioOut2GetSpeakerArrayCoefficients(
+int KYTY_SYSV_ABI AudioOut2GetSpeakerArrayCoefficientsLegacy(
     AudioOut2SpeakerArrayHandle handle, AudioOut2Position pos, float spread, float* coefficients,
     uint32_t num_coefficients, uint8_t height_aware, float downmix_spread_radius) {
 	PRINT_NAME();
@@ -1200,10 +1185,10 @@ int KYTY_SYSV_ABI AudioOut2GetSpeakerArrayCoefficients(
 	return OK;
 }
 
-int KYTY_SYSV_ABI AudioOut2GetSpeakerArrayAmbisonicsCoefficients(AudioOut2SpeakerArrayHandle handle,
-                                                                 uint32_t ambisonics_channel,
-                                                                 float*   coefficients,
-                                                                 uint32_t num_coefficients) {
+int KYTY_SYSV_ABI AudioOut2GetSpeakerArrayAmbisonicsCoefficientsLegacy(AudioOut2SpeakerArrayHandle handle,
+                                                                       uint32_t ambisonics_channel,
+                                                                       float*   coefficients,
+                                                                       uint32_t num_coefficients) {
 	PRINT_NAME();
 	EXIT_NOT_IMPLEMENTED(coefficients == nullptr && num_coefficients != 0);
 
@@ -1236,12 +1221,11 @@ int KYTY_SYSV_ABI AudioOut2GetSpeakerInfo(AudioOut2SpeakerInfo* info, uint32_t f
 	const auto main   = AudioInternal::GetMainOutput();
 	std::memset(info, 0, sizeof(AudioOut2SpeakerInfo));
 	// Without the flag, headphones report the HDMI device.
-	if (output != Config::AudioOutput::Headphones || flags != 0) {
-		info->type = static_cast<uint8_t>(output);
-	}
-	const bool spatial = audioout2_3d_enabled() && (output != Config::AudioOutput::Headphones || flags != 0);
-	const auto channels = spatial ? 8 : main.channels;
-	info->flags = spatial ? 1 : 0;
+	const bool report_output = output != Config::AudioOutput::Headphones || flags != 0;
+	if (report_output) info->type = static_cast<uint8_t>(output);
+	const bool spatial   = report_output && audioout2_3d_enabled();
+	const auto channels  = spatial ? 8 : main.channels;
+	info->flags          = spatial ? 1 : 0;
 	info->available_bits = (1u << channels) - 1;
 	for (uint32_t i = 0; i < std::size(info->speaker_angle); i++) {
 		info->speaker_angle[i] = i < channels ? ANGLES[i] : AudioOut2SpeakerAngle {-360, -360};
