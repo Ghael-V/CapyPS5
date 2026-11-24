@@ -1228,6 +1228,10 @@ bool TryReadBufferBacking(uint64_t vaddr, void* data, uint64_t size) {
 		if (!Graphics::GuestGpu::IsGpuThread()) {
 			return false;
 		}
+		auto& textures = GetGpuResources().GetTextureCache();
+		if (textures.HasGpuDirtyBytes(vaddr, size)) {
+			(void)textures.ReadMemory(vaddr, size);
+		}
 		auto& buffers = GetGpuResources().GetBufferCache();
 		if (buffers.HasGpuDirtyBytes(vaddr, size)) {
 			buffers.ReadMemory(vaddr, size);
@@ -1239,7 +1243,8 @@ bool TryReadBufferBacking(uint64_t vaddr, void* data, uint64_t size) {
 void CopyGuestMemory(uint64_t vaddr, void* data, uint64_t size) {
 	if (g_gpu_resources == nullptr || !IsGpuAddressRange(vaddr, size) ||
 	    !Graphics::GuestGpu::IsGpuThread() ||
-	    !GetGpuResources().GetBufferCache().IsRegionGpuModified(vaddr, size) ||
+	    (!GetGpuResources().GetBufferCache().IsRegionGpuModified(vaddr, size) &&
+	     !GetGpuResources().GetTextureCache().IsRegionGpuModified(vaddr, size)) ||
 	    !TryReadBufferBacking(vaddr, data, size)) {
 		std::memcpy(data, reinterpret_cast<const void*>(vaddr), size);
 	}
@@ -1423,7 +1428,9 @@ static bool ReadHostMemory(uint64_t vaddr, void* data, uint64_t size) {
 		// Only GPU-written bytes need the fault handler. Anything else here is memory the game
 		// itself made unreadable (or released) while the GPU still references it: nothing would
 		// service that fault, so read what backs it instead of taking the process down.
-		if (g_gpu_resources != nullptr && !GetGpuResources().GetBufferCache().HasGpuDirtyBytes(vaddr, size)) {
+		// GPU texels of a read-watched image (image_readback) are downloaded by the fault too.
+		if (g_gpu_resources != nullptr && !GetGpuResources().GetBufferCache().HasGpuDirtyBytes(vaddr, size) &&
+		    !GetGpuResources().GetTextureCache().HasGpuDirtyBytes(vaddr, size)) {
 			if (!TryReadBacking(vaddr, data, size)) {
 				std::memset(data, 0, size);
 			}

@@ -103,9 +103,13 @@ bool RenderContext::HandleFault(PageFaultAccess access, uint64_t fault_vaddr) no
 		}
 		m_texture_cache.InvalidateMemory(fault_vaddr, fault_size);
 	} else {
+		// Read-watched GPU-written images over the page are downloaded first (image_readback).
 		// Upstream behaviour: ReadMemory also clears stale GPU-dirty protection when there is
 		// nothing to download, so the faulting access can be retried.
-		m_buffer_cache.ReadMemory(fault_vaddr, fault_size);
+		const bool image_read = m_texture_cache.ReadMemory(fault_vaddr, fault_size);
+		if (!image_read || m_buffer_cache.IsRegionGpuModified(fault_vaddr, fault_size)) {
+			m_buffer_cache.ReadMemory(fault_vaddr, fault_size);
+		}
 	}
 	return true;
 }

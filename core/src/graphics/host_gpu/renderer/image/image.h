@@ -155,6 +155,9 @@ public:
 		return IsGpuModified() && !IsBufferModified() && !IsCpuDirty();
 	}
 	[[nodiscard]] bool IsTracked() const noexcept { return track_addr != 0 && track_addr_end != 0; }
+	[[nodiscard]] bool IsReadTracked() const noexcept {
+		return read_track_addr != 0 && read_track_addr_end != 0;
+	}
 	[[nodiscard]] uint64_t AccountedSize() const noexcept {
 		return backing.image == nullptr ? 0 : Common::AlignUp(info.data.size, 1024);
 	}
@@ -182,6 +185,10 @@ public:
 	mutable uint32_t query_epoch    = 0;
 	uint64_t         track_addr     = 0;
 	uint64_t         track_addr_end = 0;
+	// Pages read-watched (no access) after a GL2 writeback, so a CPU read downloads the image
+	// (TextureCache::TrackImageRead).
+	uint64_t         read_track_addr     = 0;
+	uint64_t         read_track_addr_end = 0;
 	ImageId          depth_id {};
 	// The current stencil plane's mapping into the depth image, also retained by its association.
 	ImageSubresourceRange stencil_subresources;

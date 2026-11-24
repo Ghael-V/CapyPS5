@@ -85,6 +85,12 @@ public:
 	                                        uint32_t packed_clear);
 	void               InvalidateMemory(uint64_t address, uint64_t size);
 	void               InvalidateMemoryFromGPU(uint64_t address, uint64_t size);
+	// Downloads read-tracked GPU-written images overlapping the faulting page on demand; returns
+	// whether any read-tracked image overlapped the page.
+	[[nodiscard]] bool ReadMemory(uint64_t address, uint64_t size);
+	// Whether a read-tracked image watches a page of the range / overlaps its bytes.
+	[[nodiscard]] bool IsRegionGpuModified(uint64_t address, uint64_t size);
+	[[nodiscard]] bool HasGpuDirtyBytes(uint64_t address, uint64_t size);
 	// Writes a copy into whole levels of one layer of a GPU-written image straight into it, and
 	// returns false for any other copy.
 	[[nodiscard]] bool CopyToImage(uint64_t address, uint64_t source, uint64_t size);
@@ -101,8 +107,8 @@ public:
 
 	void UnmapMemory(uint64_t address, uint64_t size);
 	void ProcessDownloadImages();
-	// A GL2 writeback makes GPU-written images visible to the CPU; returns whether a download was
-	// recorded.
+	// A GL2 writeback makes GPU-written images visible to the CPU: arms on-demand read watchers
+	// (debug.capy.image_readback). Returns whether a download was recorded.
 	[[nodiscard]] bool WriteBackImages();
 	void RunGarbageCollector();
 	// Debug aid (frame trace image dump): writes a GPU-modified image back to guest memory.
@@ -191,6 +197,15 @@ private:
 	void                      UntrackImage(ImageId id);
 	void                      UntrackImageHead(ImageId id);
 	void                      UntrackImageTail(ImageId id);
+	// On-demand image readback (debug.capy.image_readback): GPU-written images are queued here and
+	// read-watched at the next GL2 writeback; a CPU access to their pages downloads them first.
+	[[nodiscard]] static bool ImageReadbackEnabled();
+	void                      TrackImageRead(ImageId id);
+	void                      UntrackImageRead(ImageId id);
+	void                      QueueReadTrack(ImageId id, const Image& image);
+	void                      ArmPendingReadWatchers();
+	[[nodiscard]] bool        MaterializeReadTracked(uint64_t address, uint64_t size,
+	                                                 GuestRange skip_covered);
 	void                      MarkAsMaybeDirty(ImageId id, Image& image);
 	void                      TrackImageDownload(ImageId id, Image& image);
 	[[nodiscard]] static bool SameBacking(const ImageInfo& cached, const ImageInfo& requested,
@@ -222,7 +237,7 @@ private:
 	void DownloadImage(Image& image, Buffer& destination, uint64_t destination_offset,
 	                   uint64_t destination_size, uint32_t levels);
 	void DownloadDepth(Image& image, Buffer& destination, uint64_t destination_offset);
-	void CommitGpuWrite(Image& image);
+	void CommitGpuWrite(ImageId id, Image& image);
 	// Caller holds m_lock. Volume layer ranges select depth slices.
 	void ClearImage(CommandBuffer& command, ImageId id, vk::Format format,
 	                const vk::ImageSubresourceRange& range, const vk::ClearValue& clear);
@@ -250,6 +265,8 @@ private:
 	std::unordered_map<vk::Format, ImageId>           m_null_images;
 	Common::LeastRecentlyUsedCache<ImageId, uint64_t> m_lru_cache;
 	std::unordered_set<ImageId>                       m_download_images;
+	std::unordered_set<ImageId>                       m_pending_read_track;
+	std::atomic<uint64_t>                             m_read_tracked_count {0};
 	// Depth image -> its depth feedback copy (see CopyDepthForFeedback).
 	std::unordered_map<ImageId, ImageId>              m_depth_feedback_copies;
 	std::map<uint64_t, MetaDataInfo>                  m_surface_metas;
