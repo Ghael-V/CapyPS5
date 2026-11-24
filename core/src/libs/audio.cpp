@@ -2,6 +2,7 @@
 // SPDX-FileCopyrightText: Copyright KytyPS5 contributors; based on Kyty, Copyright (c) 2021 InoriRus (MIT)
 // SPDX-License-Identifier: GPL-2.0-only
 
+#include "libs/audio3d.h"
 #include "libs/audio.h"
 
 #include "common/assert.h"
@@ -218,6 +219,7 @@ void Initialize() {
 }
 
 void Shutdown() {
+	Audio3d::Shutdown();
 	delete g_audio;
 	g_audio = nullptr;
 }

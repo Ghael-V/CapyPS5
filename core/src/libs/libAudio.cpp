@@ -9,6 +9,7 @@
 #include "libs/audio.h"
 #include "libs/ngs2.h"
 #include "libs/libs.h"
+#include "libs/spatialRenderer.h"
 #include "loader/symbolDatabase.h"
 
 #include <array>
@@ -1195,10 +1196,29 @@ namespace LibAudio3d {
 LIB_VERSION("Audio3d", 1, "Audio3d", 1, 1);
 
 namespace Audio3d = Audio::Audio3d;
+namespace Audio3dLegacy = Audio::Audio3dLegacy;
 
 LIB_DEFINE(InitAudio_1_Audio3d) {
+	// CapyPS5: without `debug.capy.audio2_openal 1` keep the earlier library, which paces pushes
+	// silently and lacks the object functions.
+	if (!Audio::SpatialRenderer::Enabled()) {
+		LIB_FUNC("UmCvjSmuZIw", Audio3dLegacy::Audio3dInitialize);
+		LIB_FUNC("Im+jOoa5WAI", Audio3dLegacy::Audio3dGetDefaultOpenParameters);
+		LIB_FUNC("XeDDK0xJWQA", Audio3dLegacy::Audio3dPortOpen);
+		LIB_FUNC("Yq9bfUQ0uJg", Audio3dLegacy::Audio3dPortSetAttribute);
+		LIB_FUNC("YaaDbDwKpFM", Audio3dLegacy::Audio3dPortGetQueueLevel);
+		LIB_FUNC("lw0qrdSjZt8", Audio3dLegacy::Audio3dPortAdvance);
+		LIB_FUNC("VEVhZ9qd4ZY", Audio3dLegacy::Audio3dPortPush);
+		return;
+	}
 	LIB_FUNC("UmCvjSmuZIw", Audio3d::Audio3dInitialize);
 	LIB_FUNC("Im+jOoa5WAI", Audio3d::Audio3dGetDefaultOpenParameters);
+	LIB_FUNC("jO2tec4dJ2M", Audio3d::Audio3dObjectReserve);
+	LIB_FUNC("V1FBFpNIAzk", Audio3d::Audio3dObjectSetAttribute);
+	LIB_FUNC("4uyHN9q4ZeU", Audio3d::Audio3dObjectSetAttributes);
+	LIB_FUNC("1HXxo-+1qCw", Audio3d::Audio3dObjectUnreserve);
+	LIB_FUNC("OyVqOeVNtSk", Audio3d::Audio3dPortClose);
+	LIB_FUNC("9ZA23Ia46Po", Audio3d::Audio3dPortGetAttributesSupported);
 	LIB_FUNC("XeDDK0xJWQA", Audio3d::Audio3dPortOpen);
 	LIB_FUNC("Yq9bfUQ0uJg", Audio3d::Audio3dPortSetAttribute);
 	LIB_FUNC("YaaDbDwKpFM", Audio3d::Audio3dPortGetQueueLevel);

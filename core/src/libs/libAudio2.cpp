@@ -19,7 +19,6 @@
 #include <atomic>
 #include <cmath>
 #include <cstring>
-#include <numbers>
 #include <span>
 #include <utility>
 #include <vector>
@@ -988,11 +987,8 @@ static int PortSetAttributesImpl(AudioOut2PortHandle port, const AudioOut2Attrib
 				if (!spatial.position.IsFinite()) return AUDIO_OUT2_ERROR_INVALID_PARAM;
 				break;
 			case AUDIO_OUT2_PORT_ATTRIBUTE_ID_SPREAD:
-				if (!audioout2_port_type_is_object(state->port_type) || attribute.value_size != sizeof(spatial.spread))
-					return AUDIO_OUT2_ERROR_INVALID_PARAM;
-				std::memcpy(&spatial.spread, attribute.value, sizeof(spatial.spread));
-				if (!std::isfinite(spatial.spread) || spatial.spread < 0) return AUDIO_OUT2_ERROR_INVALID_PARAM;
-				spatial.spread = std::min(spatial.spread, 2 * std::numbers::pi_v<float>);
+				if (!audioout2_port_type_is_object(state->port_type) ||
+				    !spatial.SetSpread(attribute.value, attribute.value_size)) return AUDIO_OUT2_ERROR_INVALID_PARAM;
 				break;
 			case AUDIO_OUT2_PORT_ATTRIBUTE_ID_AMBISONICS:
 				if (!audioout2_port_type_is_object(state->port_type) || attribute.value_size != sizeof(spatial.ambisonics))
