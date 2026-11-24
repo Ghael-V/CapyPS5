@@ -40,6 +40,7 @@
 #include "loader/systemContent.h"
 
 #include <algorithm>
+#include <cinttypes>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -1347,6 +1348,13 @@ void WindowContext::CreateVulkan() {
 	graphic_ctx.physical_device_properties = physical_device_properties.properties;
 	graphic_ctx.max_push_descriptors       = push_descriptor_properties.maxPushDescriptors;
 	graphic_ctx.physical_device.getMemoryProperties(&graphic_ctx.physical_device_memory_properties);
+	const auto& memory = graphic_ctx.physical_device_memory_properties;
+	for (uint32_t heap = 0; heap < memory.memoryHeapCount; heap++) {
+		LOGF("Vulkan memory heap %u: size=%" PRIu64 " device_local=%s\n", heap,
+		     static_cast<uint64_t>(memory.memoryHeaps[heap].size),
+		     (memory.memoryHeaps[heap].flags & vk::MemoryHeapFlagBits::eDeviceLocal) ? "true"
+		                                                                             : "false");
+	}
 	const auto& device_properties = graphic_ctx.GetPhysicalDeviceProperties();
 
 	LOGF("Select device: %s\n", device_properties.deviceName.data());
