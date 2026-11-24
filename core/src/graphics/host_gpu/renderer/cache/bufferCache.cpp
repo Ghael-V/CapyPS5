@@ -967,6 +967,8 @@ void BufferCache::FillBuffer(uint64_t vaddr, uint64_t size, uint32_t value, bool
 			LOGF("BufferCache: fill of unmapped range vaddr=0x%016" PRIx64 " size=0x%016" PRIx64 " skipped\n", vaddr, size);
 			return;
 		}
+		// Invalidate the whole written range up front instead of relying on the write faults.
+		(void)m_scheduler.Context().InvalidateMemory(vaddr, size);
 		auto* destination = reinterpret_cast<uint32_t*>(vaddr);
 		std::fill(destination, destination + size / sizeof(uint32_t), value);
 		return;
