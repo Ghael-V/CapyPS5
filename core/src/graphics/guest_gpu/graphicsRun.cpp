@@ -2065,8 +2065,16 @@ void CommandProcessor::DispatchDirect(uint32_t thread_group_x, uint32_t thread_g
 void CommandProcessor::DispatchIndirect(uint64_t args_addr, uint32_t mode) {
 	EXIT_NOT_IMPLEMENTED(args_addr == 0 || (args_addr & 3u) != 0);
 	if ((mode & Pm4::COMPUTE_DISPATCH_INITIATOR_USE_THREAD_DIMENSIONS) != 0) {
-		const auto* args = reinterpret_cast<const vk::DispatchIndirectCommand*>(args_addr);
-		DispatchDirect(args->x, args->y, args->z, mode);
+		// An earlier dispatch may have written the dimensions: download them from the GPU when
+		// they are GPU-owned, as WaitRegMem does, instead of reading stale guest memory.
+		vk::DispatchIndirectCommand args;
+		bool readable = Libs::LibKernel::Memory::ReadGuestMemory(args_addr, &args, sizeof(args));
+		if (!readable && m_renderer.GetBufferCache().HasGpuDirtyBytes(args_addr, sizeof(args))) {
+			m_renderer.GetBufferCache().ReadMemory(args_addr, sizeof(args));
+			readable = Libs::LibKernel::Memory::ReadGuestMemory(args_addr, &args, sizeof(args));
+		}
+		EXIT_NOT_IMPLEMENTED(!readable);
+		DispatchDirect(args.x, args.y, args.z, mode);
 		return;
 	}
 	m_sh_ctx.SetCsWaveSize(Pm4::ComputeWaveSize(mode));
