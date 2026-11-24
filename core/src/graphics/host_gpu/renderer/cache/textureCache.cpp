@@ -271,11 +271,92 @@ float TextureCache::ChooseScale(const ImageDesc& desc) {
 }
 
 ImageId TextureCache::InsertImage(const ImageInfo& info, float scale) {
-	const auto id = m_slot_images.insert(m_graphics, m_scheduler, info, scale);
+	const auto id = CreateImageSlot(info, scale, info.data.size);
 	if (!info.data.Empty()) {
 		RegisterImage(id);
 	}
 	return id;
+}
+
+ImageId TextureCache::CreateImageSlot(const ImageInfo& info, float scale, uint64_t size) {
+	auto id = m_slot_images.insert(m_graphics, m_scheduler, info, scale);
+	while (info.pixel_format != vk::Format::eUndefined &&
+	       m_slot_images[id].backing.image == nullptr) {
+		m_slot_images.erase(id);
+		if (!ReleaseIdleImages(info.data, size)) {
+			EXIT("failed to create image: extent=%ux%ux%u format=%d layers=%u levels=%u\n",
+			     info.extent.width, info.extent.height, info.extent.depth,
+			     static_cast<int>(info.pixel_format), info.IsVolume() ? 1u : info.resources.layers,
+			     info.resources.levels);
+		}
+		id = m_slot_images.insert(m_graphics, m_scheduler, info, scale);
+	}
+	return id;
+}
+
+bool TextureCache::ReleaseIdleImages(GuestRange requested, uint64_t size) {
+	if (!m_scheduler.Active() || m_gc_tick == 0) {
+		return false;
+	}
+	// Images touched in the current GC tick (since the last guest suspend point) stay: the LRU
+	// tick is updated on every FindImage access. So do images sharing a page with the request,
+	// which the caller may be resolving against it.
+	std::vector<ImageId> candidates;
+	m_lru_cache.ForEachItemBelow(m_gc_tick - 1, [&](ImageId id) { candidates.push_back(id); });
+	// At least one image is released, also for a new image without guest memory.
+	const uint64_t       wanted = std::max<uint64_t>(size, 1);
+	std::vector<ImageId> released;
+	uint64_t             released_size = 0;
+	for (const auto id: candidates) {
+		if (released_size >= wanted) {
+			break;
+		}
+		auto* image = m_slot_images.try_get(id);
+		if (image == nullptr || !image->registered || image->depth_id ||
+		    image->backing.image == nullptr || image->binding.is_bound ||
+		    image->binding.is_target || image->usage.video_out ||
+		    (requested.size != 0 && image->Overlaps(requested.address, requested.size, true))) {
+			continue;
+		}
+		// A CPU write to a tracker page the image shares, not to the image, is resolved as in
+		// RefreshImage before the download check.
+		if (image->IsGpuModified() && image->IsMaybeCpuDirty() &&
+		    !image->IsDefinitelyCpuDirty()) {
+			if (image->NeedsMaybeCpuHash()) {
+				continue;
+			}
+			TrackImage(id);
+			(void)image->ResolveMaybeCpuHash(image->HashGuestEdges());
+		}
+		// As in the GC: GPU-written images are written back first; stencil-backed ones and tiled
+		// PS4 (gfx7) layouts, which the gfx10 tiler cannot write back, stay.
+		const bool gfx7_tiled = image->info.IsTiled() && (image->info.gfx7_micro_pitch != 0 ||
+		                                                  image->info.gfx7_guest_size != 0);
+		if (image->SafeToDownload() &&
+		    (image->info.HasStencil() || gfx7_tiled || !DownloadImageMemory(id))) {
+			continue;
+		}
+		released_size += image->AccountedSize();
+		released.push_back(id);
+		FreeImage(id);
+	}
+	if (released.empty()) {
+		return false;
+	}
+	LOGF("TextureCache: released %zu idle images (%" PRIu64 " bytes) for a new image of %" PRIu64
+	     " bytes\n",
+	     released.size(), released_size, size);
+	// Recorded work may still use the released images, and their downloads reach guest memory in
+	// priority operations of this tick. Their slots are erased later by DeleteImage's release.
+	const auto tick = m_scheduler.CurrentTick();
+	m_scheduler.Wait(tick);
+	m_scheduler.WaitPriorityOperations(tick);
+	for (const auto id: released) {
+		if (auto* image = m_slot_images.try_get(id)) {
+			image->ReleaseBacking();
+		}
+	}
+	return true;
 }
 
 void TextureCache::RegisterImage(ImageId id) {
@@ -392,18 +473,21 @@ ImageId TextureCache::CopyDepthForFeedback(ImageId depth_id, const ImageSubresou
 				ReleaseDepthFeedbackCopy(depth_id);
 			}
 		}
-		auto [entry, inserted] = m_depth_feedback_copies.try_emplace(depth_id);
-		if (inserted) {
+		if (const auto found = m_depth_feedback_copies.find(depth_id);
+		    found != m_depth_feedback_copies.end()) {
+			copy_id = found->second;
+		} else {
 			// Same layout and scale as the depth image, without guest memory: never registered
-			// or tracked.
+			// or tracked. Creating it may release idle images (and their feedback copies).
 			auto info        = m_slot_images[depth_id].info;
+			const auto size  = info.data.size;
 			info.data        = {};
 			info.stencil     = {};
 			info.metadata    = {};
 			const auto scale = m_slot_images[depth_id].scale;
-			entry->second    = m_slot_images.insert(m_graphics, m_scheduler, info, scale);
+			copy_id          = CreateImageSlot(info, scale, size);
+			m_depth_feedback_copies.emplace(depth_id, copy_id);
 		}
-		copy_id = entry->second;
 	}
 	// References after the insertion: it may move the images.
 	auto& depth = m_slot_images[depth_id];

@@ -146,6 +146,10 @@ private:
 	}
 
 	[[nodiscard]] ImageId     InsertImage(const ImageInfo& info, float scale = 1.0f);
+	// Inserts an image slot; when its host image cannot be allocated, releases idle images of
+	// about `size` bytes and retries, and stops only when nothing can be released.
+	[[nodiscard]] ImageId     CreateImageSlot(const ImageInfo& info, float scale, uint64_t size);
+	[[nodiscard]] bool        ReleaseIdleImages(GuestRange requested, uint64_t size);
 	// Host resolution scale for a new image (debug.capy.res_scale): only large 2D render and
 	// depth targets are rendered smaller.
 	[[nodiscard]] static float ChooseScale(const ImageDesc& desc);

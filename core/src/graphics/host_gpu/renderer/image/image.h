@@ -59,6 +59,9 @@ public:
 	~Image();
 	KYTY_CLASS_NO_COPY(Image);
 
+	// Destroys the views and the host image (also when TextureCache releases an idle image).
+	void ReleaseBacking();
+
 	[[nodiscard]] vk::ImageView FindView(const ImageViewInfo& view_info);
 	using Barriers = std::vector<vk::ImageMemoryBarrier2>;
 	[[nodiscard]] Barriers GetBarriers(vk::ImageLayout                      destination_layout,
