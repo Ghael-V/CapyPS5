@@ -506,6 +506,20 @@ void PlayGo::OpenChunkDefs(const std::filesystem::path& file_name) {
 
 	const std::string_view xml(reinterpret_cast<const char*>(buf.data()), buf.size());
 
+	if (const auto info = xml.find("<chunk_info"); info != std::string_view::npos) {
+		const auto end = xml.find('>', info);
+		if (end == std::string_view::npos) {
+			return;
+		}
+		const auto tag = xml.substr(info, end - info);
+		uint32_t count = 0;
+		if (ParseXmlUintAttr(tag, "chunk_count", count) && count > 0 && count <= 1000) {
+			m_chunks_num = static_cast<uint16_t>(count);
+			m_opened     = true;
+			return;
+		}
+	}
+
 	uint32_t max_chunk_id = 0;
 	bool     found        = false;
 
@@ -665,6 +679,10 @@ void SystemContentLoadParamSfo(const std::filesystem::path& file_name) {
 
 	sc->playgo_path = file_name.parent_path() / "playgo-chunk.dat";
 	sc->playgo.Open(sc->playgo_path);
+	if (!sc->playgo.IsValid()) {
+		sc->playgo_path = file_name.parent_path().parent_path() / "playgo-chunks.xml";
+		sc->playgo.OpenChunkDefs(sc->playgo_path);
+	}
 	if (!sc->playgo.IsValid()) {
 		sc->playgo_path = file_name.parent_path().parent_path() / "playgo-chunkdefs.xml";
 		sc->playgo.OpenChunkDefs(sc->playgo_path);
