@@ -554,10 +554,6 @@ public:
 					plan.handle->SetArg(dword, plan.key);
 				}
 			}
-			if (plan.reads[0] != nullptr && !plan.retain_reads) {
-				for (uint32_t word = 0; word < plan.read_dwords; ++word)
-					m_program.memory_info[plan.memory[word]].planning_only = true;
-			}
 		}
 		// Project descriptor-only SSA onto its key. Existing Phis preserve dominance;
 		// native descriptor resolution excludes their stale incoming values at each use.
@@ -3245,13 +3241,6 @@ private:
 			if (handle.GetOpcode() != ValueOpcode::GetBufferResource) {
 				plan.retain_reads |= handle.GetOpcode() == ValueOpcode::GetSamplerResource ||
 				    (memory->kind == ResourceKind::ScalarAddress && !UsesOnlyImageDescriptors(*read));
-			} else if (std::ranges::any_of(read->Uses(), [&](const Use& use) {
-				return use.user->GetOpcode() != ValueOpcode::GetBufferResource ||
-				       std::ranges::any_of(use.user->Uses(), [&](const Use& consumer) {
-					       return !IndirectBufferAccess(*consumer.user);
-				       });
-			    })) {
-				plan.retain_reads = true;
 			}
 			plan.memory[dword] = memory_index;
 			plan.reads[dword] = read;
@@ -3879,6 +3868,11 @@ private:
 			// A bounded V# supplies every reachable descriptor without reading the GPU key.
 			// Separate U32 offsets could wrap each DWORD to a different table position.
 			if (table_source.dword_count != 4u || plan.split_offsets) return false;
+			// U32 multiplication can wrap into other fields of a non-power-of-two record.
+			if (!std::has_single_bit(table_stride) && std::ranges::all_of(handle.Uses(), [&](const Use& use) {
+				    const auto& memory = m_program.memory_info[use.user->Flags<MemoryFlags>().index];
+				    return memory.SupportsIndirectBufferLoad(use.user->GetOpcode());
+			    })) return false;
 			indirect.table_scalar = true;
 			return finish();
 		}
@@ -4315,15 +4309,6 @@ private:
 		return Value(&*block.PrependNewInst(where, ValueOpcode::ShiftRightLogical32, {offset, Value(shift)}));
 	}
 
-	bool IsIndirectPlanningMemory(uint32_t index) const {
-		return std::any_of(m_indirect_descriptors.begin(), m_indirect_descriptors.end(),
-		                   [&](const IndirectDescriptorPlan& plan) {
-			return plan.reads[0] != nullptr && !plan.retain_reads &&
-			       std::find(plan.memory.begin(), plan.memory.begin() + plan.read_dwords, index) !=
-			           plan.memory.begin() + plan.read_dwords;
-		});
-	}
-
 	void PlanIndirectDescriptors() {
 		// Earlier proofs predate rewrites and erasures; planning only adds instructions.
 		m_loop_proofs.clear();
@@ -4388,6 +4373,20 @@ private:
 				}
 				plan_handle(inst.Arg(0), IndirectBufferAccess(inst) ? 4u : 8u,
 				            memory.resource * 4u, false);
+			}
+		}
+		// Classify shared SMEM words after every resource handle has its final plan.
+		for (const auto& plan: m_indirect_descriptors) {
+			if (plan.reads[0] == nullptr || plan.retain_reads) continue;
+			for (uint32_t word = 0; word < plan.read_dwords; ++word) {
+				if (plan.handle->GetOpcode() == ValueOpcode::GetBufferResource &&
+				    std::ranges::any_of(plan.reads[word]->Uses(), [&](const Use& use) {
+					    if (use.user == plan.handle) return false;
+					    const auto* sibling = FindIndirectDescriptor(*use.user);
+					    return sibling == nullptr || sibling->retain_reads ||
+					           sibling->handle->GetOpcode() != ValueOpcode::GetBufferResource;
+				    })) continue;
+				m_program.memory_info[plan.memory[word]].planning_only = true;
 			}
 		}
 	}
@@ -4635,7 +4634,7 @@ private:
 			Fail(flags.pc, "memory operation has no resource handle");
 		}
 		const auto& memory = m_program.memory_info[flags.index];
-		if (memory.planning_only || IsIndirectPlanningMemory(flags.index)) {
+		if (memory.planning_only) {
 			return;
 		}
 		Inst*    handle   = nullptr;
