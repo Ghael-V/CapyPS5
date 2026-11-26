@@ -33,6 +33,7 @@ using callback_func_t = void (*)(uintptr_t addr, size_t size);
 constexpr uint32_t KERNEL_MAXIMUM_NAME_LENGTH = 32;
 constexpr uint64_t kExtendedMemoryBase       = 0x080000000000ull;
 constexpr uint64_t kExtendedMemorySize       = 512ull * 1024 * 1024 * 1024;
+constexpr int      AMM_ERROR_OUT_OF_PA_PAGES = static_cast<int>(0x8191200a);
 constexpr int      AMM_ERROR_REGION_NOT_FULLY_MAPPED = static_cast<int>(0x81912011);
 
 struct VirtualQueryInfo {
@@ -119,7 +120,9 @@ void                   RegisterCallbacks(callback_func_t alloc_func, callback_fu
 void                   SetFlexibleMemorySize(uint64_t size);
 int AllocateDirectMemory(int64_t search_start, int64_t search_end, size_t size, size_t alignment,
                          int memory_type, int64_t* phys_addr_out, bool automatic = false);
-int MapAutomaticMemory(uint64_t vaddr, size_t size, int type, int prot);
+bool IsAmmMemoryRange(uint64_t vaddr, size_t size);
+// With `require_prt`, backs a range MapPrtMemory reserved (AMM AllocatePaForPrt).
+int MapAutomaticMemory(uint64_t vaddr, size_t size, int type, int prot, bool require_prt = false);
 // AMM map as PRT: the range keeps its addresses, reserved without physical memory.
 int MapPrtMemory(uint64_t vaddr, size_t size);
 // AMM remap into PRT: moves the pages of [old_vaddr, +size) into the PRT range at prt_vaddr.

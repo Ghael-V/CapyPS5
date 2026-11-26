@@ -3526,7 +3526,7 @@ int KYTY_SYSV_ABI KernelMunmap(uint64_t vaddr, size_t len) {
 	return UnmapMemory(vaddr, len);
 }
 
-static bool IsAmmMemoryRange(uint64_t vaddr, size_t size) {
+bool IsAmmMemoryRange(uint64_t vaddr, size_t size) {
 	constexpr uint64_t page_size = 0x4000;
 	return size != 0 && ((vaddr | size) & (page_size - 1)) == 0 &&
 	       vaddr >= kExtendedMemoryBase && vaddr < kExtendedMemoryBase + kExtendedMemorySize &&
@@ -4296,16 +4296,25 @@ int KYTY_SYSV_ABI KernelMapDirectMemory2(void** addr, size_t len, int type, int 
 	return result;
 }
 
-int MapAutomaticMemory(uint64_t vaddr, size_t size, int type, int prot) {
+int MapAutomaticMemory(uint64_t vaddr, size_t size, int type, int prot, bool require_prt) {
 	std::lock_guard<std::recursive_mutex> memory_operation_lock(g_memory_operation_mutex);
 	constexpr uint64_t page_size = 0x4000;
 	if (!IsAmmMemoryRange(vaddr, size)) {
 		return KERNEL_ERROR_EINVAL;
 	}
+	if (require_prt) {
+		// AllocatePaForPrt backs a range MapAsPrt reserved (see MapPrtMemory) with new pages.
+		std::vector<VirtualRanges::Range> prt;
+		if (!g_virtual_ranges->QuerySpan(vaddr, size, &prt) ||
+		    std::any_of(prt.begin(), prt.end(),
+		                [](const auto& range) { return range.type != VirtualRangeType::Reserved; })) {
+			return KERNEL_ERROR_EACCES;
+		}
+	}
 
 	PhysicalMemory::PhysicalRanges ranges;
 	if (!g_physical_memory->ReserveAutomatic(size, &ranges)) {
-		return KERNEL_ERROR_EAGAIN;
+		return require_prt ? AMM_ERROR_OUT_OF_PA_PAGES : KERNEL_ERROR_EAGAIN;
 	}
 	uint64_t mapped = 0;
 	for (const auto& [offset, length]: ranges) {
