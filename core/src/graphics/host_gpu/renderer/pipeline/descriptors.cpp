@@ -326,19 +326,15 @@ void ValidateStorageTexture(const ShaderRecompiler::IR::ImageResource& resource,
 	const bool raw_sint_storage = format == Prospero::BufferFormat::k32SInt && uint_resource &&
 	                              resource.written && !resource.read && !resource.atomic;
 	const auto numeric_class = Prospero::SampledTextureNumericClass(format);
-	const bool raw_float_atomic = format == Prospero::BufferFormat::k32Float && uint_resource &&
-	                              resource.atomic && !resource.atomic64;
-	// 32-bit SINT atomics (a PS4 title's IMAGE_ATOMIC on an R32 SINT volume) use the R32_UINT
-	// view every storage atomic gets; the opcode carries the signedness.
-	const bool raw_sint_atomic = format == Prospero::BufferFormat::k32SInt && uint_resource &&
-	                             resource.atomic && !resource.atomic64;
+	// Atomics use the R32_UINT (R64_UINT) view every storage atomic gets, whatever the numeric type
+	// of the one (two) 32-bit channels: the opcode carries the signedness (a PS4 title's
+	// IMAGE_ATOMIC on an R32 SINT volume).
 	const bool format_ok =
-	    raw_sint_storage || raw_float_atomic || raw_sint_atomic ||
-	    (numeric_class != Prospero::TextureNumericClass::Unsupported &&
-	     numeric_class != Prospero::TextureNumericClass::Sint &&
-	     uint_resource == (numeric_class == Prospero::TextureNumericClass::Uint) &&
-	     (!resource.atomic || format == (resource.atomic64 ? Prospero::BufferFormat::k32_32UInt
-	                                                       : Prospero::BufferFormat::k32UInt)));
+	    resource.atomic
+	        ? uint_resource && ShaderRecompiler::IR::IsSupportedAtomicImageFormat(format, resource.atomic64)
+	        : raw_sint_storage || (numeric_class != Prospero::TextureNumericClass::Unsupported &&
+	                               numeric_class != Prospero::TextureNumericClass::Sint &&
+	                               uint_resource == (numeric_class == Prospero::TextureNumericClass::Uint));
 	if (resource_ok && descriptor_ok && encoding_ok && format_ok && size != 0) {
 		return;
 	}

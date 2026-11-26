@@ -166,6 +166,13 @@ struct ImageResource {
 	bool operator==(const ImageResource& other) const = default;
 };
 
+[[nodiscard]] constexpr bool IsSupportedAtomicImageFormat(Prospero::BufferFormat format, bool wide) {
+	using F = Prospero::BufferFormat;
+	// An atomic treats one or two 32-bit channels as a single word regardless of their numeric type.
+	return wide ? format >= F::k32_32UInt && format <= F::k32_32Float
+	            : format >= F::k32UInt && format <= F::k32Float;
+}
+
 struct SamplerResource {
 	uint32_t source                = 0;
 	uint32_t first_use_pc          = 0;
