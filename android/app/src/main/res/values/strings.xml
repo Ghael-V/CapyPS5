@@ -196,6 +196,9 @@
     <string name="trophies_share_text">%1$s: %2$d of %3$d trophies on CapyPS5 · capyps5.org</string>
     <string name="trophies_card_recent">Latest trophies</string>
     <string name="trophies_card_next">Still to earn</string>
+    <string name="trophies_collection">All trophies</string>
+    <string name="trophies_collection_none">No game in the library ships a trophy list.</string>
+    <string name="trophies_open">See trophies</string>
     <string name="whats_new_title">What\'s new in v%1$s</string>
     <string-array name="whats_new_items">
         <item>First beta. PS4 backward compatibility stays experimental.</item>

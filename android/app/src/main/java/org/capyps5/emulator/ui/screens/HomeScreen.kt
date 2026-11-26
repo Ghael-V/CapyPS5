@@ -99,6 +99,9 @@ import java.util.Locale
 
 private const val GridColumns = 6
 
+/** Tabs: 0 = games row, 1 = library grid, 2 = all trophies. */
+private const val TrophiesTab = 2
+
 private fun hasGamepad(): Boolean = InputDevice.getDeviceIds().any { id ->
     val device = InputDevice.getDevice(id) ?: return@any false
     !device.isVirtual && (device.sources and InputDevice.SOURCE_GAMEPAD) == InputDevice.SOURCE_GAMEPAD
@@ -144,6 +147,17 @@ fun HomeScreen(
         uri?.let { onAddGameFile(it.toString()) }
     }
     val context = androidx.compose.ui.platform.LocalContext.current
+    // The "Trophies" tab: read when it is shown, again after a game; the last result stays meanwhile.
+    var trophyRow by remember { mutableIntStateOf(0) }
+    val trophyCollection by produceState<List<GameTrophies>?>(null, tab == TrophiesTab, games, refreshKey) {
+        if (tab == TrophiesTab) value = withContext(Dispatchers.IO) { loadTrophyCollection(context, games) }
+    }
+    // The key art follows the game focused in the trophy list.
+    LaunchedEffect(tab, trophyRow, trophyCollection) {
+        if (tab != TrophiesTab) return@LaunchedEffect
+        val game = trophyCollection?.getOrNull(trophyRow)?.game ?: return@LaunchedEffect
+        games.indexOf(game).takeIf { it >= 0 }?.let { selected = it }
+    }
     var driverMessage by remember { mutableStateOf<String?>(null) }
     val driverScope = androidx.compose.runtime.rememberCoroutineScope()
     val driverPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri: Uri? ->
@@ -169,10 +183,23 @@ fun HomeScreen(
     }
 
     OnNavKey(enabled = !showSettings && optionsFor == null && trophiesFor == null && !overlayActive) { key ->
+        if (tab == TrophiesTab) {
+            val last = ((trophyCollection?.size ?: 0) - 1).coerceAtLeast(0)
+            when (key) {
+                NavKey.Up -> trophyRow = (trophyRow - 1).coerceAtLeast(0)
+                NavKey.Down -> trophyRow = (trophyRow + 1).coerceAtMost(last)
+                NavKey.Confirm -> trophyCollection?.getOrNull(trophyRow)?.let { trophiesFor = it.game }
+                NavKey.TabLeft -> tab = TrophiesTab - 1
+                NavKey.Menu -> showSettings = true
+                NavKey.Back -> tab = 0
+                else -> Unit
+            }
+            return@OnNavKey
+        }
         val count = games.size
         when (key) {
-            NavKey.TabLeft -> tab = 0
-            NavKey.TabRight -> tab = 1
+            NavKey.TabLeft -> tab = (tab - 1).coerceAtLeast(0)
+            NavKey.TabRight -> tab = tab + 1
             NavKey.Left -> if (count > 0) selected = (selected - 1).coerceAtLeast(0)
             NavKey.Right -> if (count > 0) selected = (selected + 1).coerceAtMost(count - 1)
             NavKey.Up -> if (tab == 1 && count > 0) selected = (selected - GridColumns).coerceAtLeast(0)
@@ -225,6 +252,14 @@ fun HomeScreen(
                         )
                     }
                 }
+                tab == TrophiesTab -> {
+                    TrophyCollection(
+                        trophyCollection, trophyRow,
+                        onFocus = { trophyRow = it },
+                        onOpen = { trophiesFor = it },
+                        modifier = Modifier.weight(1f).fillMaxWidth(),
+                    )
+                }
                 else -> {
                     GameGrid(
                         games, selected,
@@ -236,6 +271,11 @@ fun HomeScreen(
             Spacer(Modifier.height(12.dp))
             HintBar(
                 if (games.isEmpty()) listOf("Start" to stringResource(R.string.settings))
+                else if (tab == TrophiesTab) listOf(
+                    "Ⓐ" to stringResource(R.string.trophies_open),
+                    "Ⓑ" to stringResource(R.string.hint_back),
+                    "L1 / R1" to stringResource(R.string.tabs),
+                )
                 else listOf(
                     "Ⓐ" to stringResource(R.string.play),
                     "Ⓨ" to stringResource(R.string.game_options),
@@ -316,7 +356,9 @@ private fun TopBar(tab: Int, onTab: (Int) -> Unit, onAdd: () -> Unit, onRefresh:
             style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold),
             modifier = Modifier.padding(start = 8.dp, end = 30.dp),
         )
-        listOf(stringResource(R.string.tab_games), stringResource(R.string.tab_library)).forEachIndexed { i, label ->
+        listOf(
+            stringResource(R.string.tab_games), stringResource(R.string.tab_library), stringResource(R.string.trophies),
+        ).forEachIndexed { i, label ->
             Text(
                 label,
                 style = MaterialTheme.typography.titleLarge,
