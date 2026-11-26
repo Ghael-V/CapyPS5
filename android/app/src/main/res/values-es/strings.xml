@@ -218,4 +218,25 @@
     <string name="vpad_save_global">Guardar para todos los juegos</string>
     <string name="vpad_save_game">Guardar para este juego</string>
     <string name="cancel">Cancelar</string>
+    <string name="play_time_hours">%1$d h %2$d min jugados</string>
+    <string name="play_time_minutes">%1$d min jugados</string>
+    <string name="saves_export">Exportar partidas guardadas</string>
+    <string name="saves_export_desc">Un archivo ZIP que puedes volver a importar aquí, en este u otro dispositivo</string>
+    <string name="saves_exported">Partidas guardadas exportadas</string>
+    <string name="saves_export_failed">No se han podido exportar las partidas: %1$s</string>
+    <string name="saves_import">Importar partidas guardadas</string>
+    <string name="saves_import_desc">Sustituye las partidas de este juego por las de un ZIP exportado</string>
+    <string name="saves_import_title">Importar partidas guardadas</string>
+    <string name="saves_import_checking">Comprobando el archivo…</string>
+    <string name="saves_import_working">Importando…</string>
+    <string name="saves_import_replaces">Esto sustituye las partidas guardadas de %1$s (%2$s) por las de este archivo. Las partidas actuales se pierden.</string>
+    <string name="saves_import_adds">Esto añade a %1$s (%2$s) las partidas guardadas de este archivo.</string>
+    <string name="saves_import_confirm">Importar</string>
+    <string name="saves_import_done">Partidas de %1$s importadas</string>
+    <string name="saves_import_failed">No se han podido importar las partidas: %1$s. No se ha cambiado nada.</string>
+    <string name="saves_import_not_saves">Este archivo no es una exportación de partidas de CapyPS5.</string>
+    <string name="saves_import_not_in_library">Este archivo tiene partidas de %1$s, que no está en tu biblioteca.</string>
+    <string name="saves_import_other_game">Este archivo tiene partidas de otro juego (%1$s).</string>
+    <string name="external_game_running">Hay un juego en marcha. Ciérralo primero.</string>
+    <string name="external_game_unknown">Este juego no está en la biblioteca de CapyPS5</string>
 </resources>

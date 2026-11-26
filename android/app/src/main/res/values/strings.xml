@@ -253,4 +253,25 @@
     <string name="vpad_save_global">Save for all games</string>
     <string name="vpad_save_game">Save for this game</string>
     <string name="cancel">Cancel</string>
+    <string name="play_time_hours">%1$d h %2$d min played</string>
+    <string name="play_time_minutes">%1$d min played</string>
+    <string name="saves_export">Export saved data</string>
+    <string name="saves_export_desc">A ZIP file you can import here again, on this or another device</string>
+    <string name="saves_exported">Saved data exported</string>
+    <string name="saves_export_failed">Could not export the saved data: %1$s</string>
+    <string name="saves_import">Import saved data</string>
+    <string name="saves_import_desc">Replaces this game\'s saved data with an exported ZIP file</string>
+    <string name="saves_import_title">Import saved data</string>
+    <string name="saves_import_checking">Checking the file…</string>
+    <string name="saves_import_working">Importing…</string>
+    <string name="saves_import_replaces">This replaces the saved data of %1$s (%2$s) with the one in this file. The current saved data is lost.</string>
+    <string name="saves_import_adds">This adds the saved data in this file to %1$s (%2$s).</string>
+    <string name="saves_import_confirm">Import</string>
+    <string name="saves_import_done">Saved data of %1$s imported</string>
+    <string name="saves_import_failed">Could not import the saved data: %1$s. Nothing was changed.</string>
+    <string name="saves_import_not_saves">This file is not saved data exported by CapyPS5.</string>
+    <string name="saves_import_not_in_library">This file holds saved data of %1$s, which is not in your library.</string>
+    <string name="saves_import_other_game">This file holds saved data of another game (%1$s).</string>
+    <string name="external_game_running">A game is running. Close it first.</string>
+    <string name="external_game_unknown">This game is not in the CapyPS5 library</string>
 </resources>

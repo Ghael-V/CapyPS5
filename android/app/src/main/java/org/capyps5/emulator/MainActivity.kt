@@ -68,6 +68,10 @@ class MainActivity : CapyActivity() {
     private var showSupport by mutableStateOf(false)
     // First start after an update: the "what's new" card for the installed version.
     private var showWhatsNew by mutableStateOf(false)
+    // Game whose options another app asked to open (ExternalActionActivity), by eboot path.
+    private var openOptionsFor by mutableStateOf<String?>(null)
+    // Bumped each time the launcher is shown again, e.g. after a game.
+    private var resumes by mutableIntStateOf(0)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -100,6 +104,7 @@ class MainActivity : CapyActivity() {
                 }
             }
         }
+        openOptionsFor = intent?.getStringExtra(EXTRA_OPEN_OPTIONS)
         // `adb shell am start ... --es launch_elf <path> [--es launch_dir <dir>]` starts a game directly.
         intent?.getStringExtra("launch_elf")?.takeIf { File(it).exists() }?.let { elf ->
             val dir = File(intent.getStringExtra("launch_dir") ?: File(elf).parent ?: "")
@@ -150,6 +155,9 @@ class MainActivity : CapyActivity() {
                         onLibraryPicked = { settings.addLibraryPath(it) },
                         onClearShaderCache = ::clearShaderCache,
                         onSaveLog = ::saveLog,
+                        openOptionsFor = openOptionsFor,
+                        onOptionsOpened = { openOptionsFor = null },
+                        refreshKey = resumes,
                         overlayActive = lastError != null || showWhatsNew || update != null || showSupport,
                     )
                     // One notice at a time: the crash report, what's new, an update, the support card.
@@ -181,6 +189,7 @@ class MainActivity : CapyActivity() {
     override fun onResume() {
         super.onResume()
         InputRouter.setRouteToUi(true)
+        resumes++
         // Returning from the all-files access screen: scan again now that the folder is readable.
         if (Environment.isExternalStorageManager()) storageCheck++
         // Returning from a game that closed itself: show why, once.
@@ -191,8 +200,17 @@ class MainActivity : CapyActivity() {
         }
     }
 
-    private companion object {
-        const val SUPPORT_EVERY = 10
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        intent.getStringExtra(EXTRA_OPEN_OPTIONS)?.let { openOptionsFor = it }
+    }
+
+    companion object {
+        private const val SUPPORT_EVERY = 10
+
+        /** Eboot path of a library game whose options open on start. */
+        const val EXTRA_OPEN_OPTIONS = "open_options"
     }
 
     /** Deletes the persisted pipeline cache of one game, or of every game when [titleId] is null. */

@@ -9,6 +9,8 @@ import android.os.Bundle
 import android.os.Process
 import androidx.activity.compose.setContent
 import androidx.compose.runtime.LaunchedEffect
+import org.capyps5.emulator.library.LibraryProvider
+import org.capyps5.emulator.library.PlaySession
 import org.capyps5.emulator.model.GameItem
 import org.libsdl.app.SDL
 import org.capyps5.emulator.ui.screens.EmulationScreen
@@ -27,6 +29,7 @@ class GameActivity : CapyActivity() {
         private const val EXTRA_TITLE_NAME = "title_name"
         private const val EXTRA_DIR = "game_dir"
         private const val EXTRA_ELF = "game_elf"
+        private const val PLAY_SAVE_MS = 60_000L
 
         /** Native fatal reports land here (see Log::SetFatalReportPath). */
         fun errorFile(context: Context) = File(context.filesDir, "last_error.txt")
@@ -39,6 +42,16 @@ class GameActivity : CapyActivity() {
                     .putExtra(EXTRA_DIR, game.directoryPath)
                     .putExtra(EXTRA_ELF, game.elfPath)
             )
+        }
+    }
+
+    // Time played in this game; null for loose executables without a title id.
+    private var playSession: PlaySession? = null
+    private val ticker = android.os.Handler(android.os.Looper.getMainLooper())
+    private val tick = object : Runnable {
+        override fun run() {
+            playSession?.save()
+            ticker.postDelayed(this, PLAY_SAVE_MS)
         }
     }
 
@@ -58,6 +71,9 @@ class GameActivity : CapyActivity() {
             directoryPath = intent.getStringExtra(EXTRA_DIR) ?: (File(elf).parent ?: ""),
             elfPath = elf,
         )
+        if (org.capyps5.emulator.library.GameLookup.isTitleId(game.titleId)) {
+            playSession = PlaySession(this, game.titleId)
+        }
         // A report left by an earlier session must not be shown for this one.
         errorFile(this).delete()
         NativeBridge.nativeInit(filesDir = filesDir.absolutePath, cacheDir = cacheDir.absolutePath)
@@ -104,7 +120,25 @@ class GameActivity : CapyActivity() {
         }
     }
 
+    override fun onResume() {
+        super.onResume()
+        playSession?.resume()
+        ticker.removeCallbacks(tick)
+        ticker.postDelayed(tick, PLAY_SAVE_MS)
+    }
+
+    override fun onPause() {
+        super.onPause()
+        ticker.removeCallbacks(tick)
+        playSession?.pause()
+        LibraryProvider.notifyChanged(this)
+    }
+
     private fun exitGame() {
+        // The process is killed right after, maybe before onPause.
+        ticker.removeCallbacks(tick)
+        playSession?.pause()
+        LibraryProvider.notifyChanged(this)
         runCatching { NativeBridge.nativeStopGame() }
         finish()
         // The launcher activity lives in the main process; ending this one frees everything the

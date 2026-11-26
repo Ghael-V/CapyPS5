@@ -18,6 +18,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
@@ -382,7 +383,8 @@ fun SettingRowView(item: SettingItem, focused: Boolean, onFocus: () -> Unit) {
             }
         }
         item.value?.let {
-            Box(Modifier.padding(start = 12.dp)) {
+            // Bounded, so a long value (a driver name) cannot squeeze the title to nothing.
+            Box(Modifier.padding(start = 12.dp).widthIn(max = 240.dp)) {
                 Text(
                     if (item.onStep != null && focused) "‹  $it  ›" else it,
                     style = MaterialTheme.typography.titleMedium,

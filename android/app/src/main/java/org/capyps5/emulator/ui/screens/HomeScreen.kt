@@ -33,6 +33,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
@@ -81,6 +82,10 @@ import kotlinx.coroutines.withContext
 import org.capyps5.emulator.CoreOption
 import org.capyps5.emulator.R
 import org.capyps5.emulator.Settings
+import org.capyps5.emulator.library.ExternalActionActivity
+import org.capyps5.emulator.library.GameLookup
+import org.capyps5.emulator.library.PlayTime
+import org.capyps5.emulator.library.SaveData
 import org.capyps5.emulator.model.GameItem
 import org.capyps5.emulator.ui.NavKey
 import org.capyps5.emulator.ui.OnNavKey
@@ -112,6 +117,10 @@ fun HomeScreen(
     onLibraryPicked: (String) -> Unit,
     onClearShaderCache: (titleId: String?) -> String,
     onSaveLog: () -> String?,
+    openOptionsFor: String? = null,
+    onOptionsOpened: () -> Unit = {},
+    // Changes when the launcher comes back to the front (after a game), to read play time again.
+    refreshKey: Int = 0,
     overlayActive: Boolean = false,
 ) {
     var tab by remember { mutableIntStateOf(0) }
@@ -119,6 +128,16 @@ fun HomeScreen(
     var showSettings by remember { mutableStateOf(false) }
     var optionsFor by remember { mutableStateOf<GameItem?>(null) }
     var trophiesFor by remember { mutableStateOf<GameItem?>(null) }
+    // Another app asked for one game's options: open them once the library has that game.
+    LaunchedEffect(openOptionsFor, games.size) {
+        val index = games.indexOfFirst { it.elfPath == openOptionsFor }
+        if (openOptionsFor == null || index < 0) return@LaunchedEffect
+        showSettings = false
+        trophiesFor = null
+        selected = index
+        optionsFor = games[index]
+        onOptionsOpened()
+    }
     val current = games.getOrNull(selected.coerceIn(0, (games.size - 1).coerceAtLeast(0)))
 
     val filePicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri: Uri? ->
@@ -200,7 +219,10 @@ fun HomeScreen(
                     GameRow(games, selected, onSelect = { i -> if (i == selected) onGameSelected(games[i]) else selected = i })
                     Spacer(Modifier.weight(1f))
                     current?.let {
-                        GameDetails(it, onPlay = { onGameSelected(it) }, onOptions = { optionsFor = it }, onTrophies = { trophiesFor = it })
+                        GameDetails(
+                            it, refreshKey,
+                            onPlay = { onGameSelected(it) }, onOptions = { optionsFor = it }, onTrophies = { trophiesFor = it },
+                        )
                     }
                 }
                 else -> {
@@ -406,12 +428,16 @@ private fun GameTile(game: GameItem, selected: Boolean, modifier: Modifier, onCl
 }
 
 @Composable
-private fun GameDetails(game: GameItem, onPlay: () -> Unit, onOptions: () -> Unit, onTrophies: () -> Unit) {
+private fun GameDetails(game: GameItem, refreshKey: Int, onPlay: () -> Unit, onOptions: () -> Unit, onTrophies: () -> Unit) {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val played = remember(game.titleId, refreshKey) {
+        PlayTime.read(context, game.titleId)?.seconds?.let { PlayTime.format(context, it) }
+    }
     Column(Modifier.widthIn(max = 560.dp)) {
         Text(game.titleName, style = MaterialTheme.typography.displaySmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
         Spacer(Modifier.height(4.dp))
         Text(
-            listOfNotNull(game.titleId, game.version?.let { "v$it" }, "PS4".takeIf { game.isPs4 }).joinToString("  ·  "),
+            listOfNotNull(game.titleId, game.version?.let { "v$it" }, "PS4".takeIf { game.isPs4 }, played).joinToString("  ·  "),
             style = MaterialTheme.typography.bodyMedium,
             color = Capy.TextSecondary,
         )
@@ -460,7 +486,27 @@ private fun GameOptionsPanel(
     // Read so the rows recompose when a value changes.
     val optionsVersion = settings.coreOptionsVersion
     val context = androidx.compose.ui.platform.LocalContext.current
+    val scope = androidx.compose.runtime.rememberCoroutineScope()
+    val saveExporter = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/zip")) { uri: Uri? ->
+        uri ?: return@rememberLauncherForActivityResult
+        scope.launch {
+            message = withContext(Dispatchers.IO) {
+                runCatching {
+                    context.contentResolver.openOutputStream(uri)?.use { SaveData.export(context, game.titleId, it) }
+                        ?: error("cannot write the file")
+                }.fold(
+                    onSuccess = { context.getString(R.string.saves_exported) },
+                    onFailure = { context.getString(R.string.saves_export_failed, it.message.orEmpty()) },
+                )
+            }
+        }
+    }
+    val saveImporter = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri: Uri? ->
+        uri?.let { ExternalActionActivity.importSaves(context, game, it) }
+    }
     val items = remember(optionsVersion, message) {
+        val hasTitleId = GameLookup.isTitleId(game.titleId)
+        val saves = if (hasTitleId) SaveData.info(context, game.titleId) else null
         val drivers = org.capyps5.emulator.GpuDrivers.list(context)
         // null = follow the global driver, "" = system driver.
         val driverChoices: List<String?> = listOf<String?>(null, "") + drivers.map { it.id }
@@ -496,6 +542,21 @@ private fun GameOptionsPanel(
             } else null,
             if (Trophies.hasTrophies(game.directoryPath)) {
                 SettingItem(context.getString(R.string.trophies), context.getString(R.string.trophies_desc), onConfirm = onTrophies)
+            } else null,
+            saves?.let {
+                SettingItem(
+                    context.getString(R.string.saves_export), context.getString(R.string.saves_export_desc),
+                    onConfirm = {
+                        val stamp = java.text.SimpleDateFormat("yyyyMMdd-HHmm", java.util.Locale.US).format(java.util.Date())
+                        saveExporter.launch("${game.titleId}-saves-$stamp.zip")
+                    },
+                )
+            },
+            if (hasTitleId) {
+                SettingItem(
+                    context.getString(R.string.saves_import), context.getString(R.string.saves_import_desc),
+                    onConfirm = { saveImporter.launch(arrayOf("application/zip", "application/octet-stream", "*/*")) },
+                )
             } else null,
             SettingItem(
                 context.getString(R.string.clear_game_shader_cache), context.getString(R.string.clear_shader_cache_desc),
@@ -536,8 +597,12 @@ private fun GameOptionsPanel(
                 color = Capy.TextSecondary,
             )
             Spacer(Modifier.height(8.dp))
-            items.forEachIndexed { i, item -> SettingRowView(item, focused = i == row) { row = i } }
-            Spacer(Modifier.weight(1f))
+            // More rows than fit on a phone screen: keep the focused one in view.
+            val listState = rememberLazyListState()
+            LaunchedEffect(row) { listState.animateScrollToItem((row - 1).coerceAtLeast(0)) }
+            LazyColumn(Modifier.weight(1f), state = listState, verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                itemsIndexed(items) { i, item -> SettingRowView(item, focused = i == row) { row = i } }
+            }
             HintBar(
                 listOf(
                     "◀ ▶" to stringResource(R.string.hint_change),
