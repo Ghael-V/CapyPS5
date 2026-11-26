@@ -3730,6 +3730,17 @@ int KYTY_SYSV_ABI AgcRewindPatchSetRewindState(uint32_t* cmd, uint8_t state) {
 	return OK;
 }
 
+// Our AgcDcbAcquireMem writes an IT_NOP/R_ACQUIRE_MEM packet; accept that and a real ACQUIRE_MEM.
+int KYTY_SYSV_ABI AgcAcquireMemSetEngine(uint32_t* cmd, uint8_t engine) {
+	const uint32_t op = (cmd[0] >> 8u) & 0xffu;
+	if (!(op == Pm4::IT_ACQUIRE_MEM || (op == Pm4::IT_NOP && KYTY_PM4_R(cmd[0]) == Pm4::R_ACQUIRE_MEM))) {
+		return GRAPHICS5_ERROR_INVALID_PACKET;
+	}
+
+	cmd[1] = (cmd[1] & 0x7fffffffu) | (static_cast<uint32_t>(engine & 1u) << 31u);
+	return OK;
+}
+
 int KYTY_SYSV_ABI AgcCondExecPatchSetEnd(uint32_t* cmd, const volatile uint32_t* buffer) {
 	PRINT_NAME();
 

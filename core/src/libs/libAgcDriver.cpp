@@ -132,6 +132,7 @@ LIB_DEFINE(InitAgcDriver_1) {
 	LIB_FUNC("C4l9fB17t8w", Gen5::AgcDcbEventWriteGetSize);
 	LIB_FUNC("57labkp+rSQ", Gen5::AgcDcbAcquireMem);
 	LIB_FUNC("-vnlTPPXPrw", Gen5::AgcDcbAcquireMemGetSize);
+	LIB_FUNC("W0WEyog0f74", Gen5::AgcAcquireMemSetEngine);
 	LIB_FUNC("1rZSWUv1IRc", Gen5::AgcDcbCopyData);
 	LIB_FUNC("b5u0Jzm8TF8", Gen5::AgcDcbCopyDataGetSize); // SpongeBob PPSA26893
 	LIB_FUNC("WmAc2MEj6Io", Gen5::AgcDcbDmaData);
