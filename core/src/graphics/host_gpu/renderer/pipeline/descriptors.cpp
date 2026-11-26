@@ -1039,7 +1039,11 @@ void RenderExecutor::FindBuffers(std::span<PreparedBindings* const> stages) {
 			auto& source = prepared.buffer_sources[metadata.descriptor_index];
 			const auto descriptor = DecodeNativeDescriptor<ShaderBufferResource>(snapshot.buffers[resource]);
 			const auto address = descriptor.Base48();
-			auto size = descriptor.GetSize();
+			// `setprop debug.capy.zero_stride_payload 0` binds only NumRecords bytes again for
+			// zero-stride OOB_SELECT=2 vector fetches (KytyPS5 fde0b98 semantics, via BufferBindingSize).
+			static Common::DebugFlags::CachedValue zero_stride_payload("debug.capy.zero_stride_payload", 1);
+			auto size = zero_stride_payload.Get() != 0 ? BufferBindingSize(metadata, descriptor)
+			                                           : descriptor.GetSize();
 			if (address == 0 || size == 0) {
 				Common::DebugFlags::FrameTrace("    buf[%u] dropped: addr=0x%llx size=%llu records=%u stride=%u",
 				                               resource, static_cast<unsigned long long>(address),
