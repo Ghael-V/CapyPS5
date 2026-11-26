@@ -714,30 +714,30 @@ private:
 	                uint32_t base_reg, DescriptorSource& descriptor, uint32_t pc) {
 		const auto [resolved, inserted] =
 		    m_resolved_handles.try_emplace({reinterpret_cast<uintptr_t>(&handle), pc});
-		if (!inserted) {
+		if (inserted) {
+			if (handle.NumArgs() != width) {
+				Fail(pc, fmt::format("{} has {} descriptor dwords, expected {}",
+				                     ValueOpcodeName(handle.GetOpcode()), handle.NumArgs(), width));
+			}
+			descriptor.dword_count = width;
+			for (uint32_t i = 0; i < width; i++) {
+				const auto value = base_reg != UINT32_MAX
+				    ? NativeDescriptorSource(handle.Arg(i), base_reg + i, pc) : handle.Arg(i);
+				descriptor.dwords[i] = LowerDescriptorValue(value);
+			}
+			const auto dword0 = descriptor.dwords[0].Resolve();
+			if (sampler && dword0.IsImmediate() && dword0.GetType() == Type::U32 &&
+			    (dword0.U32() & SamplerBorderClampMask) == 0) {
+				// Border color and its table index are unused unless a clamp axis selects border mode.
+				descriptor.dwords[3] = Value(0u);
+			}
+			resolved->second.source = descriptor;
+		} else {
 			descriptor = resolved->second.source;
-			return;
-		}
-		if (handle.NumArgs() != width) {
-			Fail(pc, fmt::format("{} has {} descriptor dwords, expected {}",
-			                     ValueOpcodeName(handle.GetOpcode()), handle.NumArgs(), width));
-		}
-		descriptor.dword_count = width;
-		for (uint32_t i = 0; i < width; i++) {
-			const auto value = base_reg != UINT32_MAX
-			    ? NativeDescriptorSource(handle.Arg(i), base_reg + i, pc) : handle.Arg(i);
-			descriptor.dwords[i] = LowerDescriptorValue(value);
 		}
 		if (sample_adjust) {
 			descriptor.dwords[3] = CanonicalizeSampleAdjustDword3(descriptor.dwords[3]);
 		}
-		const auto dword0 = descriptor.dwords[0].Resolve();
-		if (sampler && dword0.IsImmediate() && dword0.GetType() == Type::U32 &&
-		    (dword0.U32() & SamplerBorderClampMask) == 0) {
-			// Border color and its table index are unused unless a clamp axis selects border mode.
-			descriptor.dwords[3] = Value(0u);
-		}
-		resolved->second.source = descriptor;
 	}
 
 	uint32_t ScalarReadBase(const Inst& read) const {
@@ -2293,8 +2293,7 @@ private:
 				};
 				plan_handle(inst.Arg(0), inst.GetOpcode() == ValueOpcode::StoreBufferU32 ? 4u : 8u,
 				            memory.resource * 4u, false);
-				if (inst.GetOpcode() == ValueOpcode::ImageSampleRaw &&
-				    (memory.image_sample_flags & Decoder::ImageSampleFlagAdjust) == 0u)
+				if (inst.GetOpcode() == ValueOpcode::ImageSampleRaw)
 					plan_handle(inst.Arg(1), 4u, memory.sampler * 4u, true);
 			}
 		}
