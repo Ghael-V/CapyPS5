@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: GPL-2.0-only
 
 #include "graphics/shader/recompiler/ir/passes/ConstantPropagation.h"
+#include "common/debugFlags.h"
 #include "graphics/shader/recompiler/ir/ShaderIR.h"
 
 #include <algorithm>
@@ -10,6 +11,7 @@
 #include <cstdint>
 #include <unordered_map>
 #include <unordered_set>
+#include <vector>
 
 namespace Libs::Graphics::ShaderRecompiler::IR {
 namespace {
@@ -941,15 +943,132 @@ private:
 	bool m_grounded = false;
 };
 
+// M0 indexes VGPRs across lanes. Trace only the definitions feeding its register
+// comparisons; loop-carried writes can themselves depend on those comparisons.
+// Returns whether any comparison was folded to false.
+bool FoldRegisterIndexComparisons(const BlockList& blocks, const std::vector<Inst*>& comparisons) {
+	struct Location {
+		uint32_t index_maximum = 0;
+		bool queued = false;
+		bool tracks_index = false;
+	};
+	std::unordered_map<Inst*, Location> locations;
+	for (auto* block: blocks) {
+		for (auto& inst: *block) locations.emplace(&inst, Location {});
+	}
+	std::vector<Inst*> pending;
+	const auto queue = [&](Inst* inst, Location& location) {
+		if (location.queued) return;
+		location.queued = true;
+		pending.push_back(inst);
+	};
+	const auto maximum = [&](Value value) -> uint32_t {
+		if (IsImmediate(value, Type::U32)) return value.U32();
+		if (IsImmediate(value, Type::U1)) return value.U1();
+		auto* inst = value.TryInstruction();
+		const auto found = inst != nullptr ? locations.find(inst) : locations.end();
+		if (found == locations.end()) return UINT32_MAX;
+		auto& location = found->second;
+		if (!location.tracks_index) {
+			location.tracks_index = true;
+			queue(inst, location);
+		}
+		return location.index_maximum;
+	};
+	const auto evaluate = [&](const Inst& inst) -> uint32_t {
+		const auto bound = [&](size_t arg) { return maximum(inst.Arg(arg)); };
+		switch (inst.GetOpcode()) {
+			case ValueOpcode::Phi: {
+				uint32_t result = 0;
+				for (size_t arg = 0; arg < inst.NumArgs(); ++arg) result = std::max(result, bound(arg));
+				return inst.NumArgs() != 0 ? result : UINT32_MAX;
+			}
+			case ValueOpcode::SelectU32: return bound(0) == 0 ? bound(2) : std::max(bound(1), bound(2));
+			// ReadFirstLane takes lane zero for empty EXEC, so the source bound covers every lane.
+			case ValueOpcode::ReadFirstLane:
+			case ValueOpcode::Identity: return bound(0);
+			case ValueOpcode::LogicalAnd:
+			case ValueOpcode::BitwiseAnd32: return std::min(bound(0), bound(1));
+			case ValueOpcode::IMul32:
+				return static_cast<uint32_t>(std::min<uint64_t>(uint64_t {bound(0)} * bound(1), UINT32_MAX));
+			case ValueOpcode::BitFieldUExtract: {
+				const auto offset = inst.Arg(1).Resolve(), width = inst.Arg(2).Resolve();
+				if (!offset.IsImmediate() || !width.IsImmediate() ||
+				    offset.U32() >= 32u || width.U32() > 32u - offset.U32()) return UINT32_MAX;
+				const auto mask = width.U32() == 32u ? UINT32_MAX : (1u << width.U32()) - 1u;
+				return std::min(bound(0) >> offset.U32(), mask);
+			}
+			case ValueOpcode::IEqual32:
+				for (size_t arg = 0; arg < 2; ++arg) {
+					const auto value = inst.Arg(arg).Resolve();
+					if (value.IsImmediate() && value.U32() > bound(arg ^ 1u)) return 0;
+				}
+				return 1;
+			case ValueOpcode::ULessThan32: {
+				const auto left = inst.Arg(0).Resolve();
+				return !left.IsImmediate() || left.U32() < bound(1);
+			}
+			default: return inst.GetType() == Type::U1 ? 1u : UINT32_MAX;
+		}
+	};
+	for (auto* compare: comparisons) {
+		const auto op = compare->GetOpcode();
+		if (op != ValueOpcode::Identity) maximum(compare->Arg(op == ValueOpcode::IEqual32 ? 0u : 1u));
+	}
+	for (size_t i = 0; i < pending.size(); ++i) {
+		auto* inst = pending[i];
+		auto& location = locations.find(inst)->second;
+		location.queued = false;
+		const auto next = evaluate(*inst);
+		auto& previous = location.index_maximum;
+		if (next <= previous) continue;
+		// Widen a growing loop-carried bound; only stable finite bounds can prune registers.
+		previous = inst->GetOpcode() == ValueOpcode::Phi && previous != 0 ? UINT32_MAX : next;
+		for (const auto& use: inst->Uses()) {
+			const auto user = locations.find(use.user);
+			if (user != locations.end() && user->second.tracks_index) queue(user->first, user->second);
+		}
+	}
+	bool folded = false;
+	for (auto* compare: comparisons) {
+		if (compare->GetOpcode() == ValueOpcode::Identity || evaluate(*compare) != 0) continue;
+		Replace(*compare, Value(false));
+		folded = true;
+	}
+	return folded;
+}
+
 } // namespace
 
 void ConstantPropagationPass(const BlockList& blocks, uint32_t wave_size) {
+	// V_MOVRELS/V_MOVRELD mark their M0 comparisons; collect them once and clear the marks.
+	std::vector<Inst*> register_index_comparisons;
+	for (auto* block: blocks) {
+		for (auto& inst: *block) {
+			const auto op = inst.GetOpcode();
+			if ((op == ValueOpcode::IEqual32 || op == ValueOpcode::ULessThan32) &&
+			    inst.Flags<IntegerCompareFlags>().register_index) {
+				register_index_comparisons.push_back(&inst);
+				inst.SetFlags(IntegerCompareFlags {});
+			}
+		}
+	}
 	std::unordered_set<Inst*> lowered_ancillary;
 	LaneMaskProjection mask_projection(lowered_ancillary);
 	for (auto* block: blocks) {
 		for (auto inst = block->begin(); inst != block->end(); ++inst) {
 			mask_projection.Fold(*inst, wave_size);
 			FoldInstruction(*block, inst, lowered_ancillary);
+		}
+	}
+	static Common::DebugFlags::CachedValue movrel_prune("debug.capy.movrel_prune", 1);
+	if (!register_index_comparisons.empty() && movrel_prune.Get() != 0 &&
+	    FoldRegisterIndexComparisons(blocks, register_index_comparisons)) {
+		// Fold the selects and predicates the pruned comparisons fed.
+		for (auto* block: blocks) {
+			for (auto inst = block->begin(); inst != block->end(); ++inst) {
+				FoldInstruction(*block, inst, lowered_ancillary);
+			}
 		}
 	}
 	// Normalize retained PHI/select values only after every supported field read has
