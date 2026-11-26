@@ -1467,6 +1467,13 @@ static int KYTY_SYSV_ABI KernelIsTrinityMode() {
 	return 0;
 }
 
+// There is no PS5 Pro mode: report base hardware, like KernelIsTrinityMode.
+static int KYTY_SYSV_ABI KernelIsTrinityHardware() {
+	PRINT_NAME();
+
+	return 0;
+}
+
 static int KYTY_SYSV_ABI KernelGetOperationMode(int* mode, int* submode) {
 	PRINT_NAME();
 
@@ -2257,6 +2264,12 @@ int KYTY_SYSV_ABI mkdir(const char* path, uint16_t mode) {
 	PRINT_NAME();
 
 	return POSIX_CALL(LibKernel::FileSystem::KernelMkdir(path, mode));
+}
+
+int KYTY_SYSV_ABI rename(const char* from, const char* to) {
+	PRINT_NAME();
+
+	return POSIX_CALL(LibKernel::FileSystem::KernelRename(from, to));
 }
 
 int64_t KYTY_SYSV_ABI lseek(int d, int64_t offset, int whence) {
@@ -3858,6 +3871,7 @@ LIB_DEFINE(InitLibKernel_1_Pthread) {
 	LIB_FUNC("z0dtnPxYgtg", chmod);
 	LIB_FUNC("VAzswvTOCzI", FileSystem::KernelUnlink);
 	LIB_FUNC("JGMio+21L4c", Posix::mkdir);
+	LIB_FUNC("NN01qLRhiqU", Posix::rename);
 	LIB_FUNC("wuCroIGjt2g", FileSystem::KernelOpen);
 	LIB_FUNC("bY-PO6JhzhQ", FileSystem::KernelClose);
 	LIB_FUNC("FN4gaPmuFV8", FileSystem::KernelWrite);
@@ -3912,8 +3926,10 @@ LIB_DEFINE(InitLibKernel_1) {
 	LIB_FUNC("8OnWXlgQlvo", LibKernel::KernelRtldThreadAtexitDecrement);
 	LIB_FUNC("959qrazPIrg", LibKernel::KernelGetProcParam);
 	LIB_FUNC("tU5e3f9gSiU", LibKernel::KernelIsTrinityMode);
+	LIB_FUNC("yu17wG8L5FI", LibKernel::KernelIsTrinityHardware);
 	LIB_FUNC("NH6xARDOVv8", LibKernel::KernelGetOperationMode);
 	LIB_FUNC("fTx66l5iWIA", LibKernel::KernelFsync);
+	LIB_FUNC("30Rh4ixbKy4", LibKernel::KernelFsync); // sceKernelFdatasync
 	LIB_FUNC("uvT2iYBBnkY", LibKernel::KernelSync);
 	LIB_FUNC("HoLVWNanBBc", LibKernel::getpid);
 	LIB_FUNC("9BcDykPmo1I", LibKernel::get_error_addr);
