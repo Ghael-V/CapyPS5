@@ -66,6 +66,7 @@ fun deviceConsoleLanguage(): Long {
         "th" -> 27L
         "vi" -> 28L
         "id", "in" -> 29L
+        "uk" -> 30L
         else -> 1L
     }
 }
@@ -181,6 +182,7 @@ enum class CoreOption(
             27L to R.string.language_th,
             28L to R.string.language_vi,
             29L to R.string.language_id,
+            30L to R.string.language_uk,
         ),
         AUTO_LANGUAGE,
     ),

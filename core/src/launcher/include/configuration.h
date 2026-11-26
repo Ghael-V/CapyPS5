@@ -77,7 +77,7 @@ class Configuration: public QObject {
 
 public:
 	static constexpr int DEFAULT_CONSOLE_LANGUAGE = 1;
-	static constexpr int MAX_CONSOLE_LANGUAGE     = 29;
+	static constexpr int MAX_CONSOLE_LANGUAGE     = 30;
 
 	enum class Resolution {
 		R1280X720,

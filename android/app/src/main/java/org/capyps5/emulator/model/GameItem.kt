@@ -88,7 +88,7 @@ data class GameItem(
             "ja" to 0, "en" to 1, "fr" to 2, "es" to 3, "de" to 4, "it" to 5, "nl" to 6, "pt" to 7,
             "ru" to 8, "ko" to 9, "fi" to 12, "sv" to 13, "da" to 14, "no" to 15, "pl" to 16,
             "tr" to 19, "ar" to 21, "cs" to 23, "hu" to 24, "el" to 25, "ro" to 26, "th" to 27,
-            "vi" to 28, "id" to 29,
+            "vi" to 28, "id" to 29, "uk" to 30,
         )
 
         /** Reads a binary PSF (param.sfo): key name to String or Int. */

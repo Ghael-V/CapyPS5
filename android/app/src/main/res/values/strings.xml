@@ -239,6 +239,7 @@
     <string name="language_th" translatable="false">ไทย</string>
     <string name="language_vi" translatable="false">Tiếng Việt</string>
     <string name="language_id" translatable="false">Bahasa Indonesia</string>
+    <string name="language_uk" translatable="false">Українська</string>
     <string name="frame_limit_15">15 FPS</string>
     <string name="developer_tools">Developer tools</string>
     <string name="developer_tools_desc">Shows debugging tools in the in-game menu (Layers: skip render passes to find broken ones). Skipping passes breaks the image until you turn them back on</string>
