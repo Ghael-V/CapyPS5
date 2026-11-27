@@ -946,12 +946,6 @@ bool SrtWalker::EvaluateInst(const Inst& inst, uint64_t& result) {
 				return true;
 			}
 			return false;
-		case ValueOpcode::UMax32:
-			if (binary()) {
-				result = std::max(static_cast<uint32_t>(a), static_cast<uint32_t>(b));
-				return true;
-			}
-			return false;
 		case ValueOpcode::SMin32:
 		case ValueOpcode::SMax32:
 			if (binary()) {
@@ -979,23 +973,24 @@ bool SrtWalker::EvaluateInst(const Inst& inst, uint64_t& result) {
 				return true;
 			}
 			return false;
-		case ValueOpcode::ConvertS32F32: {
-			// The conversion saturates and maps NaN to zero. cvttss2si's out-of-range result,
-			// INT32_MIN, is already right for negative overflow.
-			Xbyak::Label done;
-			c.movd(c.xmm0, c.eax);
-			c.xor_(c.eax, c.eax);
-			c.ucomiss(c.xmm0, c.xmm0);
-			c.jp(done, Near);
-			c.mov(c.ecx, 0x4f000000u);
-			c.movd(c.xmm1, c.ecx);
-			c.mov(c.eax, INT32_MAX);
-			c.ucomiss(c.xmm0, c.xmm1);
-			c.jae(done, Near);
-			c.cvttss2si(c.eax, c.xmm0);
-			c.L(done);
-			break;
-		}
+		case ValueOpcode::ConvertS32F32:
+			if (Arg(inst, 0, a)) {
+				// The conversion saturates and maps NaN to zero.
+				const auto value = Float32(a);
+				int32_t converted = 0;
+				if (std::isnan(value)) {
+					converted = 0;
+				} else if (value >= 2147483648.0f) {
+					converted = INT32_MAX;
+				} else if (value < -2147483648.0f) {
+					converted = INT32_MIN;
+				} else {
+					converted = static_cast<int32_t>(value);
+				}
+				result = static_cast<uint32_t>(converted);
+				return true;
+			}
+			return false;
 		case ValueOpcode::FPMul32:
 			if (binary()) {
 				result = std::bit_cast<uint32_t>(Float32(a) * Float32(b));
