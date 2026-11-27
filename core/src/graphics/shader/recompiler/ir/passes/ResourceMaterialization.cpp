@@ -508,6 +508,123 @@ private:
 	uint32_t                                    count = 0;
 };
 
+// Compare samples and gathers (sample_c, gather4_c) of a color image. The host samples a 2D
+// texture through a depth view only for the guest formats of DEPTH_FORMAT_POLICIES
+// (host_gpu/renderer/image/imageInfo.h: 16 UNORM, 32 FLOAT, 32 UINT); any other format keeps
+// its color format, and a Vulkan depth compare on it is undefined. Such images are marked
+// emulated_compare: the shader samples or gathers them without compare and compares in the
+// shader with the S# compare function. Depth-view images keep the native compare.
+// Adapted from AnyPS5 commit 66edf9eb97 (AnyPS5 contributors), which emulates the compare with
+// texel fetches; here the hardware gather and sample keep the S# addressing and border.
+// `debug.capy.color_compare 0` (read when a shader resource set is specialized) keeps the old
+// undefined native compare, for A/B comparisons.
+static void PlanEmulatedColorCompare(const ResourcePlan& program, const ResourceSnapshot& snapshot,
+                                     ResourceSpecialization& specialization) {
+	specialization.samplers.assign(program.info.samplers.size(), {});
+	static Common::DebugFlags::CachedValue color_compare("debug.capy.color_compare", 1);
+	if (color_compare.Get() == 0) {
+		return;
+	}
+	bool any = false;
+	for (uint32_t i = 0; i < program.info.images.size() && i < specialization.images.size(); i++) {
+		const auto& base  = program.info.images[i];
+		auto&       image = specialization.images[i];
+		if (!base.depth_compare || base.resource_class != ImageResourceClass::Sampled ||
+		    image.indirect_root != ImageResource::NoIndirectImage || image.fmask || image.cube ||
+		    image.numeric_class != Prospero::TextureNumericClass::Float ||
+		    image.conversion_format != Prospero::BufferFormat::kInvalid ||
+		    (image.dimension != Decoder::ImageDimension::Dim2D &&
+		     image.dimension != Decoder::ImageDimension::Dim2DArray) ||
+		    i >= snapshot.images.size() || NullImageDescriptor(snapshot.images[i])) {
+			continue;
+		}
+		const auto& words  = snapshot.images[i].dwords;
+		const auto  format = static_cast<Prospero::BufferFormat>((words[1] >> 20u) & 0x1ffu);
+		if (format == Prospero::BufferFormat::k16UNorm || format == Prospero::BufferFormat::k32Float ||
+		    format == Prospero::BufferFormat::k32UInt) {
+			continue;
+		}
+		// The bilinear compare gathers the view's base level; mipmapped color compares keep the
+		// native path.
+		if (((words[3] >> 12u) & 0xfu) != ((words[3] >> 16u) & 0xfu)) {
+			continue;
+		}
+		image.emulated_compare = true;
+		switch (Format::GetFormatComponentType(format)) {
+			case Format::ComponentType::Unorm: image.emulated_compare_reference = 1; break;
+			case Format::ComponentType::Snorm: image.emulated_compare_reference = 2; break;
+			default: image.emulated_compare_reference = 0; break;
+		}
+		any = true;
+	}
+	if (!any) {
+		return;
+	}
+	const auto& pairs = program.info.sampled_pairs;
+	const auto  native_compare = [&](uint32_t image) {
+		return image < program.info.images.size() && program.info.images[image].depth_compare &&
+		       (image >= specialization.images.size() || !specialization.images[image].emulated_compare);
+	};
+	// The sampler loses its compare for the emulated image, so it must have a single S# and no
+	// natively compared image may share it.
+	for (bool changed = true; changed;) {
+		changed = false;
+		for (const auto& pair: pairs) {
+			if (pair.image >= specialization.images.size() ||
+			    !specialization.images[pair.image].emulated_compare) {
+				continue;
+			}
+			bool usable = pair.sampler < program.info.samplers.size() &&
+			              pair.sampler < snapshot.samplers.size();
+			if (usable) {
+				const auto& sampler = program.info.samplers[pair.sampler];
+				usable = sampler.indirect_resources.empty() &&
+				         sampler.source < program.descriptor_sources.size() &&
+				         !program.descriptor_sources[sampler.source].indirect_descriptor.has_value() &&
+				         ((snapshot.samplers[pair.sampler].dwords[0] >> 15u) & 1u) == 0u;
+			}
+			for (const auto& other: pairs) {
+				if (usable && other.sampler == pair.sampler && native_compare(other.image)) {
+					usable = false;
+				}
+			}
+			if (!usable) {
+				specialization.images[pair.image].emulated_compare           = false;
+				specialization.images[pair.image].emulated_compare_reference = 0;
+				changed                                                       = true;
+			}
+		}
+	}
+	std::vector<bool> paired(specialization.images.size(), false);
+	for (const auto& pair: pairs) {
+		if (pair.image >= specialization.images.size() ||
+		    !specialization.images[pair.image].emulated_compare) {
+			continue;
+		}
+		const auto& words = snapshot.samplers[pair.sampler].dwords;
+		auto&       entry = specialization.samplers[pair.sampler];
+		entry.compare_func = static_cast<uint8_t>((words[0] >> 12u) & 0x7u);
+		// XY_MAG_FILTER / XY_MIN_FILTER: 1 bilinear, 3 anisotropic bilinear.
+		entry.linear = (((words[2] >> 20u) & 1u) != 0u) || (((words[2] >> 22u) & 1u) != 0u);
+		if (!paired[pair.image]) {
+			Common::DebugFlags::NoteOnce(
+			    "CapyPS5-ColorCompare", program.shader_hash ^ (uint64_t {pair.image} << 56u),
+			    "shader 0x%016llx image %u: compare of color format %u emulated (func %u, %s)",
+			    static_cast<unsigned long long>(program.shader_hash), pair.image,
+			    (snapshot.images[pair.image].dwords[1] >> 20u) & 0x1ffu,
+			    static_cast<unsigned>(entry.compare_func),
+			    entry.linear ? "bilinear" : "point");
+		}
+		paired[pair.image] = true;
+	}
+	for (uint32_t i = 0; i < specialization.images.size(); i++) {
+		if (!paired[i]) {
+			specialization.images[i].emulated_compare           = false;
+			specialization.images[i].emulated_compare_reference = 0;
+		}
+	}
+}
+
 static bool BuildResourceSpecialization(const ResourcePlan& program, ResourceSnapshot& snapshot,
                                         ResourceSpecialization& specialization) {
 	for (uint32_t i = 0; i < specialization.images.size(); i++) {
@@ -678,6 +795,7 @@ static bool BuildResourceSpecialization(const ResourcePlan& program, ResourceSna
 			}
 		}
 	}
+	PlanEmulatedColorCompare(program, snapshot, specialization);
 	CompactImages(snapshot.images, [&](size_t index) { return !specialization.images[index].fmask; });
 	return true;
 }
@@ -1537,6 +1655,12 @@ void ApplyResourceSpecialization(Program& program, const ResourceSpecialization&
 		image.indirect_mapping_offset    = source.indirect_mapping_offset;
 		image.indirect_search_iterations = source.indirect_search_iterations;
 		image.cube                       = source.cube;
+		image.emulated_compare           = source.emulated_compare;
+		image.emulated_compare_reference = source.emulated_compare_reference;
+		if (source.emulated_compare) {
+			// Bound and declared as a plain color image; its sampler loses the compare below.
+			image.depth_compare = false;
+		}
 		image.indirect_resources.clear();
 	}
 	for (uint32_t index = 0; index < images.size(); index++) {
@@ -1561,6 +1685,10 @@ void ApplyResourceSpecialization(Program& program, const ResourceSpecialization&
 		samplers[index].snapshot_index = binding.source;
 		samplers[index].force_point_filtering = binding.type == SamplerClass::PointInteger;
 		samplers[index].integer_border        = binding.type != SamplerClass::Float;
+		if (binding.source < specialization.samplers.size()) {
+			samplers[index].emulated_compare_func   = specialization.samplers[binding.source].compare_func;
+			samplers[index].emulated_compare_linear = specialization.samplers[binding.source].linear;
+		}
 	}
 	for (uint32_t index = 0; index < sampler_plan.sampler_count; index++) {
 		const auto& binding = sampler_plan.bindings[index];

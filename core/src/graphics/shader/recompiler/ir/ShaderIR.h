@@ -162,6 +162,11 @@ struct ImageResource {
 	uint32_t                      indirect_mapping_offset   = 0;
 	uint32_t                      indirect_search_iterations = 0;
 	std::vector<uint32_t>         indirect_resources;
+	// A compare sample or gather of a color image: the sampler compare is done in the shader
+	// (depth_compare is then cleared, so the image binds as a plain color image). The reference
+	// is clamped like the guest format: 0 none, 1 [0, 1] (UNORM), 2 [-1, 1] (SNORM).
+	bool                          emulated_compare           = false;
+	uint8_t                       emulated_compare_reference = 0;
 
 	bool operator==(const ImageResource& other) const = default;
 };
@@ -183,6 +188,9 @@ struct SamplerResource {
 	bool     depth_compare         = false;
 	bool     integer_border        = false;
 	bool     gather_lod            = false;
+	// S# DEPTH_COMPARE_FUNC and bilinear XY filtering, for compares of emulated_compare images.
+	uint8_t  emulated_compare_func   = 0;
+	bool     emulated_compare_linear = false;
 
 	bool operator==(const SamplerResource& other) const = default;
 };

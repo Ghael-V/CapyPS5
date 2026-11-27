@@ -426,6 +426,115 @@ uint32_t HorizontalOffsets(EmitterState& state, ImageDimension dimension) {
 	                              offsets[2], offsets[3]);
 }
 
+uint32_t ExtractF32(EmitterState& state, uint32_t composite, uint32_t index) {
+	const auto result = state.builder.AllocateId();
+	state.builder.AddFunction(spv::OpCompositeExtract, TypeF32(state), result, composite, index);
+	return result;
+}
+
+// Emulated compares of color images (ImageResource::emulated_compare), adapted from AnyPS5
+// commit 66edf9eb97 (AnyPS5 contributors). The reference is clamped like the guest format.
+uint32_t EmulatedCompareReference(ValueEmitContext& ctx, const IR::MemoryInfo& mem,
+                                  const IR::Inst& address, const ImageSampleLayout& layout) {
+	auto&      state     = ctx.state;
+	const auto reference = layout.dref != NoImageComponent
+	                           ? AddressF32(ctx, mem, address, layout.dref)
+	                           : ZeroF32(state);
+	switch (state.program.info.images.at(mem.resource).emulated_compare_reference) {
+		case 1u:
+			return EmitGlsl<GLSLstd450FClamp, IR::Type::F32>(state, reference, ZeroF32(state),
+			                                                 ConstantF32Value(state, 1.0f));
+		case 2u:
+			return EmitGlsl<GLSLstd450FClamp, IR::Type::F32>(
+			    state, reference, ConstantF32Value(state, -1.0f), ConstantF32Value(state, 1.0f));
+		default: return reference;
+	}
+}
+
+// `reference OP texel` with the S# DEPTH_COMPARE_FUNC (the VkCompareOp order): 1.0 on pass.
+uint32_t EmulatedCompareTexel(EmitterState& state, uint32_t function, uint32_t reference,
+                              uint32_t texel) {
+	const auto one  = ConstantF32Value(state, 1.0f);
+	const auto zero = ZeroF32(state);
+	spv::Op    op   = spv::OpFOrdLessThan;
+	switch (function) {
+		case 1u: op = spv::OpFOrdLessThan; break;
+		case 2u: op = spv::OpFOrdEqual; break;
+		case 3u: op = spv::OpFOrdLessThanEqual; break;
+		case 4u: op = spv::OpFOrdGreaterThan; break;
+		case 5u: op = spv::OpFUnordNotEqual; break;
+		case 6u: op = spv::OpFOrdGreaterThanEqual; break;
+		case 7u: return one;
+		default: return zero;
+	}
+	return Select(state, TypeF32(state), Binary(state, op, TypeBool(state), reference, texel), one,
+	              zero);
+}
+
+// Compares the four texels of a component-0 gather; the order stays the gather's.
+uint32_t EmulatedCompareGather(ValueEmitContext& ctx, const IR::MemoryInfo& mem,
+                               const IR::Inst& address, const ImageSampleLayout& layout,
+                               uint32_t gathered) {
+	auto&      state     = ctx.state;
+	const auto function  = state.program.info.samplers.at(mem.sampler).emulated_compare_func;
+	const auto reference = EmulatedCompareReference(ctx, mem, address, layout);
+	uint32_t   lanes[4] {};
+	for (uint32_t lane = 0; lane < 4u; lane++) {
+		lanes[lane] = EmulatedCompareTexel(state, function, reference, ExtractF32(state, gathered, lane));
+	}
+	const auto result = state.builder.AllocateId();
+	state.builder.AddFunction(spv::OpCompositeConstruct, TypeF32Vector(state, 4), result, lanes[0],
+	                          lanes[1], lanes[2], lanes[3]);
+	return result;
+}
+
+// A bilinear compare sample (percentage-closer filtering) of a single-level 2D color image:
+// gathers the 2x2 footprint, compares each texel and weights the results bilinearly.
+uint32_t EmulatedCompareBilinear(ValueEmitContext& ctx, const IR::MemoryInfo& mem,
+                                 const IR::Inst& address, const ImageSampleLayout& layout) {
+	auto&       state     = ctx.state;
+	const auto& image     = state.program.info.images.at(mem.resource);
+	const auto  dimension = image.dimension;
+	const auto  coord     = CoordF32(ctx, mem, address, layout.coord,
+	                                 ImageDimensionInfoFor(dimension).coordinate_components, false);
+	uint32_t operand_mask = 0;
+	uint32_t offset       = 0;
+	if (layout.offset != NoImageComponent) {
+		state.builder.RequireCapability(spv::CapabilityImageGatherExtended);
+		operand_mask = spv::ImageOperandsOffsetMask;
+		offset       = PackedOffset(ctx, mem, address, layout, dimension);
+	}
+	const auto sampled = MakeSampledImage(state, mem.resource, LoadSamplerDescriptor(state, mem.sampler));
+	const auto gathered = state.builder.AllocateId();
+	const std::array operands {operand_mask, offset};
+	state.builder.AddFunction(spv::OpImageGather, TypeF32Vector(state, 4), gathered, sampled, coord,
+	                          ConstantU32(state, 0), std::span(operands).first(operand_mask != 0u ? 2u : 0u));
+	const auto compared = EmulatedCompareGather(ctx, mem, address, layout, gathered);
+
+	state.builder.RequireCapability(spv::CapabilityImageQuery);
+	const auto size = state.builder.AllocateId();
+	state.builder.AddFunction(spv::OpImageQuerySizeLod, ImageViewSizeType(state, dimension), size,
+	                          LoadImageDescriptor(state, mem.resource), ConstantU32(state, 0));
+	const auto half   = ConstantF32Value(state, 0.5f);
+	const auto weight = [&](uint32_t component) {
+		const auto extent = state.builder.AllocateId();
+		state.builder.AddFunction(spv::OpCompositeExtract, TypeU32(state), extent, size, component);
+		const auto texel = Binary(state, spv::OpFMul, TypeF32(state), ExtractF32(state, coord, component),
+		                          Unary(state, spv::OpConvertUToF, TypeF32(state), extent));
+		return EmitGlsl<GLSLstd450Fract, IR::Type::F32>(
+		    state, Binary(state, spv::OpFSub, TypeF32(state), texel, half));
+	};
+	const auto weight_u = weight(0u);
+	const auto weight_v = weight(1u);
+	// Gather order: (u0, v1), (u1, v1), (u1, v0), (u0, v0).
+	const auto mix = [&](uint32_t first, uint32_t second, uint32_t t) {
+		return EmitGlsl<GLSLstd450FMix, IR::Type::F32>(state, first, second, t);
+	};
+	const auto top    = mix(ExtractF32(state, compared, 3u), ExtractF32(state, compared, 2u), weight_u);
+	const auto bottom = mix(ExtractF32(state, compared, 0u), ExtractF32(state, compared, 1u), weight_u);
+	return mix(top, bottom, weight_v);
+}
+
 uint32_t InverseSwizzle(uint32_t swizzle, uint32_t component) {
 	for (uint32_t source = 0; source < 4u; source++) {
 		if (((swizzle >> (source * 3u)) & 7u) == 4u + component) return source;
@@ -902,11 +1011,16 @@ void EmitImage(ValueEmitContext& ctx, const IR::Inst& inst) {
 			const auto result_numeric_class = dref ? Prospero::TextureNumericClass::Float
 			                                       : numeric_class;
 			const auto result_type = ImageVectorType(state, result_numeric_class, 4);
+			// A compare gather of a color image gathers the first component and compares it here.
+			const bool emulated    = dref && image.emulated_compare;
+			const bool native_dref = dref && !emulated;
 			uint32_t component_or_dref;
-			if (dref) {
+			if (native_dref) {
 				component_or_dref = layout.dref != NoImageComponent
 				                        ? AddressF32(ctx, mem, *address, layout.dref)
 				                        : ZeroF32(state);
+			} else if (emulated) {
+				component_or_dref = ConstantU32(state, 0);
 			} else {
 				component_or_dref = ConstantU32(state, ImageGatherSource(state, mem));
 			}
@@ -925,17 +1039,20 @@ void EmitImage(ValueEmitContext& ctx, const IR::Inst& inst) {
 				const auto sample = state.builder.AllocateId();
 				const std::array operands {operand_mask, offset};
 				state.builder.AddFunction(
-				    dref ? spv::OpImageDrefGather : spv::OpImageGather, result_type,
+				    native_dref ? spv::OpImageDrefGather : spv::OpImageGather, result_type,
 				    sample, sampled, coord, component_or_dref,
 				    std::span(operands).first(operand_mask != 0u ? 2u : 0u));
 				return sample;
 			};
-			const auto sample = image.mip_mode == IR::ImageMipMode::Dynamic && image.mip_count > 1u
-			                        ? EmitIndexSwitch(
-			                              state, GatherMip(ctx, inst, mem, *address, layout,
-			                                               image.mip_count),
-			                              image.mip_count, result_type, EmitGather)
-			                        : EmitGather(0);
+			auto sample = image.mip_mode == IR::ImageMipMode::Dynamic && image.mip_count > 1u
+			                  ? EmitIndexSwitch(
+			                        state, GatherMip(ctx, inst, mem, *address, layout,
+			                                         image.mip_count),
+			                        image.mip_count, result_type, EmitGather)
+			                  : EmitGather(0);
+			if (emulated) {
+				sample = EmulatedCompareGather(ctx, mem, *address, layout, sample);
+			}
 			ctx.Define(inst, ResultVector(ctx, UnpackImageGather(ctx, mem, sample),
 			                              result_numeric_class, false, mem, true));
 			return;
@@ -944,15 +1061,23 @@ void EmitImage(ValueEmitContext& ctx, const IR::Inst& inst) {
 		                          HasFlag(mem, Decoder::ImageSampleFlagLod) ||
 		                          HasFlag(mem, Decoder::ImageSampleFlagLevelZero) ||
 		                          state.program.stage != ShaderType::Pixel;
+		// A compare sample of a color image samples without compare and compares here.
+		const bool emulated    = dref && image.emulated_compare;
+		const bool native_dref = dref && !emulated;
+		if (emulated && state.program.info.samplers.at(mem.sampler).emulated_compare_linear) {
+			ctx.Define(inst, ResultVector(ctx, EmulatedCompareBilinear(ctx, mem, *address, layout),
+			                              numeric_class, true, mem));
+			return;
+		}
 		auto       opcode       = spv::OpImageSampleImplicitLod;
 		if (explicit_lod) {
-			opcode = dref ? spv::OpImageSampleDrefExplicitLod : spv::OpImageSampleExplicitLod;
-		} else if (dref) {
+			opcode = native_dref ? spv::OpImageSampleDrefExplicitLod : spv::OpImageSampleExplicitLod;
+		} else if (native_dref) {
 			opcode = spv::OpImageSampleDrefImplicitLod;
 		}
 		uint32_t result_type = ImageVectorType(state, numeric_class, 4);
 		uint32_t dref_value  = 0;
-		if (dref) {
+		if (native_dref) {
 			result_type = TypeF32(state);
 			dref_value  = ZeroF32(state);
 			if (layout.dref != NoImageComponent) {
@@ -1018,12 +1143,18 @@ void EmitImage(ValueEmitContext& ctx, const IR::Inst& inst) {
 			                                      sampler_index != 0u);
 			const auto sample = state.builder.AllocateId();
 			state.builder.AddFunction(opcode, result_type, sample, sampled, coord,
-			                          std::span(&dref_value, dref ? 1u : 0u),
+			                          std::span(&dref_value, native_dref ? 1u : 0u),
 			                          std::span<const uint32_t>(operands).first(operand_count));
 			return sample;
 		};
 		auto result = EmitImageAccess(ctx, inst, result_type, EmitSample);
-		if (!dref) {
+		if (emulated) {
+			// Point filtering: the sampled texel is the one compared.
+			result = EmulatedCompareTexel(
+			    state, state.program.info.samplers.at(mem.sampler).emulated_compare_func,
+			    EmulatedCompareReference(ctx, mem, *address, layout),
+			    ExtractF32(state, result, 0u));
+		} else if (!dref) {
 			result = UnpackImageTexel(ctx, mem, result);
 		}
 		ctx.Define(inst, ResultVector(ctx, result, numeric_class, dref, mem));

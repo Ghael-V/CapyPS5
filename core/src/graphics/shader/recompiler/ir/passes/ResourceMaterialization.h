@@ -34,11 +34,23 @@ struct ResourceSpecialization {
 		uint32_t                      indirect_search_iterations = 0;
 		bool                          cube                       = false;
 		bool                          fmask                      = false;
+		// See ImageResource::emulated_compare.
+		bool                          emulated_compare           = false;
+		uint8_t                       emulated_compare_reference = 0;
 		bool                          operator==(const Image&) const = default;
 	};
 
-	std::vector<Buffer> buffers;
-	std::vector<Image>  images;
+	// Filled only for samplers paired with an emulated_compare image, so other shaders do not
+	// get a permutation per S# compare function.
+	struct Sampler {
+		uint8_t compare_func = 0;
+		bool    linear       = false;
+		bool    operator==(const Sampler&) const = default;
+	};
+
+	std::vector<Buffer>  buffers;
+	std::vector<Image>   images;
+	std::vector<Sampler> samplers;
 
 	bool operator==(const ResourceSpecialization&) const = default;
 };
