@@ -385,11 +385,15 @@ static void ClipPrint(const char* func, const HW::ClipControl& c) {
 	     c.force_viewport_index_from_vs_enable ? "true" : "false");
 }
 
-static void ClipCheck(const HW::ClipControl& c) {
+static void ClipCheck(const HW::ClipControl& c, uint32_t vs_out_cntl) {
 	// dx_linear_attr_clip_enable preserves linear (noperspective) attributes at clip-generated
 	// vertices, which Vulkan provides as part of clipping and interpolation.
+	// UCP_CULL_ONLY_ENA changes nothing while no user plane (UCP_ENA) and no shader clip
+	// distance (PA_CL_VS_OUT_CNTL CLIP_DIST_ENA_0..7) is enabled.
+	const bool cull_only_unused = c.user_clip_planes == 0 && (vs_out_cntl & 0xffu) == 0;
 	EXIT_NOT_IMPLEMENTED(c.user_clip_plane_mode != 0 || c.vertex_kill_any ||
-	                     c.user_clip_plane_negate_y || c.user_clip_plane_cull_only ||
+	                     c.user_clip_plane_negate_y ||
+	                     (c.user_clip_plane_cull_only && !cull_only_unused) ||
 	                     c.cull_on_clipping_error_disable || c.force_viewport_index_from_vs_enable);
 }
 
@@ -866,7 +870,7 @@ void hw_check(const CommandBuffer& buffer) {
 	log_phase("vp");
 	VpCheck(vp, smc);
 	log_phase("clip");
-	ClipCheck(c);
+	ClipCheck(c, hw.GetShaderRegisters().m_paClVsOutCntl);
 	log_phase("mode");
 	McCheck(mc);
 	log_phase("blend");
