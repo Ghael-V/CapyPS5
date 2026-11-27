@@ -23,6 +23,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.ArrowBack
+import androidx.compose.material.icons.outlined.AutoAwesome
 import androidx.compose.material.icons.outlined.Folder
 import androidx.compose.material.icons.outlined.Info
 import androidx.compose.material.icons.outlined.Image
@@ -51,6 +52,8 @@ import org.capyps5.emulator.GpuDrivers
 import org.capyps5.emulator.R
 import org.capyps5.emulator.CoreOption
 import org.capyps5.emulator.OverlayMode
+import org.capyps5.emulator.PostChain
+import org.capyps5.emulator.PostPreset
 import org.capyps5.emulator.Settings
 import org.capyps5.emulator.TouchControlsMode
 import org.capyps5.emulator.ui.NavKey
@@ -113,6 +116,7 @@ fun SettingsScreen(
     val context = LocalContext.current
     var message by remember { mutableStateOf<String?>(null) }
     var showDrivers by remember { mutableStateOf(false) }
+    var showEffects by remember { mutableStateOf(false) }
     // Read so the option rows recompose when a value changes.
     val optionsVersion = settings.coreOptionsVersion
 
@@ -143,6 +147,9 @@ fun SettingsScreen(
                         CoreOption.ResolutionScale.label(context, ueScale),
                         onStep = { settings.updateUeResolution(cycle(scales, ueScale, it)) },
                     ),
+                    coreItem(CoreOption.Upscaler),
+                    coreItem(CoreOption.Sharpening),
+                    coreItem(CoreOption.AntiAliasing),
                     coreItem(CoreOption.ShadowScale),
                     coreItem(CoreOption.EarlyDepth),
                     SettingItem(
@@ -172,6 +179,27 @@ fun SettingsScreen(
                         )
                     },
                     driverMessage?.let { SettingItem(it) },
+                )
+            },
+            SettingsCategory(context.getString(R.string.category_post_processing), Icons.Outlined.AutoAwesome) {
+                val chain = settings.postChain()
+                val presets = PostPreset.entries
+                val preset = PostPreset.of(chain)
+                listOf(
+                    SettingItem(
+                        context.getString(R.string.pp_preset),
+                        preset?.let { context.getString(it.descriptionRes) }
+                            ?: context.getString(R.string.pp_preset_setting_desc),
+                        PostPreset.label(context, chain),
+                        onStep = { delta ->
+                            val index = preset?.let(presets::indexOf) ?: -1
+                            settings.updatePostChain(presets[(index + delta).mod(presets.size)].chain)
+                        },
+                    ),
+                    SettingItem(
+                        context.getString(R.string.pp_edit), PostChain.summary(context, chain),
+                        onConfirm = { showEffects = true },
+                    ),
                 )
             },
             SettingsCategory(context.getString(R.string.category_performance), Icons.Outlined.Speed) {
@@ -292,7 +320,7 @@ fun SettingsScreen(
     val items = categories[category].items()
     if (row >= items.size) row = (items.size - 1).coerceAtLeast(0)
 
-    OnNavKey(enabled = !showDrivers) { key ->
+    OnNavKey(enabled = !showDrivers && !showEffects) { key ->
         if (!inContent) {
             when (key) {
                 NavKey.Up -> { category = (category - 1).mod(categories.size); row = 0 }
@@ -318,6 +346,16 @@ fun SettingsScreen(
 
     if (showDrivers) {
         DriverDownloadScreen(settings, onClose = { showDrivers = false })
+        return
+    }
+    if (showEffects) {
+        PostEffectsEditor(
+            stringResource(R.string.pp_editor_title),
+            settings.postChain(),
+            onChange = settings::updatePostChain,
+            onClose = { showEffects = false },
+            modifier = Modifier.fillMaxSize(),
+        )
         return
     }
     Row(Modifier.fillMaxSize().background(Capy.Background)) {

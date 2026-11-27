@@ -81,6 +81,7 @@ class GameActivity : CapyActivity() {
                 if (option == CoreOption.Language && value == AUTO_LANGUAGE) deviceConsoleLanguage() else value,
             )
         }
+        NativeBridge.nativeSetTextOption(POST_CHAIN_PROPERTY, settings.effectivePostChain(game.titleId))
         val driver = GpuDrivers.find(this, settings.effectiveGpuDriver(game.titleId))
         NativeBridge.nativeSetGpuDriver(
             nativeLibraryDir = applicationInfo.nativeLibraryDir,

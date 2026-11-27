@@ -121,6 +121,39 @@ enum class CoreOption(
         listOf(1L to R.string.disabled, 0L to R.string.enabled),
         1L,
     ),
+    Upscaler(
+        R.string.option_upscaler,
+        R.string.option_upscaler_desc,
+        "debug.capy.upscaler",
+        listOf(
+            0L to R.string.upscaler_default,
+            1L to R.string.upscaler_nearest,
+            2L to R.string.upscaler_bicubic,
+            3L to R.string.upscaler_fsr1,
+            4L to R.string.upscaler_sgsr1,
+        ),
+        0L,
+    ),
+    Sharpening(
+        R.string.option_sharpening,
+        R.string.option_sharpening_desc,
+        "debug.capy.sharpen",
+        listOf(
+            0L to R.string.sharpening_off,
+            25L to R.string.sharpening_low,
+            50L to R.string.sharpening_medium,
+            75L to R.string.sharpening_high,
+            100L to R.string.sharpening_max,
+        ),
+        0L,
+    ),
+    AntiAliasing(
+        R.string.option_aa,
+        R.string.option_aa_desc,
+        "debug.capy.aa",
+        listOf(0L to R.string.aa_off, 1L to R.string.aa_smaa),
+        0L,
+    ),
     FrameLimit(
         R.string.option_frame_limit,
         R.string.option_frame_limit_desc,
@@ -285,20 +318,40 @@ class Settings(context: Context) {
         coreOptionsVersion++
     }
 
-    /** Whether the game has any value of its own (core options, GPU driver or pad layout). */
+    /** Whether the game has any value of its own (core options, GPU driver, effects or pad layout). */
     fun hasGameOverrides(titleId: String): Boolean =
         CoreOption.entries.any { gameOption(titleId, it) != null } || gameGpuDriver(titleId) != null ||
-            hasGameVpadLayout(titleId)
+            gamePostChain(titleId) != null || hasGameVpadLayout(titleId)
 
     /** Drops every value of the game's own so it follows the global settings again. */
     fun resetGameOptions(titleId: String) {
         prefs.edit().apply {
             CoreOption.entries.forEach { remove("game_${titleId}_${it.name}") }
             remove("game_${titleId}_gpu_driver")
+            remove("game_${titleId}_pp_chain")
             remove("game_${titleId}_vpad")
         }.apply()
         coreOptionsVersion++
     }
+
+    /** Global post-processing effects chain (PostChain format); empty: no effects. */
+    fun postChain(): String = prefs.getString("pp_chain", "").orEmpty()
+
+    fun updatePostChain(value: String) {
+        prefs.edit().putString("pp_chain", value).apply()
+        coreOptionsVersion++
+    }
+
+    /** A game's own effects chain, or null when it follows the global one. */
+    fun gamePostChain(titleId: String): String? = prefs.getString("game_${titleId}_pp_chain", null)
+
+    fun updateGamePostChain(titleId: String, value: String?) {
+        val key = "game_${titleId}_pp_chain"
+        prefs.edit().apply { if (value == null) remove(key) else putString(key, value) }.apply()
+        coreOptionsVersion++
+    }
+
+    fun effectivePostChain(titleId: String): String = gamePostChain(titleId) ?: postChain()
 
     /** On-screen pad layout a game uses: its own, else the global one. */
     fun vpadLayout(titleId: String): VpadLayout =

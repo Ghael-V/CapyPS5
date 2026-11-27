@@ -26,6 +26,9 @@ object NativeBridge {
     external fun nativeStopGame()
     /** Sets a core option (a debug.capy.* name) for this session; call before nativeStartGame. */
     external fun nativeSetOption(name: String, value: Long)
+
+    /** A text option such as the post-processing chain; it may change while the game runs. */
+    external fun nativeSetTextOption(name: String, value: String)
     /** Vulkan driver for this session; an empty library keeps the system driver. Call before nativeStartGame. */
     external fun nativeSetGpuDriver(nativeLibraryDir: String, driverDir: String, library: String)
     external fun nativeSendControllerInput(

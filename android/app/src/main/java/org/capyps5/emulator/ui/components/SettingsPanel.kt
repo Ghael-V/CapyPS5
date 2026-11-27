@@ -26,6 +26,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -33,21 +34,29 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import org.capyps5.emulator.ButtonLayout
 import org.capyps5.emulator.CoreOption
 import org.capyps5.emulator.NativeBridge
 import org.capyps5.emulator.OverlayMode
+import org.capyps5.emulator.POST_CHAIN_PROPERTY
+import org.capyps5.emulator.PostChain
+import org.capyps5.emulator.PostPreset
 import org.capyps5.emulator.R
 import org.capyps5.emulator.Settings
 import org.capyps5.emulator.TouchControlsMode
 import org.capyps5.emulator.model.GameItem
 import org.capyps5.emulator.ui.NavKey
 import org.capyps5.emulator.ui.OnNavKey
+import org.capyps5.emulator.ui.screens.PostEffectsEditor
 import org.capyps5.emulator.ui.theme.Capy
 
 /** Core options the core reads while a game runs, so the in-game panel can change them live. */
-private val LiveOptions = listOf(CoreOption.FrameLimit, CoreOption.FrameGen, CoreOption.AsyncShaders)
+private val LiveOptions = listOf(
+    CoreOption.Upscaler, CoreOption.Sharpening, CoreOption.AntiAliasing,
+    CoreOption.FrameLimit, CoreOption.FrameGen, CoreOption.AsyncShaders,
+)
 
 /** What a focused row does with the controller: left/right adjusts it, confirm acts on it. */
 private class RowAction(val adjust: (Int) -> Unit, val confirm: (() -> Unit)?)
@@ -68,6 +77,7 @@ fun SettingsPanel(
 ) {
     val context = LocalContext.current
     var focused by remember { mutableIntStateOf(0) }
+    var editingEffects by remember { mutableStateOf(false) }
     val unreal = remember(game) { game?.isUnreal ?: false }
     // Read so the rows recompose when a core option changes.
     @Suppress("UNUSED_VARIABLE")
@@ -85,6 +95,27 @@ fun SettingsPanel(
     fun setGameOption(game: GameItem, option: CoreOption, value: Long) {
         settings.updateGameOption(game.titleId, option, value)
         NativeBridge.nativeSetOption(option.property, value)
+    }
+
+    fun setGamePostChain(game: GameItem, value: String?) {
+        settings.updateGamePostChain(game.titleId, value)
+        NativeBridge.nativeSetTextOption(POST_CHAIN_PROPERTY, settings.effectivePostChain(game.titleId))
+    }
+
+    if (game != null && editingEffects) {
+        val own = settings.gamePostChain(game.titleId) != null
+        PostEffectsEditor(
+            stringResource(R.string.pp_editor_game, game.titleName),
+            settings.effectivePostChain(game.titleId),
+            onChange = { setGamePostChain(game, it) },
+            onClose = { editingEffects = false },
+            modifier = modifier.fillMaxHeight().width(460.dp),
+            onUseGlobal = if (own) ({
+                setGamePostChain(game, null)
+                editingEffects = false
+            }) else null,
+        )
+        return
     }
 
     OnNavKey { key ->
@@ -183,10 +214,40 @@ fun SettingsPanel(
                     if (own) stringResource(R.string.ingame_option_saved) else option.description(context),
                     focused == row,
                 ) {
-                    Segmented(option.choices.map { stringResource(it.second) }, values.indexOf(current)) {
-                        focused = row
-                        setGameOption(game, option, values[it])
+                    if (option.choices.size > 4) {
+                        Stepper(option.label(context, current)) { delta ->
+                            focused = row
+                            setGameOption(game, option, cycle(values, current, delta))
+                        }
+                    } else {
+                        Segmented(option.choices.map { stringResource(it.second) }, values.indexOf(current)) {
+                            focused = row
+                            setGameOption(game, option, values[it])
+                        }
                     }
+                }
+            }
+            // Post-processing effects: the preset applies live, the editor opens in place of the panel.
+            val chain = settings.effectivePostChain(game.titleId)
+            val preset = PostPreset.of(chain)
+            val cyclePreset = { delta: Int ->
+                val presets = PostPreset.entries
+                val index = preset?.let(presets::indexOf) ?: -1
+                setGamePostChain(game, presets[(index + delta).mod(presets.size)].chain)
+            }
+            val effectsRow = register(cyclePreset) { editingEffects = true }
+            SettingRow(
+                stringResource(R.string.pp_preset),
+                PostChain.summary(context, chain),
+                focused == effectsRow,
+            ) {
+                Stepper(PostPreset.label(context, chain)) { delta ->
+                    focused = effectsRow
+                    cyclePreset(delta)
+                }
+                ActionButton(stringResource(R.string.pp_edit)) {
+                    focused = effectsRow
+                    editingEffects = true
                 }
             }
             if (settings.hasGameOverrides(game.titleId)) {
@@ -196,6 +257,7 @@ fun SettingsPanel(
                     LiveOptions.forEach { option ->
                         NativeBridge.nativeSetOption(option.property, settings.effectiveOption(game.titleId, option, unreal))
                     }
+                    NativeBridge.nativeSetTextOption(POST_CHAIN_PROPERTY, settings.effectivePostChain(game.titleId))
                 }
                 val resetRow = register({}, reset)
                 SettingRow(stringResource(R.string.reset_to_global), stringResource(R.string.reset_to_global_desc), focused == resetRow) {
@@ -245,6 +307,28 @@ fun SettingsPanel(
             "${android.os.Build.MANUFACTURER} ${android.os.Build.MODEL} · ${android.os.Build.SOC_MODEL} · Android ${android.os.Build.VERSION.RELEASE}",
             style = MaterialTheme.typography.bodySmall,
             color = Capy.TextMuted,
+        )
+    }
+}
+
+/** A value with arrows to step it down and up by touch; the controller steps it with left and right. */
+@Composable
+private fun Stepper(value: String, onStep: (Int) -> Unit) {
+    Row(
+        modifier = Modifier.fillMaxWidth().background(Capy.Background, RoundedCornerShape(8.dp)),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            "‹", style = MaterialTheme.typography.titleLarge, color = Capy.Accent,
+            modifier = Modifier.clickable { onStep(-1) }.padding(horizontal = 14.dp, vertical = 4.dp),
+        )
+        Text(
+            value, style = MaterialTheme.typography.labelLarge, color = Capy.TextPrimary,
+            modifier = Modifier.weight(1f), textAlign = TextAlign.Center,
+        )
+        Text(
+            "›", style = MaterialTheme.typography.titleLarge, color = Capy.Accent,
+            modifier = Modifier.clickable { onStep(1) }.padding(horizontal = 14.dp, vertical = 4.dp),
         )
     }
 }

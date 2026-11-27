@@ -33,6 +33,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
@@ -79,6 +80,8 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.capyps5.emulator.CoreOption
+import org.capyps5.emulator.PostChain
+import org.capyps5.emulator.PostPreset
 import org.capyps5.emulator.R
 import org.capyps5.emulator.Settings
 import org.capyps5.emulator.model.GameItem
@@ -457,6 +460,7 @@ private fun GameOptionsPanel(
 ) {
     var message by remember { mutableStateOf<String?>(null) }
     var row by remember { mutableIntStateOf(0) }
+    var editingEffects by remember { mutableStateOf(false) }
     // Read so the rows recompose when a value changes.
     val optionsVersion = settings.coreOptionsVersion
     val context = androidx.compose.ui.platform.LocalContext.current
@@ -487,6 +491,31 @@ private fun GameOptionsPanel(
                     },
                 onStep = { settings.updateGameOption(game.titleId, option, cycle(choices, override, it)) },
             )
+        } + run {
+            // Post-processing effects: null follows the global chain, else a preset or the game's own.
+            val own = settings.gamePostChain(game.titleId)
+            val presets = PostPreset.entries
+            val choices: List<PostPreset?> = listOf<PostPreset?>(null) + presets
+            val current: PostPreset? = own?.let { PostPreset.of(it) }
+            listOf(
+                SettingItem(
+                    context.getString(R.string.pp_preset),
+                    context.getString(R.string.pp_preset_setting_desc),
+                    own?.let { PostPreset.label(context, it) }
+                        ?: context.getString(R.string.global_value, PostPreset.label(context, settings.postChain())),
+                    onStep = { delta ->
+                        // A chain of the game's own that is no preset sits after "global" in the cycle.
+                        val index = if (own == null) 0 else current?.let { choices.indexOf(it) } ?: 0
+                        val next = choices[(index + delta).mod(choices.size)]
+                        settings.updateGamePostChain(game.titleId, next?.chain)
+                    },
+                ),
+                SettingItem(
+                    context.getString(R.string.pp_edit),
+                    PostChain.summary(context, settings.effectivePostChain(game.titleId)),
+                    onConfirm = { editingEffects = true },
+                ),
+            )
         } + listOfNotNull(
             if (settings.hasGameOverrides(game.titleId)) {
                 SettingItem(
@@ -507,7 +536,7 @@ private fun GameOptionsPanel(
     }
     if (row >= items.size) row = items.size - 1
 
-    OnNavKey { key ->
+    OnNavKey(enabled = !editingEffects) { key ->
         val item = items.getOrNull(row)
         when (key) {
             NavKey.Up -> row = (row - 1).mod(items.size)
@@ -518,6 +547,21 @@ private fun GameOptionsPanel(
             NavKey.Back, NavKey.Secondary, NavKey.Menu -> onClose()
             else -> Unit
         }
+    }
+    if (editingEffects) {
+        val own = settings.gamePostChain(game.titleId) != null
+        PostEffectsEditor(
+            stringResource(R.string.pp_editor_game, game.titleName),
+            settings.effectivePostChain(game.titleId),
+            onChange = { settings.updateGamePostChain(game.titleId, it) },
+            onClose = { editingEffects = false },
+            modifier = Modifier.fillMaxSize(),
+            onUseGlobal = if (own) ({
+                settings.updateGamePostChain(game.titleId, null)
+                editingEffects = false
+            }) else null,
+        )
+        return
     }
     Box(Modifier.fillMaxSize().background(Capy.Scrim).clickable(onClick = onClose), contentAlignment = Alignment.CenterEnd) {
         Column(
@@ -536,8 +580,11 @@ private fun GameOptionsPanel(
                 color = Capy.TextSecondary,
             )
             Spacer(Modifier.height(8.dp))
-            items.forEachIndexed { i, item -> SettingRowView(item, focused = i == row) { row = i } }
-            Spacer(Modifier.weight(1f))
+            val listState = rememberLazyListState()
+            LaunchedEffect(row) { listState.animateScrollToItem((row - 2).coerceAtLeast(0)) }
+            LazyColumn(state = listState, modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                itemsIndexed(items) { i, item -> SettingRowView(item, focused = i == row) { row = i } }
+            }
             HintBar(
                 listOf(
                     "◀ ▶" to stringResource(R.string.hint_change),
