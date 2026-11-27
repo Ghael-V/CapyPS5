@@ -86,7 +86,8 @@ struct FrontendOption {
 	char    name[64] {};
 	int64_t value = 0;
 };
-inline std::array<FrontendOption, 32> g_frontend_options {};
+// The core options plus a game's hidden switches (recommended settings).
+inline std::array<FrontendOption, 64> g_frontend_options {};
 inline std::atomic<uint32_t>          g_frontend_option_count {0};
 
 inline void SetFrontendOption(const char* name, int64_t value) {

@@ -35,6 +35,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
+import org.capyps5.emulator.aiconfig.AiConfigStore
+import org.capyps5.emulator.aiconfig.AiRevertedDialog
 import org.capyps5.emulator.model.GameItem
 import org.capyps5.emulator.ui.NavKey
 import org.capyps5.emulator.ui.OnNavKey
@@ -68,6 +70,8 @@ class MainActivity : CapyActivity() {
     private var showSupport by mutableStateOf(false)
     // First start after an update: the "what's new" card for the installed version.
     private var showWhatsNew by mutableStateOf(false)
+    // Games whose recommended settings were undone after a failed start, told once.
+    private var aiReverted by mutableStateOf<List<AiConfigStore.Notice>>(emptyList())
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -103,7 +107,7 @@ class MainActivity : CapyActivity() {
         // `adb shell am start ... --es launch_elf <path> [--es launch_dir <dir>]` starts a game directly.
         intent?.getStringExtra("launch_elf")?.takeIf { File(it).exists() }?.let { elf ->
             val dir = File(intent.getStringExtra("launch_dir") ?: File(elf).parent ?: "")
-            GameActivity.launch(this, GameItem.fromGameDir(dir, File(elf)))
+            launchGame(GameItem.fromGameDir(dir, File(elf)))
         }
 
         setContent {
@@ -119,7 +123,7 @@ class MainActivity : CapyActivity() {
                         libraryPath = settings.libraryPath,
                         settings = settings,
                         versionText = versionText,
-                        onGameSelected = { GameActivity.launch(this@MainActivity, it) },
+                        onGameSelected = ::launchGame,
                         onAddGameFile = { uriString ->
                             lifecycleScope.launch {
                                 // Content-resolver reads of a picked eboot can be large;
@@ -139,7 +143,7 @@ class MainActivity : CapyActivity() {
                                         elfPath = localFile.absolutePath,
                                     )
                                     games.add(newGame)
-                                    GameActivity.launch(this@MainActivity, newGame)
+                                    launchGame(newGame)
                                 }
                             }
                         },
@@ -150,9 +154,11 @@ class MainActivity : CapyActivity() {
                         onLibraryPicked = { settings.addLibraryPath(it) },
                         onClearShaderCache = ::clearShaderCache,
                         onSaveLog = ::saveLog,
-                        overlayActive = lastError != null || showWhatsNew || update != null || showSupport,
+                        overlayActive = lastError != null || aiReverted.isNotEmpty() || showWhatsNew ||
+                            update != null || showSupport,
                     )
-                    // One notice at a time: the crash report, what's new, an update, the support card.
+                    // One notice at a time: the crash report, undone recommended settings, what's new,
+                    // an update, the support card.
                     val report = lastError
                     val pending = update
                     when {
@@ -161,6 +167,10 @@ class MainActivity : CapyActivity() {
                             onSaveLog = ::saveLog,
                             onClose = { lastError = null },
                         )
+                        aiReverted.isNotEmpty() -> AiRevertedDialog(aiReverted) {
+                            AiConfigStore.clearNotices(this@MainActivity, aiReverted.map { it.titleId })
+                            aiReverted = emptyList()
+                        }
                         showWhatsNew -> WhatsNewDialog(version = installed, onClose = { showWhatsNew = false })
                         pending != null -> UpdateDialog(
                             release = pending,
@@ -189,6 +199,23 @@ class MainActivity : CapyActivity() {
             lastError = runCatching { report.readText() }.getOrNull()?.takeIf { it.isNotBlank() }
             report.delete()
         }
+        // A game that failed on unconfirmed recommended settings gets its settings back now. The
+        // game process may still be ending right after a crash: look again a little later.
+        recoverAiConfig()
+        lifecycleScope.launch {
+            kotlinx.coroutines.delay(3_000)
+            recoverAiConfig()
+        }
+    }
+
+    private fun recoverAiConfig() {
+        aiReverted = runCatching { AiConfigStore.recover(this, settings) }.getOrDefault(aiReverted)
+    }
+
+    /** Starts [game]; settings a failed launch left behind are put back first. */
+    private fun launchGame(game: GameItem) {
+        recoverAiConfig()
+        GameActivity.launch(this, game)
     }
 
     private companion object {

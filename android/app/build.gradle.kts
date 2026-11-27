@@ -21,6 +21,13 @@ android {
         ndk {
             abiFilters.add("arm64-v8a")
         }
+
+        // Where "Recommended settings" asks for suggestions: the same server as Lemon's (it holds
+        // the AI key; the app never does). A test build can point it at a local mock with
+        // -PaiConfigUrl=http://...; only then is cleartext HTTP allowed.
+        val aiConfigUrl = (project.findProperty("aiConfigUrl") as String?) ?: "https://ai.lemon-emu.org/v1"
+        buildConfigField("String", "AI_CONFIG_URL", "\"$aiConfigUrl\"")
+        manifestPlaceholders["usesCleartextTraffic"] = aiConfigUrl.startsWith("http://").toString()
     }
 
     lint {
@@ -54,6 +61,7 @@ android {
 
     buildFeatures {
         compose = true
+        buildConfig = true
     }
 
     sourceSets {

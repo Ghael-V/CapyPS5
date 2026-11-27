@@ -318,15 +318,40 @@ class Settings(context: Context) {
         coreOptionsVersion++
     }
 
-    /** Whether the game has any value of its own (core options, GPU driver, effects or pad layout). */
+    /**
+     * A game's value of a hidden core switch (a debug.capy.<name> property the settings screens do
+     * not show; the recommended settings set them), or null when the game has none.
+     */
+    fun gameHiddenOption(titleId: String, name: String): Long? {
+        val key = "game_${titleId}_prop_$name"
+        return if (prefs.contains(key)) prefs.getLong(key, 0L) else null
+    }
+
+    fun updateGameHiddenOption(titleId: String, name: String, value: Long?) {
+        val key = "game_${titleId}_prop_$name"
+        prefs.edit().apply { if (value == null) remove(key) else putLong(key, value) }.apply()
+        coreOptionsVersion++
+    }
+
+    /** Every hidden switch the game sets, by name (without "debug.capy."). */
+    fun gameHiddenOptions(titleId: String): Map<String, Long> {
+        val prefix = "game_${titleId}_prop_"
+        return prefs.all.mapNotNull { (key, value) ->
+            if (key.startsWith(prefix) && value is Long) key.removePrefix(prefix) to value else null
+        }.toMap()
+    }
+
+    /** Whether the game has any value of its own (core options, hidden switches, GPU driver, effects or pad layout). */
     fun hasGameOverrides(titleId: String): Boolean =
         CoreOption.entries.any { gameOption(titleId, it) != null } || gameGpuDriver(titleId) != null ||
-            gamePostChain(titleId) != null || hasGameVpadLayout(titleId)
+            gamePostChain(titleId) != null || hasGameVpadLayout(titleId) || gameHiddenOptions(titleId).isNotEmpty()
 
     /** Drops every value of the game's own so it follows the global settings again. */
     fun resetGameOptions(titleId: String) {
+        val hidden = gameHiddenOptions(titleId).keys
         prefs.edit().apply {
             CoreOption.entries.forEach { remove("game_${titleId}_${it.name}") }
+            hidden.forEach { remove("game_${titleId}_prop_$it") }
             remove("game_${titleId}_gpu_driver")
             remove("game_${titleId}_pp_chain")
             remove("game_${titleId}_vpad")

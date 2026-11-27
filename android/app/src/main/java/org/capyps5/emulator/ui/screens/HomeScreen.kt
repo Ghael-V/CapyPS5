@@ -89,6 +89,8 @@ import org.capyps5.emulator.ui.NavKey
 import org.capyps5.emulator.ui.OnNavKey
 import org.capyps5.emulator.ui.rememberImage
 import org.capyps5.emulator.Trophies
+import org.capyps5.emulator.aiconfig.AiConfigDialog
+import org.capyps5.emulator.aiconfig.AiConfigStore
 import org.capyps5.emulator.ui.theme.Capy
 import androidx.compose.ui.res.stringResource
 import java.text.SimpleDateFormat
@@ -461,6 +463,8 @@ private fun GameOptionsPanel(
     var message by remember { mutableStateOf<String?>(null) }
     var row by remember { mutableIntStateOf(0) }
     var editingEffects by remember { mutableStateOf(false) }
+    // "Recommended settings" dialog open (it asks the server as soon as it shows).
+    var recommending by remember { mutableStateOf(false) }
     // Read so the rows recompose when a value changes.
     val optionsVersion = settings.coreOptionsVersion
     val context = androidx.compose.ui.platform.LocalContext.current
@@ -476,7 +480,24 @@ private fun GameOptionsPanel(
             driverOverride?.let(driverName) ?: context.getString(R.string.global_value, driverName(settings.gpuDriver())),
             onStep = { settings.updateGameGpuDriver(game.titleId, cycle(driverChoices, driverOverride, it)) },
         )
-        listOf(driverItem) + CoreOption.entries.map { option ->
+        val aiItems = if (AiConfigStore.supports(game)) {
+            listOfNotNull(
+                SettingItem(
+                    context.getString(R.string.ai_config_title), context.getString(R.string.ai_config_description),
+                    onConfirm = { recommending = true },
+                ),
+                if (AiConfigStore.hasActive(context, game.titleId)) {
+                    SettingItem(
+                        context.getString(R.string.ai_config_undo), context.getString(R.string.ai_config_undo_desc),
+                        onConfirm = {
+                            AiConfigStore.undo(context, settings, game.titleId)
+                            message = context.getString(R.string.ai_config_undone)
+                        },
+                    )
+                } else null,
+            )
+        } else emptyList()
+        aiItems + listOf(driverItem) + CoreOption.entries.map { option ->
             // null = follow the global value.
             val choices: List<Long?> = listOf<Long?>(null) + option.choices.map { it.first }
             val override = settings.gameOption(game.titleId, option)
@@ -520,7 +541,11 @@ private fun GameOptionsPanel(
             if (settings.hasGameOverrides(game.titleId)) {
                 SettingItem(
                     context.getString(R.string.reset_to_global), context.getString(R.string.reset_to_global_desc),
-                    onConfirm = { settings.resetGameOptions(game.titleId) },
+                    onConfirm = {
+                        settings.resetGameOptions(game.titleId)
+                        // Nothing of the recommendation is left to undo.
+                        AiConfigStore.forget(context, game.titleId)
+                    },
                 )
             } else null,
             if (Trophies.hasTrophies(game.directoryPath)) {
@@ -536,7 +561,7 @@ private fun GameOptionsPanel(
     }
     if (row >= items.size) row = items.size - 1
 
-    OnNavKey(enabled = !editingEffects) { key ->
+    OnNavKey(enabled = !editingEffects && !recommending) { key ->
         val item = items.getOrNull(row)
         when (key) {
             NavKey.Up -> row = (row - 1).mod(items.size)
@@ -580,6 +605,7 @@ private fun GameOptionsPanel(
                 color = Capy.TextSecondary,
             )
             Spacer(Modifier.height(8.dp))
+            // Scrolls with the focused row: the list is longer than a handheld screen.
             val listState = rememberLazyListState()
             LaunchedEffect(row) { listState.animateScrollToItem((row - 2).coerceAtLeast(0)) }
             LazyColumn(state = listState, modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -592,6 +618,12 @@ private fun GameOptionsPanel(
                     "Ⓑ" to stringResource(R.string.hint_back),
                 ),
             )
+        }
+        if (recommending) {
+            // Taps on the dialog must not reach the scrim behind it, which closes the panel.
+            Box(Modifier.fillMaxSize().clickable(enabled = false) {}) {
+                AiConfigDialog(game, settings, onClose = { recommending = false })
+            }
         }
     }
 }

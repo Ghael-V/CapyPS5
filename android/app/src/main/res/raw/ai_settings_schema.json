@@ -1,0 +1,648 @@
+{
+ "app": "capyps5",
+ "schema_version": 1,
+ "settings": [
+  {
+   "key": "res_scale",
+   "tier": "allow",
+   "type": "enum",
+   "default": "1000",
+   "enum": [
+    {
+     "name": "Native",
+     "value": 1000
+    },
+    {
+     "name": "75 % (4K → 1620p)",
+     "value": 750
+    },
+    {
+     "name": "50 % (4K → 1080p)",
+     "value": 500
+    },
+    {
+     "name": "33 % (4K → 720p)",
+     "value": 333
+    },
+    {
+     "name": "25 % (4K → 540p)",
+     "value": 250
+    }
+   ],
+   "ui_title": "Internal resolution",
+   "ui_title_res": "option_resolution",
+   "source": "app",
+   "description": "Internal resolution per axis, in thousandths (500 = half width and height, a quarter of the pixels). Lower relieves the GPU; a few games draw wrong at lower scales. Unreal Engine games default to 25 % unless the game has its own value."
+  },
+  {
+   "key": "async_pipelines",
+   "tier": "allow",
+   "type": "enum",
+   "default": "1",
+   "enum": [
+    {
+     "name": "On",
+     "value": 1
+    },
+    {
+     "name": "Off",
+     "value": 0
+    }
+   ],
+   "ui_title": "Compile shaders in the background",
+   "ui_title_res": "option_async_shaders",
+   "source": "app",
+   "description": "Compile shaders in the background. Avoids stutter; an object may take a moment to appear. Off compiles every pipeline before drawing."
+  },
+  {
+   "key": "shadow_scale",
+   "tier": "allow",
+   "type": "enum",
+   "default": "1000",
+   "enum": [
+    {
+     "name": "Full",
+     "value": 1000
+    },
+    {
+     "name": "50 %",
+     "value": 500
+    },
+    {
+     "name": "25 %",
+     "value": 250
+    }
+   ],
+   "ui_title": "Shadow resolution",
+   "ui_title_res": "option_shadows",
+   "source": "app",
+   "description": "Shadow map size in thousandths, independent of the internal resolution. Lower is faster; shadows get softer or blockier. No effect on engines that draw shadows with compute (Unreal Engine 5)."
+  },
+  {
+   "key": "no_early_z",
+   "tier": "allow",
+   "type": "enum",
+   "default": "1",
+   "enum": [
+    {
+     "name": "Off",
+     "value": 1
+    },
+    {
+     "name": "On",
+     "value": 0
+    }
+   ],
+   "ui_title": "Early depth test",
+   "ui_title_res": "option_early_depth",
+   "source": "app",
+   "description": "Inverted switch: 1 (default) never forces early depth tests; 0 lets the GPU skip hidden pixels before shading. 0 is faster with heavy overdraw; on some Adreno drivers objects vanish in small blocks."
+  },
+  {
+   "key": "address_fold",
+   "tier": "risky",
+   "type": "bool",
+   "default": "true",
+   "source": "hidden",
+   "description": "Fold guest addresses beyond a 39-bit host address space. Off breaks games that map memory there."
+  },
+  {
+   "key": "async_readback",
+   "tier": "allow",
+   "type": "bool",
+   "default": "true",
+   "source": "hidden",
+   "description": "Let CPU reads proceed while GPU-written pages download, when they are clear of GPU-written bytes. Off makes every access to those pages wait for the GPU."
+  },
+  {
+   "key": "audio2_openal",
+   "tier": "risky",
+   "type": "bool",
+   "default": "false",
+   "source": "hidden",
+   "description": "Render AudioOut2 objects through OpenAL Soft (3D audio objects)."
+  },
+  {
+   "key": "audio2_push_unreserved",
+   "tier": "allow",
+   "type": "bool",
+   "default": "false",
+   "source": "hidden",
+   "description": "AudioOut2: commit a grain on a push without a reservation, as before the fix, for games that push without advancing."
+  },
+  {
+   "key": "batch_submits",
+   "tier": "allow",
+   "type": "bool",
+   "default": "true",
+   "source": "hidden",
+   "description": "Keep recording queued graphics batches into one command buffer. Off flushes after every batch (Unity games then reload render targets often)."
+  },
+  {
+   "key": "clip_reserve",
+   "tier": "risky",
+   "type": "bool",
+   "default": "true",
+   "source": "hidden",
+   "description": "Shrink the huge fixed memory reservations of Unreal Engine 4/5 to fit a 39-bit host address space. Off makes those games fail to start."
+  },
+  {
+   "key": "color_compare",
+   "tier": "allow",
+   "type": "bool",
+   "default": "true",
+   "source": "hidden",
+   "description": "Emulate depth-compare sampling of color textures with gather and sample. Off keeps the undefined native compare (older behaviour)."
+  },
+  {
+   "key": "cpu_fill",
+   "tier": "allow",
+   "type": "bool",
+   "default": "true",
+   "source": "hidden",
+   "description": "Run plain buffer fills (Unreal Engine 4 color metadata keys) on the CPU. Off runs them on the GPU, and later CPU reads wait for it."
+  },
+  {
+   "key": "defer_release_barrier",
+   "tier": "allow",
+   "type": "bool",
+   "default": "true",
+   "source": "hidden",
+   "description": "Defer the global barrier of release labels inside a render pass instead of ending the pass. Off ends the pass (UE4 split its depth passes per occlusion query)."
+  },
+  {
+   "key": "defer_write_barrier",
+   "tier": "risky",
+   "type": "int",
+   "default": "2",
+   "min": "0",
+   "max": "2",
+   "source": "hidden",
+   "description": "Barrier after draws whose shaders write memory: 2 defers and tracks written ranges (default), 1 defers blindly (flicker in Stray), 0 ends the pass after each such draw."
+  },
+  {
+   "key": "depth_color_direct_copy",
+   "tier": "allow",
+   "type": "bool",
+   "default": "true",
+   "source": "hidden",
+   "description": "Copy between depth and matching color images directly (Vulkan maintenance8) instead of through a buffer. Off always uses the buffer path."
+  },
+  {
+   "key": "depth_kick",
+   "tier": "allow",
+   "type": "bool",
+   "default": "true",
+   "source": "hidden",
+   "description": "Adreno fix: clear one depth pixel before a pass that starts with a depth-writing ALWAYS draw, which otherwise loses its depth writes (fog-coloured trails)."
+  },
+  {
+   "key": "direct_mem_mb",
+   "tier": "risky",
+   "type": "int",
+   "default": "13824",
+   "min": "4096",
+   "max": "13824",
+   "source": "hidden",
+   "description": "Size of the guest's direct memory in MiB (PS5 has 13824). Read once at start."
+  },
+  {
+   "key": "draw_window_reuse",
+   "tier": "allow",
+   "type": "bool",
+   "default": "false",
+   "source": "hidden",
+   "description": "Reuse the copy of a CPU-written buffer made earlier in the same draw window instead of copying it again. Less copying in buffer-heavy games; reusing too widely broke geometry in Asterix XXL2."
+  },
+  {
+   "key": "ds_feedback_merge",
+   "tier": "allow",
+   "type": "bool",
+   "default": "true",
+   "source": "hidden",
+   "description": "Use the feedback-loop layout when draws alternate between sampling and writing depth/stencil, instead of ending the pass at every draw. Off splits the pass (slower)."
+  },
+  {
+   "key": "eop_flush",
+   "tier": "allow",
+   "type": "bool",
+   "default": "false",
+   "source": "hidden",
+   "description": "Submit the queue after every release label, not only those that raise an interrupt. Costs a blocking submit per Unreal Engine 4 fence on Adreno."
+  },
+  {
+   "key": "event_barriers",
+   "tier": "risky",
+   "type": "bool",
+   "default": "true",
+   "source": "hidden",
+   "description": "Global barriers on partial flush events. Off is experimental (KytyPS5 dropped them)."
+  },
+  {
+   "key": "exact_denorm",
+   "tier": "risky",
+   "type": "bool",
+   "default": "false",
+   "source": "hidden",
+   "description": "Flush F32 denormal shader inputs as RDNA does. Costs a compare and select per operand."
+  },
+  {
+   "key": "exact_minmax",
+   "tier": "risky",
+   "type": "bool",
+   "default": "false",
+   "source": "hidden",
+   "description": "Exact NaN and signed-zero handling of shader min/max."
+  },
+  {
+   "key": "fence_tracking",
+   "tier": "allow",
+   "type": "bool",
+   "default": "true",
+   "source": "hidden",
+   "description": "Track GPU progress with one fence per submission on its own thread instead of timeline semaphores. Helps Turnip on KGSL, where timelines cost about 3 ms per submission."
+  },
+  {
+   "key": "fex_host_features",
+   "tier": "risky",
+   "type": "bool",
+   "default": "true",
+   "source": "hidden",
+   "description": "Detect the host CPU's features for the x86 translator. Off uses a fixed list."
+  },
+  {
+   "key": "fp_preserve",
+   "tier": "risky",
+   "type": "bool",
+   "default": "true",
+   "source": "hidden",
+   "description": "Declare signed zero, infinity and NaN preservation in shaders. Off lets the driver use fast math."
+  },
+  {
+   "key": "gpu_fast_cores",
+   "tier": "allow",
+   "type": "bool",
+   "default": "true",
+   "source": "hidden",
+   "description": "Pin the emulator's GPU thread to the cores with the highest maximum clock. Off leaves it to the scheduler."
+  },
+  {
+   "key": "gpu_indirect",
+   "tier": "allow",
+   "type": "bool",
+   "default": "true",
+   "source": "hidden",
+   "description": "Read indirect draw arguments on the GPU. Off reads them on the CPU."
+  },
+  {
+   "key": "guarded_desc",
+   "tier": "allow",
+   "type": "bool",
+   "default": "true",
+   "source": "hidden",
+   "description": "Track descriptors of writable shaders without a GPU phi. Off restores the phi for every descriptor (older, slower, for shaders that bind the wrong resource)."
+  },
+  {
+   "key": "guest_native",
+   "tier": "risky",
+   "type": "bool",
+   "default": "true",
+   "source": "hidden",
+   "description": "Run some HLE functions as guest code instead of traps. Off keeps every HLE function a trap (slower)."
+  },
+  {
+   "key": "guest_read_cache",
+   "tier": "risky",
+   "type": "bool",
+   "default": "true",
+   "source": "hidden",
+   "description": "Cache small guest memory reads per thread."
+  },
+  {
+   "key": "htile_clear_exact",
+   "tier": "allow",
+   "type": "int",
+   "default": "1",
+   "min": "0",
+   "max": "2",
+   "enum": [
+    {
+     "name": "Off",
+     "value": 0
+    },
+    {
+     "name": "PS5 games",
+     "value": 1
+    },
+    {
+     "name": "PS5 and PS4 games",
+     "value": 2
+    }
+   ],
+   "source": "hidden",
+   "description": "Treat only a write of exactly the live HTile range as a depth metadata clear. Default PS5 games; Off is the old rule (can hang the GPU or leave buffers unfilled); PS4 sizes are estimated."
+  },
+  {
+   "key": "image_readback",
+   "tier": "allow",
+   "type": "int",
+   "default": "0",
+   "min": "0",
+   "max": "2",
+   "enum": [
+    {
+     "name": "Off",
+     "value": 0
+    },
+    {
+     "name": "PS5 games",
+     "value": 1
+    },
+    {
+     "name": "PS5 and PS4 games",
+     "value": 2
+    }
+   ],
+   "source": "hidden",
+   "description": "Download GPU-written images before the CPU reads their memory. Fixes effects the CPU computes from GPU output (black indirect lighting in Unreal Engine 4); costs GPU waits."
+  },
+  {
+   "key": "in_pass_stream",
+   "tier": "allow",
+   "type": "bool",
+   "default": "true",
+   "source": "hidden",
+   "description": "Inside a render pass, serve CPU-modified read-only buffers from the stream ring instead of ending the pass to sync them. Avoids lost depth writes on Adreno (Dead Cells walls)."
+  },
+  {
+   "key": "keep_ds_layout",
+   "tier": "allow",
+   "type": "bool",
+   "default": "true",
+   "source": "hidden",
+   "description": "Keep a depth image's current attachment layout when the draw's writes allow it, avoiding layout changes that end the pass."
+  },
+  {
+   "key": "kill_mode",
+   "tier": "risky",
+   "type": "int",
+   "default": "0",
+   "min": "0",
+   "max": "2",
+   "source": "hidden",
+   "description": "How shaders discard pixels: 0 OpKill, 1 OpTerminateInvocation, 2 OpDemoteToHelperInvocation."
+  },
+  {
+   "key": "loop_budget",
+   "tier": "risky",
+   "type": "int",
+   "default": "67108864",
+   "min": "0",
+   "max": "4294967295",
+   "source": "hidden",
+   "description": "Loop iterations a compute dispatch may spend in all, before loops are cut to stay under the driver's timeout."
+  },
+  {
+   "key": "loop_cap",
+   "tier": "risky",
+   "type": "int",
+   "default": "65536",
+   "min": "0",
+   "max": "4294967295",
+   "source": "hidden",
+   "description": "Loop iterations per shader invocation of small dispatches and graphics stages before the loop is cut."
+  },
+  {
+   "key": "merge_access",
+   "tier": "allow",
+   "type": "bool",
+   "default": "true",
+   "source": "hidden",
+   "description": "Merge attachment and shader-read access inside a render pass instead of emitting barriers that end it. Off emits the barriers (slower)."
+  },
+  {
+   "key": "movrel_prune",
+   "tier": "allow",
+   "type": "bool",
+   "default": "true",
+   "source": "hidden",
+   "description": "Fold register-index comparisons in shaders (constant propagation). Off keeps the comparisons, for shaders that compute wrong after folding."
+  },
+  {
+   "key": "ngs2_at9_delay",
+   "tier": "allow",
+   "type": "bool",
+   "default": "true",
+   "source": "hidden",
+   "description": "NGS2 audio: count the ATRAC9 decoder delay. Off parses ATRAC9 blocks as before the fix (no delay, fact chunk's delay and skip)."
+  },
+  {
+   "key": "ngs2_custom_output_fallback",
+   "tier": "allow",
+   "type": "bool",
+   "default": "true",
+   "source": "hidden",
+   "description": "NGS2 audio: a custom mastering voice without an Output module writes its first buffer (default). Off leaves it silent."
+  },
+  {
+   "key": "ngs2_filters",
+   "tier": "allow",
+   "type": "bool",
+   "default": "true",
+   "source": "hidden",
+   "description": "NGS2 audio: apply the sampler filters. Off ignores them, as the old layout mostly did."
+  },
+  {
+   "key": "ngs2_limiter",
+   "tier": "allow",
+   "type": "bool",
+   "default": "true",
+   "source": "hidden",
+   "description": "NGS2 audio: apply the mastering limiter. Off leaves the output unlimited, as before the limiter."
+  },
+  {
+   "key": "ngs2_repeats_extra",
+   "tier": "allow",
+   "type": "bool",
+   "default": "false",
+   "source": "hidden",
+   "description": "NGS2 audio: play 1 + num_repeats passes of a block, as before the fix (default plays max(1, num_repeats))."
+  },
+  {
+   "key": "ngs2_voice_index_fallback",
+   "tier": "allow",
+   "type": "bool",
+   "default": "false",
+   "source": "hidden",
+   "description": "NGS2 audio: hand out the last voice for an out-of-range voice index instead of returning an error, as before the fix."
+  },
+  {
+   "key": "no_barycentric",
+   "tier": "allow",
+   "type": "bool",
+   "default": "false",
+   "source": "hidden",
+   "description": "Do not use the driver's fragment barycentrics; use the fallback. For Turnip builds on Adreno 8xx whose compiler fails on them."
+  },
+  {
+   "key": "output_4k",
+   "tier": "allow",
+   "type": "bool",
+   "default": "false",
+   "source": "hidden",
+   "description": "Report a 4K display to the game instead of 1080p. Games that size rendering from the output then render about four times the pixels; only for games that need a 4K output."
+  },
+  {
+   "key": "pass_fresh_reuse",
+   "tier": "allow",
+   "type": "bool",
+   "default": "false",
+   "source": "hidden",
+   "description": "Reuse a render pass's fresh buffer copy for later draws of the pass. Fewer copies; wrong when data changes between draws (vanishing buildings in Asterix XXL2)."
+  },
+  {
+   "key": "pix_center",
+   "tier": "risky",
+   "type": "int",
+   "default": "0",
+   "min": "0",
+   "max": "2",
+   "source": "hidden",
+   "description": "Half-pixel shift for D3D9-style pixel centers: 0 follows the game's register, 1 never shifts, 2 always shifts."
+  },
+  {
+   "key": "poll_backoff",
+   "tier": "allow",
+   "type": "bool",
+   "default": "true",
+   "source": "hidden",
+   "description": "Back off after failed event-flag polls. Off lets those polls spin (more CPU)."
+  },
+  {
+   "key": "prefetch",
+   "tier": "risky",
+   "type": "bool",
+   "default": "false",
+   "source": "hidden",
+   "description": "Prefetch pipelines for queued graphics submissions."
+  },
+  {
+   "key": "read_ahead_kb",
+   "tier": "risky",
+   "type": "int",
+   "default": "256",
+   "min": "0",
+   "max": "4096",
+   "source": "hidden",
+   "description": "KiB of GPU-written buffer to download after a faulting CPU read (0 = only the faulting pages)."
+  },
+  {
+   "key": "resolve_cache",
+   "tier": "allow",
+   "type": "bool",
+   "default": "false",
+   "source": "hidden",
+   "description": "Skip texture and render-target resolves whose source and registers did not change (PS5 games only). Less GPU work in games that repeat the same resolves."
+  },
+  {
+   "key": "rp_mode",
+   "tier": "risky",
+   "type": "int",
+   "default": "3",
+   "min": "0",
+   "max": "3",
+   "source": "hidden",
+   "description": "Render pass clears on Adreno: 3 opens with LOAD and clears inside (default), 0 loadOp CLEAR, 1 keeps the pass when only clears change, 2 clears in a pass of its own."
+  },
+  {
+   "key": "sample_in_general",
+   "tier": "allow",
+   "type": "bool",
+   "default": "false",
+   "source": "hidden",
+   "description": "Sample images in the GENERAL layout. Wrong mips on the stock Adreno driver (blurry, blocky textures); Turnip was fine."
+  },
+  {
+   "key": "scaled_dispatch",
+   "tier": "risky",
+   "type": "bool",
+   "default": "false",
+   "source": "hidden",
+   "description": "Downscale full-screen compute grids with the resolution scale. Experimental; no tested game qualified."
+  },
+  {
+   "key": "stream_mb",
+   "tier": "risky",
+   "type": "int",
+   "default": "64",
+   "min": "16",
+   "max": "1024",
+   "source": "hidden",
+   "description": "Size of the per-draw stream ring in MiB (read at start). Larger can reduce GPU waits; 128+ broke geometry in Asterix XXL2."
+  },
+  {
+   "key": "suspend_early",
+   "tier": "allow",
+   "type": "bool",
+   "default": "false",
+   "source": "hidden",
+   "description": "Release GPU suspend points once every earlier packet is submitted, without waiting for the host GPU, so the game's CPU can run up to a frame ahead. Fewer CPU waits; late texture downloads could land in reused memory. Unmeasured, off by default."
+  },
+  {
+   "key": "ts_scale",
+   "tier": "risky",
+   "type": "int",
+   "default": "1",
+   "min": "1",
+   "max": "8",
+   "source": "hidden",
+   "description": "GPU timestamps advance N times faster, so games that size rendering from GPU time see a slower GPU."
+  },
+  {
+   "key": "tso",
+   "tier": "allow",
+   "type": "bool",
+   "default": "false",
+   "source": "hidden",
+   "description": "Emulate x86 TSO memory ordering for guest loads and stores. Fixes rare multi-threading races; slower CPU emulation."
+  },
+  {
+   "key": "unmap_finish",
+   "tier": "allow",
+   "type": "bool",
+   "default": "false",
+   "source": "hidden",
+   "description": "Wait for the whole GPU before memory the GPU used is unmapped. Off (default) waits only for GPU-written data; on is the older, slow behaviour (Monster Boy at 14 FPS)."
+  },
+  {
+   "key": "wait_us",
+   "tier": "risky",
+   "type": "int",
+   "default": "1000000",
+   "min": "100000",
+   "max": "10000000",
+   "source": "hidden",
+   "description": "Microseconds the GPU thread waits for a label before logging and moving on."
+  },
+  {
+   "key": "write_fault_kb",
+   "tier": "risky",
+   "type": "int",
+   "default": "64",
+   "min": "4",
+   "max": "1024",
+   "source": "hidden",
+   "description": "KiB window released around a CPU write fault on a buffer (4 = one page, power of two)."
+  },
+  {
+   "key": "yield_us",
+   "tier": "allow",
+   "type": "int",
+   "default": "0",
+   "min": "0",
+   "max": "1000",
+   "source": "hidden",
+   "description": "Microseconds to sleep after a burst of guest yields (Unreal polls with millions). 0 keeps sched_yield; a short sleep can free the core and power budget."
+  }
+ ]
+}

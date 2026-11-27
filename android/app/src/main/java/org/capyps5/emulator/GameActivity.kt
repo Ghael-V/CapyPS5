@@ -9,6 +9,7 @@ import android.os.Bundle
 import android.os.Process
 import androidx.activity.compose.setContent
 import androidx.compose.runtime.LaunchedEffect
+import org.capyps5.emulator.aiconfig.AiConfigStore
 import org.capyps5.emulator.model.GameItem
 import org.libsdl.app.SDL
 import org.capyps5.emulator.ui.screens.EmulationScreen
@@ -82,12 +83,20 @@ class GameActivity : CapyActivity() {
             )
         }
         NativeBridge.nativeSetTextOption(POST_CHAIN_PROPERTY, settings.effectivePostChain(game.titleId))
+        // Hidden switches the recommended settings gave this game (debug.capy.<name>).
+        settings.gameHiddenOptions(game.titleId).forEach { (name, value) ->
+            NativeBridge.nativeSetOption("debug.capy.$name", value)
+        }
         val driver = GpuDrivers.find(this, settings.effectiveGpuDriver(game.titleId))
         NativeBridge.nativeSetGpuDriver(
             nativeLibraryDir = applicationInfo.nativeLibraryDir,
             driverDir = driver?.dir?.absolutePath.orEmpty(),
             library = driver?.library.orEmpty(),
         )
+        // Started on unconfirmed recommended settings: the launcher undoes them if this launch fails.
+        AiConfigStore.onGameStarted(this, game.titleId) {
+            NativeBridge.nativeGetStats().getOrElse(NativeBridge.STAT_GAME_FRAMES) { 0L }
+        }
         val versionText = Updater.versionText(this)
         setContent {
             // The in-game settings can change the button layout while the game runs.
@@ -106,6 +115,8 @@ class GameActivity : CapyActivity() {
     }
 
     private fun exitGame() {
+        // A fatal error leaves its report behind (see errorFile); it fails unconfirmed recommended settings.
+        AiConfigStore.onGameExit(this, fatal = errorFile(this).exists())
         runCatching { NativeBridge.nativeStopGame() }
         finish()
         // The launcher activity lives in the main process; ending this one frees everything the
