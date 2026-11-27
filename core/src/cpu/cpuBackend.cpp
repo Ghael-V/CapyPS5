@@ -918,8 +918,10 @@ public:
 		FEXCore::Config::Initialize();
 		FEXCore::Config::Set(FEXCore::Config::CONFIG_IS64BIT_MODE, "1");
 		FEXCore::Config::Set(FEXCore::Config::CONFIG_MULTIBLOCK, "1");
-		// `setprop debug.capy.tso 1`: emulate x86 TSO ordering for guest loads and stores.
-		static Common::DebugFlags::CachedValue tso("debug.capy.tso", 0);
+		// Emulate x86 TSO ordering for guest loads and stores (`setprop debug.capy.tso 0` turns it off).
+		// Without it, lock-free guest code breaks on ARM: Unreal Engine task graph queues read a
+		// half-published head and crash in several games.
+		static Common::DebugFlags::CachedValue tso("debug.capy.tso", 1);
 		FEXCore::Config::Set(FEXCore::Config::CONFIG_TSOENABLED, tso.Get() != 0 ? "1" : "0");
 		ALOGI("Arm64CpuBackend: TSO emulation %s", tso.Get() != 0 ? "on" : "off");
 		FEXCore::Config::Set(FEXCore::Config::CONFIG_SILENTLOG, "1");

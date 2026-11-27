@@ -602,9 +602,9 @@
    "key": "tso",
    "tier": "allow",
    "type": "bool",
-   "default": "false",
+   "default": "true",
    "source": "hidden",
-   "description": "Emulate x86 TSO memory ordering for guest loads and stores. Fixes rare multi-threading races; slower CPU emulation."
+   "description": "Emulate x86 TSO memory ordering for guest loads and stores (on by default). Turning it off makes CPU emulation faster but breaks lock-free code: Unreal Engine games crash in their task graph. Only suggest off for a non-Unreal game that is CPU-bound and known to be stable without it."
   },
   {
    "key": "unmap_finish",

@@ -112,7 +112,7 @@
   "ngs2_voice_index_fallback": "NGS2 audio: hand out the last voice for an out-of-range voice index instead of returning an error, as before the fix.",
   "ngs2_at9_delay": "NGS2 audio: count the ATRAC9 decoder delay. Off parses ATRAC9 blocks as before the fix (no delay, fact chunk's delay and skip).",
   "audio2_push_unreserved": "AudioOut2: commit a grain on a push without a reservation, as before the fix, for games that push without advancing.",
-  "tso": "Emulate x86 TSO memory ordering for guest loads and stores. Fixes rare multi-threading races; slower CPU emulation.",
+  "tso": "Emulate x86 TSO memory ordering for guest loads and stores (on by default). Turning it off makes CPU emulation faster but breaks lock-free code: Unreal Engine games crash in their task graph. Only suggest off for a non-Unreal game that is CPU-bound and known to be stable without it.",
   "direct_mem_mb": "Size of the guest's direct memory in MiB (PS5 has 13824). Read once at start.",
   "clip_reserve": "Shrink the huge fixed memory reservations of Unreal Engine 4/5 to fit a 39-bit host address space. Off makes those games fail to start.",
   "address_fold": "Fold guest addresses beyond a 39-bit host address space. Off breaks games that map memory there.",
