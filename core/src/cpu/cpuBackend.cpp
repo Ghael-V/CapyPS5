@@ -918,7 +918,10 @@ public:
 		FEXCore::Config::Initialize();
 		FEXCore::Config::Set(FEXCore::Config::CONFIG_IS64BIT_MODE, "1");
 		FEXCore::Config::Set(FEXCore::Config::CONFIG_MULTIBLOCK, "1");
-		FEXCore::Config::Set(FEXCore::Config::CONFIG_TSOENABLED, "0");
+		// `setprop debug.capy.tso 1`: emulate x86 TSO ordering for guest loads and stores.
+		static Common::DebugFlags::CachedValue tso("debug.capy.tso", 0);
+		FEXCore::Config::Set(FEXCore::Config::CONFIG_TSOENABLED, tso.Get() != 0 ? "1" : "0");
+		ALOGI("Arm64CpuBackend: TSO emulation %s", tso.Get() != 0 ? "on" : "off");
 		FEXCore::Config::Set(FEXCore::Config::CONFIG_SILENTLOG, "1");
 		FEXCore::Config::Set(FEXCore::Config::CONFIG_SMCCHECKS, "0");
 		// `setprop debug.capy.dump_ir 1`: dump every block's final IR to <files>/ir (debugging only).
