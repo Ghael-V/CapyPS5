@@ -68,7 +68,7 @@ import org.capyps5.emulator.ui.theme.Capy
 import java.text.DateFormat
 import java.util.Date
 
-private fun Grade.color(): Color = when (this) {
+internal fun Grade.color(): Color = when (this) {
     Grade.Platinum -> Color(0xFFB8D4E8)
     Grade.Gold -> Color(0xFFE3B54A)
     Grade.Silver -> Color(0xFFB4BAC4)
@@ -76,7 +76,7 @@ private fun Grade.color(): Color = when (this) {
 }
 
 @Composable
-private fun Grade.label(): String = stringResource(
+internal fun Grade.label(): String = stringResource(
     when (this) {
         Grade.Platinum -> R.string.trophy_platinum
         Grade.Gold -> R.string.trophy_gold

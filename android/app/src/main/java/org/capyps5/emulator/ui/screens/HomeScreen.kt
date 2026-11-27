@@ -84,6 +84,10 @@ import org.capyps5.emulator.PostChain
 import org.capyps5.emulator.PostPreset
 import org.capyps5.emulator.R
 import org.capyps5.emulator.Settings
+import org.capyps5.emulator.library.ExternalActionActivity
+import org.capyps5.emulator.library.GameLookup
+import org.capyps5.emulator.library.PlayTime
+import org.capyps5.emulator.library.SaveData
 import org.capyps5.emulator.model.GameItem
 import org.capyps5.emulator.ui.NavKey
 import org.capyps5.emulator.ui.OnNavKey
@@ -98,6 +102,9 @@ import java.util.Date
 import java.util.Locale
 
 private const val GridColumns = 6
+
+/** Tabs: 0 = games row, 1 = library grid, 2 = all trophies. */
+private const val TrophiesTab = 2
 
 private fun hasGamepad(): Boolean = InputDevice.getDeviceIds().any { id ->
     val device = InputDevice.getDevice(id) ?: return@any false
@@ -117,6 +124,10 @@ fun HomeScreen(
     onLibraryPicked: (String) -> Unit,
     onClearShaderCache: (titleId: String?) -> String,
     onSaveLog: () -> String?,
+    openOptionsFor: String? = null,
+    onOptionsOpened: () -> Unit = {},
+    // Changes when the launcher comes back to the front (after a game), to read play time again.
+    refreshKey: Int = 0,
     overlayActive: Boolean = false,
 ) {
     var tab by remember { mutableIntStateOf(0) }
@@ -124,12 +135,33 @@ fun HomeScreen(
     var showSettings by remember { mutableStateOf(false) }
     var optionsFor by remember { mutableStateOf<GameItem?>(null) }
     var trophiesFor by remember { mutableStateOf<GameItem?>(null) }
+    // Another app asked for one game's options: open them once the library has that game.
+    LaunchedEffect(openOptionsFor, games.size) {
+        val index = games.indexOfFirst { it.elfPath == openOptionsFor }
+        if (openOptionsFor == null || index < 0) return@LaunchedEffect
+        showSettings = false
+        trophiesFor = null
+        selected = index
+        optionsFor = games[index]
+        onOptionsOpened()
+    }
     val current = games.getOrNull(selected.coerceIn(0, (games.size - 1).coerceAtLeast(0)))
 
     val filePicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri: Uri? ->
         uri?.let { onAddGameFile(it.toString()) }
     }
     val context = androidx.compose.ui.platform.LocalContext.current
+    // The "Trophies" tab: read when it is shown, again after a game; the last result stays meanwhile.
+    var trophyRow by remember { mutableIntStateOf(0) }
+    val trophyCollection by produceState<List<GameTrophies>?>(null, tab == TrophiesTab, games, refreshKey) {
+        if (tab == TrophiesTab) value = withContext(Dispatchers.IO) { loadTrophyCollection(context, games) }
+    }
+    // The key art follows the game focused in the trophy list.
+    LaunchedEffect(tab, trophyRow, trophyCollection) {
+        if (tab != TrophiesTab) return@LaunchedEffect
+        val game = trophyCollection?.getOrNull(trophyRow)?.game ?: return@LaunchedEffect
+        games.indexOf(game).takeIf { it >= 0 }?.let { selected = it }
+    }
     var driverMessage by remember { mutableStateOf<String?>(null) }
     val driverScope = androidx.compose.runtime.rememberCoroutineScope()
     val driverPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri: Uri? ->
@@ -155,10 +187,23 @@ fun HomeScreen(
     }
 
     OnNavKey(enabled = !showSettings && optionsFor == null && trophiesFor == null && !overlayActive) { key ->
+        if (tab == TrophiesTab) {
+            val last = ((trophyCollection?.size ?: 0) - 1).coerceAtLeast(0)
+            when (key) {
+                NavKey.Up -> trophyRow = (trophyRow - 1).coerceAtLeast(0)
+                NavKey.Down -> trophyRow = (trophyRow + 1).coerceAtMost(last)
+                NavKey.Confirm -> trophyCollection?.getOrNull(trophyRow)?.let { trophiesFor = it.game }
+                NavKey.TabLeft -> tab = TrophiesTab - 1
+                NavKey.Menu -> showSettings = true
+                NavKey.Back -> tab = 0
+                else -> Unit
+            }
+            return@OnNavKey
+        }
         val count = games.size
         when (key) {
-            NavKey.TabLeft -> tab = 0
-            NavKey.TabRight -> tab = 1
+            NavKey.TabLeft -> tab = (tab - 1).coerceAtLeast(0)
+            NavKey.TabRight -> tab = tab + 1
             NavKey.Left -> if (count > 0) selected = (selected - 1).coerceAtLeast(0)
             NavKey.Right -> if (count > 0) selected = (selected + 1).coerceAtMost(count - 1)
             NavKey.Up -> if (tab == 1 && count > 0) selected = (selected - GridColumns).coerceAtLeast(0)
@@ -205,8 +250,19 @@ fun HomeScreen(
                     GameRow(games, selected, onSelect = { i -> if (i == selected) onGameSelected(games[i]) else selected = i })
                     Spacer(Modifier.weight(1f))
                     current?.let {
-                        GameDetails(it, onPlay = { onGameSelected(it) }, onOptions = { optionsFor = it }, onTrophies = { trophiesFor = it })
+                        GameDetails(
+                            it, refreshKey,
+                            onPlay = { onGameSelected(it) }, onOptions = { optionsFor = it }, onTrophies = { trophiesFor = it },
+                        )
                     }
+                }
+                tab == TrophiesTab -> {
+                    TrophyCollection(
+                        trophyCollection, trophyRow,
+                        onFocus = { trophyRow = it },
+                        onOpen = { trophiesFor = it },
+                        modifier = Modifier.weight(1f).fillMaxWidth(),
+                    )
                 }
                 else -> {
                     GameGrid(
@@ -219,6 +275,11 @@ fun HomeScreen(
             Spacer(Modifier.height(12.dp))
             HintBar(
                 if (games.isEmpty()) listOf("Start" to stringResource(R.string.settings))
+                else if (tab == TrophiesTab) listOf(
+                    "Ⓐ" to stringResource(R.string.trophies_open),
+                    "Ⓑ" to stringResource(R.string.hint_back),
+                    "L1 / R1" to stringResource(R.string.tabs),
+                )
                 else listOf(
                     "Ⓐ" to stringResource(R.string.play),
                     "Ⓨ" to stringResource(R.string.game_options),
@@ -299,7 +360,9 @@ private fun TopBar(tab: Int, onTab: (Int) -> Unit, onAdd: () -> Unit, onRefresh:
             style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold),
             modifier = Modifier.padding(start = 8.dp, end = 30.dp),
         )
-        listOf(stringResource(R.string.tab_games), stringResource(R.string.tab_library)).forEachIndexed { i, label ->
+        listOf(
+            stringResource(R.string.tab_games), stringResource(R.string.tab_library), stringResource(R.string.trophies),
+        ).forEachIndexed { i, label ->
             Text(
                 label,
                 style = MaterialTheme.typography.titleLarge,
@@ -411,12 +474,16 @@ private fun GameTile(game: GameItem, selected: Boolean, modifier: Modifier, onCl
 }
 
 @Composable
-private fun GameDetails(game: GameItem, onPlay: () -> Unit, onOptions: () -> Unit, onTrophies: () -> Unit) {
+private fun GameDetails(game: GameItem, refreshKey: Int, onPlay: () -> Unit, onOptions: () -> Unit, onTrophies: () -> Unit) {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val played = remember(game.titleId, refreshKey) {
+        PlayTime.read(context, game.titleId)?.seconds?.let { PlayTime.format(context, it) }
+    }
     Column(Modifier.widthIn(max = 560.dp)) {
         Text(game.titleName, style = MaterialTheme.typography.displaySmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
         Spacer(Modifier.height(4.dp))
         Text(
-            listOfNotNull(game.titleId, game.version?.let { "v$it" }, "PS4".takeIf { game.isPs4 }).joinToString("  ·  "),
+            listOfNotNull(game.titleId, game.version?.let { "v$it" }, "PS4".takeIf { game.isPs4 }, played).joinToString("  ·  "),
             style = MaterialTheme.typography.bodyMedium,
             color = Capy.TextSecondary,
         )
@@ -468,7 +535,27 @@ private fun GameOptionsPanel(
     // Read so the rows recompose when a value changes.
     val optionsVersion = settings.coreOptionsVersion
     val context = androidx.compose.ui.platform.LocalContext.current
+    val scope = androidx.compose.runtime.rememberCoroutineScope()
+    val saveExporter = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/zip")) { uri: Uri? ->
+        uri ?: return@rememberLauncherForActivityResult
+        scope.launch {
+            message = withContext(Dispatchers.IO) {
+                runCatching {
+                    context.contentResolver.openOutputStream(uri)?.use { SaveData.export(context, game.titleId, it) }
+                        ?: error("cannot write the file")
+                }.fold(
+                    onSuccess = { context.getString(R.string.saves_exported) },
+                    onFailure = { context.getString(R.string.saves_export_failed, it.message.orEmpty()) },
+                )
+            }
+        }
+    }
+    val saveImporter = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri: Uri? ->
+        uri?.let { ExternalActionActivity.importSaves(context, game, it) }
+    }
     val items = remember(optionsVersion, message) {
+        val hasTitleId = GameLookup.isTitleId(game.titleId)
+        val saves = if (hasTitleId) SaveData.info(context, game.titleId) else null
         val drivers = org.capyps5.emulator.GpuDrivers.list(context)
         // null = follow the global driver, "" = system driver.
         val driverChoices: List<String?> = listOf<String?>(null, "") + drivers.map { it.id }
@@ -550,6 +637,21 @@ private fun GameOptionsPanel(
             } else null,
             if (Trophies.hasTrophies(game.directoryPath)) {
                 SettingItem(context.getString(R.string.trophies), context.getString(R.string.trophies_desc), onConfirm = onTrophies)
+            } else null,
+            saves?.let {
+                SettingItem(
+                    context.getString(R.string.saves_export), context.getString(R.string.saves_export_desc),
+                    onConfirm = {
+                        val stamp = java.text.SimpleDateFormat("yyyyMMdd-HHmm", java.util.Locale.US).format(java.util.Date())
+                        saveExporter.launch("${game.titleId}-saves-$stamp.zip")
+                    },
+                )
+            },
+            if (hasTitleId) {
+                SettingItem(
+                    context.getString(R.string.saves_import), context.getString(R.string.saves_import_desc),
+                    onConfirm = { saveImporter.launch(arrayOf("application/zip", "application/octet-stream", "*/*")) },
+                )
             } else null,
             SettingItem(
                 context.getString(R.string.clear_game_shader_cache), context.getString(R.string.clear_shader_cache_desc),

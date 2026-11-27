@@ -330,6 +330,9 @@
     <string name="trophies_share_text">%1$s: %2$d de %3$d trofeos en CapyPS5 · capyps5.org</string>
     <string name="trophies_card_recent">Últimos trofeos</string>
     <string name="trophies_card_next">Por conseguir</string>
+    <string name="trophies_collection">Todos los trofeos</string>
+    <string name="trophies_collection_none">Ningún juego de la biblioteca trae lista de trofeos.</string>
+    <string name="trophies_open">Ver trofeos</string>
     <string name="whats_new_title">Lo nuevo en la v%1$s</string>
     <string-array name="whats_new_items">
         <item>Primera beta. La retrocompatibilidad con PS4 sigue siendo experimental.</item>
@@ -415,4 +418,25 @@
     <string name="ai_setting_tso">Orden de memoria x86 (TSO)</string>
     <string name="ai_setting_unmap_finish">Esperar a la GPU antes de desmapear</string>
     <string name="ai_setting_yield_us">Pausa tras cesiones del juego (µs)</string>
+    <string name="play_time_hours">%1$d h %2$d min jugados</string>
+    <string name="play_time_minutes">%1$d min jugados</string>
+    <string name="saves_export">Exportar partidas guardadas</string>
+    <string name="saves_export_desc">Un archivo ZIP que puedes volver a importar aquí, en este u otro dispositivo</string>
+    <string name="saves_exported">Partidas guardadas exportadas</string>
+    <string name="saves_export_failed">No se han podido exportar las partidas: %1$s</string>
+    <string name="saves_import">Importar partidas guardadas</string>
+    <string name="saves_import_desc">Sustituye las partidas de este juego por las de un ZIP exportado</string>
+    <string name="saves_import_title">Importar partidas guardadas</string>
+    <string name="saves_import_checking">Comprobando el archivo…</string>
+    <string name="saves_import_working">Importando…</string>
+    <string name="saves_import_replaces">Esto sustituye las partidas guardadas de %1$s (%2$s) por las de este archivo. Las partidas actuales se pierden.</string>
+    <string name="saves_import_adds">Esto añade a %1$s (%2$s) las partidas guardadas de este archivo.</string>
+    <string name="saves_import_confirm">Importar</string>
+    <string name="saves_import_done">Partidas de %1$s importadas</string>
+    <string name="saves_import_failed">No se han podido importar las partidas: %1$s. No se ha cambiado nada.</string>
+    <string name="saves_import_not_saves">Este archivo no es una exportación de partidas de CapyPS5.</string>
+    <string name="saves_import_not_in_library">Este archivo tiene partidas de %1$s, que no está en tu biblioteca.</string>
+    <string name="saves_import_other_game">Este archivo tiene partidas de otro juego (%1$s).</string>
+    <string name="external_game_running">Hay un juego en marcha. Ciérralo primero.</string>
+    <string name="external_game_unknown">Este juego no está en la biblioteca de CapyPS5</string>
 </resources>

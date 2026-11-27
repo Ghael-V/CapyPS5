@@ -50,6 +50,37 @@
             android:screenOrientation="sensorLandscape"
             android:theme="@style/Theme.CapyPS5" />
 
+        <!-- Frontends: open one game's options, or import its saved data after the user confirms. -->
+        <activity
+            android:name=".library.ExternalActionActivity"
+            android:exported="true"
+            android:excludeFromRecents="true"
+            android:configChanges="orientation|screenSize|smallestScreenSize|screenLayout|keyboardHidden|keyboard|navigation|uiMode"
+            android:screenOrientation="sensorLandscape"
+            android:theme="@style/Theme.CapyPS5">
+            <intent-filter>
+                <action android:name="${applicationId}.OPEN_GAME_SETTINGS" />
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="${applicationId}.IMPORT_SAVES" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:scheme="content" />
+            </intent-filter>
+            <!-- The same with a type: content URIs usually carry one (application/zip). -->
+            <intent-filter>
+                <action android:name="${applicationId}.IMPORT_SAVES" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:scheme="content" android:mimeType="*/*" />
+            </intent-filter>
+        </activity>
+
+        <!-- Frontends: read-only play time, trophies and saved data of one game they name. -->
+        <provider
+            android:name=".library.LibraryProvider"
+            android:authorities="${applicationId}.library"
+            android:exported="true" />
+
         <!-- Shares downloaded update APKs (cache/updates) with the system installer. -->
         <provider
             android:name="androidx.core.content.FileProvider"
