@@ -212,14 +212,14 @@ private fun check(settings: Settings, schema: AiSchema, game: GameItem, suggesti
     }.distinctBy { it.entry.key }
 
 /**
- * What the feature sends and keeps, in Spanish or English. For now this is the Lemon project's page:
- * the same server answers both apps.
+ * What the feature sends and keeps, in Spanish or English, on CapyPS5's website.
+ * (The same server answers Lemon, which has its own page.)
  */
 private fun openPrivacy(context: Context) {
     val url = if (Locale.getDefault().language == "es") {
-        "https://lemon-emu.org/es/privacidad-ia.html"
+        "https://capyps5.org/es/privacidad-ia.html"
     } else {
-        "https://lemon-emu.org/privacy-ai.html"
+        "https://capyps5.org/privacy-ai.html"
     }
     runCatching {
         context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
