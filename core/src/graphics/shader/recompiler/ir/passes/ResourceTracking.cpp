@@ -776,7 +776,10 @@ private:
 				                     ValueOpcodeName(handle.GetOpcode()), handle.NumArgs(), width));
 			}
 			descriptor.dword_count = width;
-			const auto* use = m_shader_writes == ShaderWrites::Resource && !m_program.srt_plan_complete
+			// debug.capy.guarded_desc 0 restores the GPU Phi for every descriptor of a writable shader.
+			static Common::DebugFlags::CachedValue guarded_desc("debug.capy.guarded_desc", 1);
+			const auto* use = m_shader_writes == ShaderWrites::Resource && !m_program.srt_plan_complete &&
+			                  guarded_desc.Get() != 0
 			    ? handle.Parent() : nullptr;
 			auto& values = m_descriptor_values[use];
 			for (uint32_t i = 0; i < width; i++) {
