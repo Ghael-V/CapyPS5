@@ -1260,7 +1260,9 @@ void ConstantPropagationPass(const BlockList& blocks, uint32_t wave_size) {
 	    FoldRegisterIndexComparisons(blocks, register_index_comparisons)) {
 		// Fold the selects and predicates the pruned comparisons fed.
 		for (auto* block: blocks)
-			for (auto& inst: *block) worklist.Queue(&inst);
+			for (auto& inst: *block)
+				if (const auto found = worklist.locations.find(&inst); found != worklist.locations.end())
+					worklist.Queue(found->second);
 		drain();
 	}
 	// Normalize retained PHI/select values only after every supported field read has
