@@ -509,7 +509,7 @@ bool ResolveSelectorKeys(const DescriptorSource::IndirectDescriptor& indirect,
 			const auto& mask = *selector->ranks;
 			DescriptorValue mask_value;
 			ShaderBufferResource masks;
-			if (count > 32u || !WalkedDescriptor(program, mask.source, mask_value) ||
+			if (count > 32u || !clean.EvaluateDescriptor(mask.source, mask_value) ||
 			    !DecodeBufferDescriptor(mask_value, masks)) return false;
 			// Each chunk holds whole strides of the power-of-two class, or one of its words.
 			const auto words = mask.stride / 4u;
