@@ -412,10 +412,13 @@ static void VulkanFindPhysicalDevice(vk::Instance instance, vk::SurfaceKHR surfa
 			check_format(vk::Format::eR8G8B8A8Unorm, storage_features, "storage image");
 		}
 
+		// B8G8R8A8 storage is optional in Vulkan (older Adreno stock drivers lack it). Images are
+		// created mutable with extended usage, so this only matters for a shader that writes a BGRA
+		// image directly: warn instead of refusing the whole device.
 		if (!skip_device &&
-		    !CheckFormat(device, vk::Format::eB8G8R8A8Srgb, true, storage_features)) {
-			LOGF("Format vk::Format::eB8G8R8A8Srgb cannot be used as storage image\n");
-			check_format(vk::Format::eB8G8R8A8Unorm, storage_features, "storage image");
+		    !CheckFormat(device, vk::Format::eB8G8R8A8Srgb, true, storage_features) &&
+		    !CheckFormat(device, vk::Format::eB8G8R8A8Unorm, true, storage_features)) {
+			LOGF("Warning: vk::Format::eB8G8R8A8Unorm cannot be used as storage image on this device\n");
 		}
 
 		if (!skip_device && device_properties.limits.maxSamplerAnisotropy < 16.0f) {
