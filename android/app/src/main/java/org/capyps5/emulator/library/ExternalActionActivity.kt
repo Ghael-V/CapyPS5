@@ -54,6 +54,10 @@ import org.capyps5.emulator.ui.theme.CapyPS5Theme
  * - <applicationId>.OPEN_GAME_SETTINGS opens the game's options in the launcher.
  * - <applicationId>.IMPORT_SAVES replaces the game's saved data with the ZIP in the intent data,
  *   only after the user confirms it here.
+ * - <applicationId>.EXPORT_SAVES, started for a result, asks the user whether the calling app may
+ *   have a copy of the game's saved data. If they allow it, the result is RESULT_OK with the
+ *   save_zip URI and a one-time read grant (save_zip itself needs a signature permission, so no
+ *   other app can read saves on its own); anything else is RESULT_CANCELED.
  */
 class ExternalActionActivity : CapyActivity() {
 
@@ -64,6 +68,8 @@ class ExternalActionActivity : CapyActivity() {
         fun openSettingsAction(context: Context) = "${context.packageName}.OPEN_GAME_SETTINGS"
 
         fun importSavesAction(context: Context) = "${context.packageName}.IMPORT_SAVES"
+
+        fun exportSavesAction(context: Context) = "${context.packageName}.EXPORT_SAVES"
 
         /** The app's own import (game options): the same confirmation as for other apps. */
         fun importSaves(context: Context, game: GameItem, zip: Uri) {
@@ -78,6 +84,7 @@ class ExternalActionActivity : CapyActivity() {
     private sealed interface ImportState {
         data object Checking : ImportState
         data class Confirm(val game: GameItem, val replaces: Boolean) : ImportState
+        data class ExportConfirm(val game: GameItem, val caller: String) : ImportState
         data object Working : ImportState
         data class Done(val message: String, val ok: Boolean) : ImportState
     }
@@ -89,6 +96,7 @@ class ExternalActionActivity : CapyActivity() {
         when (intent?.action) {
             openSettingsAction(this) -> openSettings()
             importSavesAction(this) -> startImport()
+            exportSavesAction(this) -> startExport()
             else -> finish()
         }
     }
@@ -152,6 +160,37 @@ class ExternalActionActivity : CapyActivity() {
         return ImportState.Confirm(game, SaveData.info(this, game.titleId) != null)
     }
 
+    private fun startExport() {
+        setResult(Activity.RESULT_CANCELED)
+        // Only a caller that waits for the result can receive the grant (and be named to the user).
+        val caller = callingPackage
+        if (caller == null) {
+            finish()
+            return
+        }
+        val label = runCatching {
+            packageManager.getApplicationLabel(packageManager.getApplicationInfo(caller, 0)).toString()
+        }.getOrDefault(caller)
+        setContent { CapyPS5Theme { ImportScreen() } }
+        lifecycleScope.launch {
+            state = withContext(Dispatchers.IO) {
+                val game = GameLookup.find(this@ExternalActionActivity, requestedTitleId(), requestedPath())
+                when {
+                    game == null -> ImportState.Done(getString(R.string.external_game_unknown), false)
+                    SaveData.info(this@ExternalActionActivity, game.titleId) == null ->
+                        ImportState.Done(getString(R.string.saves_export_none, game.titleName), false)
+                    else -> ImportState.ExportConfirm(game, label)
+                }
+            }
+        }
+    }
+
+    private fun confirmExport(game: GameItem) {
+        val zip = Uri.parse("content://$packageName.library/save_zip/${game.titleId}")
+        setResult(Activity.RESULT_OK, Intent().setData(zip).addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION))
+        finish()
+    }
+
     private fun confirmImport(game: GameItem) {
         val zip = intent.data ?: return
         state = ImportState.Working
@@ -183,10 +222,17 @@ class ExternalActionActivity : CapyActivity() {
                 stringResource(R.string.saves_import_confirm) to { confirmImport(current.game) },
                 stringResource(R.string.cancel) to { finish() },
             )
+            is ImportState.ExportConfirm -> listOf(
+                stringResource(R.string.saves_export_allow) to { confirmExport(current.game) },
+                stringResource(R.string.cancel) to { finish() },
+            )
             is ImportState.Done -> listOf(stringResource(R.string.close) to { finish() })
             else -> emptyList()
         }
-        var focused by remember(current) { mutableIntStateOf(if (current is ImportState.Confirm) 1 else 0) }
+        // Confirmations start on Cancel.
+        var focused by remember(current) {
+            mutableIntStateOf(if (current is ImportState.Confirm || current is ImportState.ExportConfirm) 1 else 0)
+        }
         OnNavKey { key ->
             when (key) {
                 NavKey.Left -> if (actions.isNotEmpty()) focused = (focused - 1).mod(actions.size)
@@ -204,12 +250,22 @@ class ExternalActionActivity : CapyActivity() {
                     .padding(22.dp),
                 verticalArrangement = Arrangement.spacedBy(12.dp),
             ) {
-                Text(stringResource(R.string.saves_import_title), style = MaterialTheme.typography.titleLarge)
+                val exporting = intent?.action == exportSavesAction(this@ExternalActionActivity)
+                Text(
+                    stringResource(if (exporting) R.string.saves_export_request_title else R.string.saves_import_title),
+                    style = MaterialTheme.typography.titleLarge,
+                )
                 val text = when (current) {
                     ImportState.Checking -> stringResource(R.string.saves_import_checking)
                     ImportState.Working -> stringResource(R.string.saves_import_working)
                     is ImportState.Confirm -> stringResource(
                         if (current.replaces) R.string.saves_import_replaces else R.string.saves_import_adds,
+                        current.game.titleName,
+                        current.game.titleId,
+                    )
+                    is ImportState.ExportConfirm -> stringResource(
+                        R.string.saves_export_request,
+                        current.caller,
                         current.game.titleName,
                         current.game.titleId,
                     )

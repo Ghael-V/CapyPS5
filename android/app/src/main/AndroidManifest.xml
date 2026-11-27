@@ -17,6 +17,10 @@
     <!-- The updater hands downloaded releases to the system installer. -->
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
 
+    <permission
+        android:name="${applicationId}.permission.READ_SAVES"
+        android:protectionLevel="signature" />
+
     <application
         android:allowBackup="true"
         android:allowNativeHeapPointerTagging="false"
@@ -63,6 +67,10 @@
                 <category android:name="android.intent.category.DEFAULT" />
             </intent-filter>
             <intent-filter>
+                <action android:name="${applicationId}.EXPORT_SAVES" />
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
+            <intent-filter>
                 <action android:name="${applicationId}.IMPORT_SAVES" />
                 <category android:name="android.intent.category.DEFAULT" />
                 <data android:scheme="content" />
@@ -76,10 +84,17 @@
         </activity>
 
         <!-- Frontends: read-only play time, trophies and saved data of one game they name. -->
+        <!-- save_zip/ is readable only by this app, or by another app the user allowed through
+             EXPORT_SAVES (a one-time grant). -->
         <provider
             android:name=".library.LibraryProvider"
             android:authorities="${applicationId}.library"
-            android:exported="true" />
+            android:exported="true">
+            <path-permission
+                android:pathPrefix="/save_zip"
+                android:readPermission="${applicationId}.permission.READ_SAVES" />
+            <grant-uri-permission android:pathPrefix="/save_zip/" />
+        </provider>
 
         <!-- Shares downloaded update APKs (cache/updates) with the system installer. -->
         <provider

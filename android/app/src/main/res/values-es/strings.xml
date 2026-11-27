@@ -424,6 +424,10 @@
     <string name="saves_export_desc">Un archivo ZIP que puedes volver a importar aquí, en este u otro dispositivo</string>
     <string name="saves_exported">Partidas guardadas exportadas</string>
     <string name="saves_export_failed">No se han podido exportar las partidas: %1$s</string>
+    <string name="saves_export_request_title">Copia de partidas guardadas</string>
+    <string name="saves_export_request">%1$s pide una copia de las partidas guardadas de %2$s (%3$s).</string>
+    <string name="saves_export_allow">Permitir</string>
+    <string name="saves_export_none">%1$s no tiene partidas guardadas.</string>
     <string name="saves_import">Importar partidas guardadas</string>
     <string name="saves_import_desc">Sustituye las partidas de este juego por las de un ZIP exportado</string>
     <string name="saves_import_title">Importar partidas guardadas</string>

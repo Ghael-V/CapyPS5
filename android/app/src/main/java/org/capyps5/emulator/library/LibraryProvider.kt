@@ -23,6 +23,7 @@ import java.io.FileNotFoundException
  * - title?title_id=… | path=… : play time and trophy counts
  * - achievements?… : one row per trophy; achievement_icon/<title id>/<id> is its PNG
  * - saves?… : whether there is saved data; save_zip/<title id> is it as a ZIP
+ *   (save_zip needs a signature permission: other apps get a one-time grant through EXPORT_SAVES)
  * - screenshots?… : always empty (the emulator takes none)
  *
  * It answers only for a game the caller names, never lists the library and never writes. Unknown

@@ -460,6 +460,10 @@
     <string name="saves_export_desc">A ZIP file you can import here again, on this or another device</string>
     <string name="saves_exported">Saved data exported</string>
     <string name="saves_export_failed">Could not export the saved data: %1$s</string>
+    <string name="saves_export_request_title">Copy of saved data</string>
+    <string name="saves_export_request">%1$s asks for a copy of the saved data of %2$s (%3$s).</string>
+    <string name="saves_export_allow">Allow</string>
+    <string name="saves_export_none">%1$s has no saved data.</string>
     <string name="saves_import">Import saved data</string>
     <string name="saves_import_desc">Replaces this game\'s saved data with an exported ZIP file</string>
     <string name="saves_import_title">Import saved data</string>
