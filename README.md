@@ -7,7 +7,10 @@ PS4 games through backward compatibility, the way a PS5 does.
 
 **Website:** <https://capyps5.org> · **Discord:** <https://discord.com/invite/PEE7Q5TVM5>
 
-> **Beta (v0.1.0).** Many games work, but many don't run at full speed yet, and PS4 backward
+**Recommended:** get CapyPS5 through [Bramble](https://bramble-hub.org), the frontend that puts CapyPS5,
+Lemon, Iron Lemon, Kiwi360 and any other emulator in one library, and installs and updates them for you.
+
+> **Beta (v0.2.0).** Many games work, but many don't run at full speed yet, and PS4 backward
 > compatibility is experimental. Please report problems. The app tells you when a new version is out.
 
 Source code: <https://git.capyps5.org/CapyPS5/CapyPS5> (mirror: <https://github.com/Ghael-V/CapyPS5>).

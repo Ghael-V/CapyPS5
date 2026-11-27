@@ -340,13 +340,13 @@
     <string name="trophies_open">See trophies</string>
     <string name="whats_new_title">What\'s new in v%1$s</string>
     <string-array name="whats_new_items">
-        <item>First beta. PS4 backward compatibility stays experimental.</item>
-        <item>Faster in every game: the GPU thread runs on the fastest cores, preparing each draw costs about half, and fewer waits for the GPU (fast-clear fills, GPU-driven draws of PS4 games).</item>
-        <item>Unreal Engine games that closed with a corrupt memory error a few seconds into a level no longer do.</item>
-        <item>Edit controls (pause menu): move and resize every on-screen control, and save the layout for all games or just this one.</item>
-        <item>In-game settings: frame limit, Framegen, background shaders, button layout and touchpad, saved for this game, with Use global settings to drop them.</item>
-        <item>Resolution 33 % (a 4K game at about 720p), frame limit 15 FPS, global console language, and on-screen buttons away from the screen edge.</item>
-        <item>Many fixes from KytyPS5, decoding of PS4 Pro shaders, and a clear message when a downloaded GPU driver cannot show images.</item>
+        <item>Recommended settings (Ⓨ in a game\'s options): settings suggested for that game on this device, each with its reason. Undo at any time, and they are undone on their own if the game fails to start.</item>
+        <item>Image quality in Graphics: FSR 1, Snapdragon GSR and bicubic upscaling, RCAS sharpening and SMAA anti-aliasing.</item>
+        <item>Post-processing: 19 effects you can chain and tune (bloom, CRT, scanlines, film grain, color grade, cel shading…) and six presets, globally or per game.</item>
+        <item>Works with Bramble: play time, trophies, game settings and save backups that you approve. A new tab gathers every game\'s trophies.</item>
+        <item>Unreal Engine games that crashed about a minute into play no longer do: x86 memory ordering is now emulated.</item>
+        <item>Adreno 6xx and 7xx phones on older system drivers are no longer refused at start.</item>
+        <item>A large NGS2 and AudioOut2 audio update, a big shader recompiler update and about 200 fixes from KytyPS5.</item>
     </string-array>
     <string name="option_language">Console language</string>
     <string name="option_language_desc">The language games are told the console uses. Games without it fall back to their own default.</string>

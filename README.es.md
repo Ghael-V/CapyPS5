@@ -7,7 +7,10 @@ juegos de PS4 mediante retrocompatibilidad, como hace una PS5.
 
 **Web:** <https://capyps5.org/es/> · **Discord:** <https://discord.com/invite/PEE7Q5TVM5>
 
-> **Beta (v0.1.0).** Muchos juegos funcionan, pero muchos aún no van a velocidad completa, y la
+**Recomendado:** consigue CapyPS5 con [Bramble](https://bramble-hub.org/es/), el frontend que reúne CapyPS5,
+Lemon, Iron Lemon, Kiwi360 y cualquier otro emulador en una sola biblioteca, y los instala y actualiza por ti.
+
+> **Beta (v0.2.0).** Muchos juegos funcionan, pero muchos aún no van a velocidad completa, y la
 > retrocompatibilidad con PS4 es experimental. Reporta los fallos. La app avisa cuando hay una versión nueva.
 
 Código fuente: <https://git.capyps5.org/CapyPS5/CapyPS5> (mirror:

@@ -335,13 +335,13 @@
     <string name="trophies_open">Ver trofeos</string>
     <string name="whats_new_title">Lo nuevo en la v%1$s</string>
     <string-array name="whats_new_items">
-        <item>Primera beta. La retrocompatibilidad con PS4 sigue siendo experimental.</item>
-        <item>Más rápido en todos los juegos: el hilo de la GPU va en los núcleos más rápidos, preparar cada draw cuesta la mitad y hay menos esperas a la GPU (borrados rápidos y draws que decide la GPU en juegos de PS4).</item>
-        <item>Los juegos de Unreal Engine que se cerraban por memoria corrupta a los pocos segundos de un nivel ya no lo hacen.</item>
-        <item>Editar controles (menú de pausa): mueve y redimensiona cada control en pantalla y guarda el diseño para todos los juegos o solo para este.</item>
-        <item>Ajustes en partida: límite de FPS, Framegen, shaders en segundo plano, distribución de botones y touchpad, guardados para este juego, con Usar la configuración global para quitarlos.</item>
-        <item>Resolución del 33 % (unos 720p desde 4K), límite de 15 FPS, idioma de la consola global y botones en pantalla más lejos del borde.</item>
-        <item>Muchas correcciones de KytyPS5, decodificación de shaders de PS4 Pro y un mensaje claro cuando un driver descargado no puede mostrar imagen.</item>
+        <item>Configuración recomendada (Ⓨ en las opciones de un juego): ajustes sugeridos para ese juego en este dispositivo, cada uno con su motivo. Se deshace cuando quieras, y sola si el juego no llega a arrancar.</item>
+        <item>Calidad de imagen en Gráficos: escalado FSR 1, Snapdragon GSR y bicúbico, nitidez RCAS y antialiasing SMAA.</item>
+        <item>Posprocesado: 19 efectos que puedes encadenar y ajustar (bloom, CRT, scanlines, grano, color, cel shading…) y seis presets, para todos los juegos o para uno.</item>
+        <item>Funciona con Bramble: tiempo jugado, trofeos, ajustes del juego y copias de las partidas que tú apruebas. Una pestaña nueva reúne los trofeos de todos los juegos.</item>
+        <item>Los juegos de Unreal Engine que se cerraban al minuto de jugar ya no lo hacen: ahora se emula el orden de memoria de x86.</item>
+        <item>Los móviles con Adreno 6xx y 7xx y drivers de sistema antiguos ya no se rechazan al arrancar.</item>
+        <item>Una gran actualización del audio NGS2 y AudioOut2, del recompilador de shaders y unas 200 correcciones de KytyPS5.</item>
     </string-array>
     <string name="option_language">Idioma de la consola</string>
     <string name="option_language_desc">El idioma que el juego cree que usa la consola. Si el juego no lo incluye, usará el suyo por defecto.</string>
