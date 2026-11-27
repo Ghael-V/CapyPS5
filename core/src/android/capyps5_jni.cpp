@@ -160,6 +160,21 @@ JNIEXPORT void JNICALL Java_org_capyps5_emulator_NativeBridge_nativeSetOption(
 	env->ReleaseStringUTFChars(name, text);
 }
 
+// A text setting for this session (see Common::DebugFlags::SetFrontendText); it may change while
+// the game runs, e.g. "debug.capy.pp_chain".
+JNIEXPORT void JNICALL Java_org_capyps5_emulator_NativeBridge_nativeSetTextOption(
+    JNIEnv* env, jclass /*clazz*/, jstring name, jstring value) {
+	if (name == nullptr || value == nullptr) {
+		return;
+	}
+	const char* name_text  = env->GetStringUTFChars(name, nullptr);
+	const char* value_text = env->GetStringUTFChars(value, nullptr);
+	Common::DebugFlags::SetFrontendText(name_text, value_text);
+	ALOGI("option %s = \"%s\"", name_text, value_text);
+	env->ReleaseStringUTFChars(value, value_text);
+	env->ReleaseStringUTFChars(name, name_text);
+}
+
 // Called before nativeStartGame. An empty `library` keeps the system Vulkan driver;
 // `driverDir` must be app-private storage (dlopen refuses world-writable locations).
 JNIEXPORT void JNICALL Java_org_capyps5_emulator_NativeBridge_nativeSetGpuDriver(

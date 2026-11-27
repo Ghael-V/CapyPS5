@@ -59,6 +59,8 @@ struct GraphicContext {
 	// 8-bit storage buffer access: false on Adreno 6xx + Turnip; the texture tiler then
 	// uses compute pipelines compiled without VK_KHR_8bit_storage.
 	bool                               storage_buffer_8bit_enabled           = true;
+	// shaderFloat16 and shaderInt16, for the half-precision presentation post-processing passes.
+	bool                               shader_float16_int16_enabled          = false;
 	vk::PhysicalDeviceMeshShaderPropertiesEXT mesh_shader_properties                = {};
 	uint32_t                           subgroup_size                         = 0;
 	uint32_t                           min_subgroup_size                     = 0;

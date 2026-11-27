@@ -24,6 +24,7 @@
 #include "graphics/host_gpu/renderer/renderContext.h"
 #include "graphics/host_gpu/vulkanCommon.h"
 #include "graphics/presentation/frameGen.h"
+#include "graphics/presentation/postProcess.h"
 #include "graphics/presentation/presenter.h"
 #include "graphics/presentation/systemOverlay.h"
 #include "graphics/presentation/videoOut.h"
@@ -33,6 +34,7 @@
 #include <array>
 #include <limits>
 #include <memory>
+#include <string>
 #include <vector>
 #include <vulkan/vk_platform.h>
 
@@ -430,6 +432,20 @@ struct Presenter::Impl {
 	double                          guest_interval        = 0.0;
 	uint32_t                        generated_count       = 0; // for the newest frame; 0: none pending
 	uint32_t                        generated_next        = 0; // the next one to show, 1-based
+
+	// Post-processing (PostProcessor): image quality on guest frames before Framegen, effects on
+	// every presented frame after it.
+	struct PostSettings {
+		QualitySettings quality;
+		bool            effects = false;
+	};
+	PostSettings ReadPostSettings();
+
+	std::unique_ptr<PostProcessor> post;
+	bool                           post_unsupported = false;
+	uint64_t                       post_chain_revision = ~0ull;
+	std::string                    post_chain;
+	uint64_t                       guest_serial = 0; // counts the guest frames given to Present()
 };
 
 void Swapchain::Create() {
@@ -1112,6 +1128,7 @@ void Presenter::Present(std::span<const Layer> layers) {
 		previous = layer;
 	}
 	if (std::ranges::any_of(layers, [](const Layer& layer) { return layer.bus == 0; })) {
+		m_impl->guest_serial++;
 		m_impl->PresentGuestFrame();
 	} else {
 		m_impl->Present();
@@ -1198,6 +1215,52 @@ void Presenter::ClearLayer(int bus) {
 	}
 }
 
+Presenter::Impl::PostSettings Presenter::Impl::ReadPostSettings() {
+	// Image quality (Settings > Graphics) and the effects chain (Settings > Post-processing).
+	// `setprop debug.capy.pp_off 1` turns the image quality passes off, 2 the effects, 3 both.
+	static Common::DebugFlags::CachedValue upscaler("debug.capy.upscaler", 0);
+	static Common::DebugFlags::CachedValue sharpen("debug.capy.sharpen", 0);
+	static Common::DebugFlags::CachedValue aa("debug.capy.aa", 0);
+	static Common::DebugFlags::CachedValue off("debug.capy.pp_off", 0);
+	PostSettings settings {};
+	const auto   disabled = off.Get();
+	if ((disabled & 1) == 0) {
+		settings.quality.upscaler =
+		    static_cast<Upscaler>(std::clamp<int64_t>(upscaler.Get(), 0, 4));
+		settings.quality.sharpen = static_cast<uint32_t>(std::clamp<int64_t>(sharpen.Get(), 0, 100));
+		settings.quality.aa      = static_cast<AntiAliasing>(std::clamp<int64_t>(aa.Get(), 0, 1));
+	}
+	const auto revision =
+	    Common::DebugFlags::g_frontend_text_revision.load(std::memory_order_acquire);
+	bool chain_changed = false;
+	if (revision != post_chain_revision) {
+		post_chain_revision = revision;
+		post_chain          = Common::DebugFlags::GetFrontendText("debug.capy.pp_chain");
+		chain_changed       = true;
+	}
+	const bool want = settings.quality.Active() || ((disabled & 2) == 0 && !post_chain.empty());
+	if (!want || post_unsupported) {
+		return {};
+	}
+	if (post == nullptr) {
+		post = std::make_unique<PostProcessor>(window.graphic_ctx);
+		if (!post->Supported()) {
+			Common::DebugFlags::NoteOnce("CapyPS5-PostProcess", 0x50505200u,
+			                             "post-processing is not supported by this GPU");
+			post.reset();
+			post_unsupported = true;
+			return {};
+		}
+		chain_changed = true;
+	}
+	if (chain_changed) {
+		post->SetEffects(post_chain);
+	}
+	post->SetQuality(settings.quality);
+	settings.effects = (disabled & 2) == 0 && post->HasEffects();
+	return settings;
+}
+
 void Presenter::Impl::Present(const FrameGenStep* step) {
 	KYTY_PROFILER_FUNCTION();
 
@@ -1214,6 +1277,7 @@ void Presenter::Impl::Present(const FrameGenStep* step) {
 	if (swapchain.Handle() != nullptr && swapchain.NeedsResize()) {
 		RecoverSwapchain(Swapchain::Status::Recreate);
 	}
+	const auto post_settings = ReadPostSettings();
 	// A retried presentation reuses the frame generation work it already recorded.
 	bool         frame_gen_recorded = step == nullptr || frame_gen == nullptr;
 	VulkanImage* generated_source   = nullptr;
@@ -1236,6 +1300,14 @@ void Presenter::Impl::Present(const FrameGenStep* step) {
 			const bool        draw_system_overlay =
 			    overlay_visual.active && swapchain.PrepareSystemOverlay();
 			VulkanImage* source = layers[0].frame != nullptr ? &layers[0].frame->image : nullptr;
+			const bool   sdr_frame =
+			    layers[0].frame != nullptr && !layers[0].frame->hdr && !layers[0].frame->linear;
+			if (post_settings.quality.Active() && sdr_frame) {
+				// AA, upscaling and sharpening, once per guest frame; Framegen ingests the result.
+				layers[0].frame->Transit(command.Handle(), vk::ImageLayout::eTransferSrcOptimal,
+				                         vk::AccessFlagBits2::eTransferRead);
+				source = &post->Enhance(command.Handle(), *source, swapchain.Extent(), guest_serial);
+			}
 			if (!frame_gen_recorded) {
 				frame_gen_recorded    = true;
 				const auto vk_command = command.Handle();
@@ -1261,6 +1333,12 @@ void Presenter::Impl::Present(const FrameGenStep* step) {
 			                           (layers[0].frame->hdr || layers[0].frame->linear)
 			                       ? layers[0].frame
 			                       : nullptr;
+			if (post_settings.effects && source != nullptr && hdr_source == nullptr) {
+				// The effects chain, on every presented frame, generated ones included.
+				TransitImage(command.Handle(), *source, vk::ImageLayout::eTransferSrcOptimal,
+				             vk::AccessFlagBits2::eTransferRead);
+				source = &post->ApplyEffects(command.Handle(), *source, swapchain.Extent());
+			}
 			swapchain.RecordPresentCommands(command, source, hdr_source, layers[1],
 			                                draw_system_overlay);
 			const auto tick = swapchain.Submit(present_scheduler);

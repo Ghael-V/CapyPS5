@@ -813,6 +813,11 @@ static vk::Device VulkanCreateDevice(GraphicContext& graphics,
 	    supported_features2.features.vertexPipelineStoresAndAtomics;
 	graphics.sample_rate_shading_enabled                 = true;
 	device_features.shaderInt64 = VK_TRUE;
+	// Optional, for the packed half-precision FSR passes of the presentation post-processing.
+	graphics.shader_float16_int16_enabled = supported_features12.shaderFloat16 == VK_TRUE &&
+	                                        supported_features2.features.shaderInt16 == VK_TRUE;
+	features12.shaderFloat16    = graphics.shader_float16_int16_enabled ? VK_TRUE : VK_FALSE;
+	device_features.shaderInt16 = graphics.shader_float16_int16_enabled ? VK_TRUE : VK_FALSE;
 	device_features.shaderFloat64 =
 	    supported_features2.features.shaderFloat64 &&
 	    float_controls.shaderSignedZeroInfNanPreserveFloat64;

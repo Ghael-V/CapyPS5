@@ -442,6 +442,47 @@ foreach(shader_name IN ITEMS luma search median project still generate)
 endforeach()
 list(APPEND kyty_emulator_src ${frame_gen_shader_headers})
 
+# Presentation post-processing (PostProcessor): image quality passes (SMAA, FSR 1, Snapdragon GSR,
+# bicubic) and the effects chain. Fullscreen fragment passes drawn with gpu_blit_fs_triangle.vert.
+set(post_process_generated_dir "${PROJECT_BINARY_DIR}/post_process_shaders")
+file(GLOB post_process_shader_includes CONFIGURE_DEPENDS "${gpu_tiler_shader_dir}/pp_*.glsl")
+list(APPEND post_process_shader_includes
+	"${KYTY_THIRD_PARTY_DIR}/fidelityfx-fsr/ffx_a.h"
+	"${KYTY_THIRD_PARTY_DIR}/fidelityfx-fsr/ffx_fsr1.h"
+	"${KYTY_THIRD_PARTY_DIR}/smaa/SMAA.hlsl"
+)
+# kyty_post_process_shader(<symbol stem> <source> [glslang options...])
+macro(kyty_post_process_shader shader_name shader_source)
+	set(shader_spv "${post_process_generated_dir}/${shader_name}.spv")
+	set(shader_header "${post_process_generated_dir}/${shader_name}_spv.h")
+	string(TOUPPER "${shader_name}_SPV" shader_symbol)
+	add_custom_command(
+		OUTPUT "${shader_header}"
+		COMMAND ${CMAKE_COMMAND} -E make_directory "${post_process_generated_dir}"
+		COMMAND "${KYTY_GLSLANG_VALIDATOR}" -V --target-env vulkan1.3 -Os ${ARGN}
+		        "-I${gpu_tiler_shader_dir}" "-I${KYTY_THIRD_PARTY_DIR}/fidelityfx-fsr"
+		        "-I${KYTY_THIRD_PARTY_DIR}/smaa" -o "${shader_spv}" "${shader_source}"
+		COMMAND ${CMAKE_COMMAND} -DINPUT=${shader_spv} -DOUTPUT=${shader_header}
+		        -DSYMBOL=${shader_symbol} -P "${KYTY_SOURCE_DIR}/embed_spirv.cmake"
+		DEPENDS "${shader_source}" ${post_process_shader_includes}
+		VERBATIM
+	)
+	list(APPEND post_process_shader_headers "${shader_header}")
+endmacro()
+foreach(shader_name IN ITEMS bicubic fsr_easu fsr_rcas smaa_edges smaa_weights smaa_blend)
+	kyty_post_process_shader(pp_${shader_name} "${gpu_tiler_shader_dir}/pp_${shader_name}.frag")
+endforeach()
+foreach(shader_name IN ITEMS fsr_easu fsr_rcas)
+	kyty_post_process_shader(pp_${shader_name}_fp16 "${gpu_tiler_shader_dir}/pp_${shader_name}.frag"
+	                         -DPP_FP16=1)
+endforeach()
+kyty_post_process_shader(pp_sgsr1 "${KYTY_THIRD_PARTY_DIR}/snapdragon-gsr/sgsr1_capy.frag")
+foreach(shader_name IN ITEMS sharpen bloom blur crt scanlines vignette chroma grain grade filmic
+                              levels split deband denoise cartoon cel lens pixelate mono)
+	kyty_post_process_shader(pp_fx_${shader_name} "${gpu_tiler_shader_dir}/pp_fx_${shader_name}.frag")
+endforeach()
+list(APPEND kyty_emulator_src ${post_process_shader_headers})
+
 list(APPEND kyty_emulator_src
 	"${KYTY_SOURCE_DIR}/emulator.h"
 	"${KYTY_SOURCE_DIR}/emulator.cpp"
@@ -480,6 +521,7 @@ set(inc_headers
 	${KYTY_THIRD_PARTY_DIR}/cpuinfo/include
 	${KYTY_THIRD_PARTY_DIR}/renderdoc
 	${KYTY_THIRD_PARTY_DIR}/stb
+	${KYTY_THIRD_PARTY_DIR}/smaa
 )
 
 if (KYTY_CLANG_CL)

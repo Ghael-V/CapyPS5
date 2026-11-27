@@ -13,6 +13,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <mutex>
+#include <string>
 #include <vector>
 
 #if defined(__ANDROID__)
@@ -113,6 +114,41 @@ inline bool GetFrontendOption(const char* name, int64_t* value) {
 		}
 	}
 	return false;
+}
+
+// Text options from the frontend (the post-processing effects chain). They may change while a
+// game runs; the revision tells a reader when to read them again.
+struct FrontendText {
+	std::string name;
+	std::string value;
+};
+inline std::mutex                g_frontend_text_mutex;
+inline std::vector<FrontendText> g_frontend_texts;
+inline std::atomic<uint64_t>     g_frontend_text_revision {0};
+
+inline void SetFrontendText(const char* name, const char* value) {
+	std::lock_guard lock(g_frontend_text_mutex);
+	auto it = std::find_if(g_frontend_texts.begin(), g_frontend_texts.end(),
+	                       [name](const FrontendText& text) { return text.name == name; });
+	if (it == g_frontend_texts.end()) {
+		g_frontend_texts.push_back({name, value});
+	} else if (it->value != value) {
+		it->value = value;
+	} else {
+		return;
+	}
+	g_frontend_text_revision.fetch_add(1, std::memory_order_release);
+}
+
+/** The value, or an empty string when the frontend never set it. */
+inline std::string GetFrontendText(const char* name) {
+	std::lock_guard lock(g_frontend_text_mutex);
+	for (const auto& text: g_frontend_texts) {
+		if (text.name == name) {
+			return text.value;
+		}
+	}
+	return {};
 }
 
 /** Numeric debug property, e.g. `static CachedValue wait("debug.capy.wait_us", 2000);`. */
