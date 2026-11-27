@@ -81,6 +81,12 @@ void MasterSemaphore::WaiterRun() {
 		const auto [tick, fence] = m_pending_fences.front();
 		lock.unlock();
 		const auto result = m_graphics.device.waitForFences(1, &fence, VK_TRUE, UINT64_MAX);
+		if (result != vk::Result::eSuccess) {
+#if defined(__ANDROID__) || defined(ANDROID)
+			__android_log_print(ANDROID_LOG_WARN, "CapyPS5-Sync", "fence wait for tick %" PRIu64 " returned %d",
+			                    static_cast<uint64_t>(tick), static_cast<int>(result));
+#endif
+		}
 		EXIT_NOT_IMPLEMENTED(result != vk::Result::eSuccess);
 		(void)m_graphics.device.resetFences(1, &fence);
 		lock.lock();
