@@ -1247,8 +1247,8 @@ private:
 
 	// `uniform`: the value is wave-uniform (a scalar key), so an edge guarded for any lane
 	// (V_CMPX on it then EXECZ) bounds it as well as one guarded for all lanes.
-	bool NonzeroOnEntry(Value value, const Block* block, uint32_t excluded = 0u,
-	                    bool uniform = false) const {
+	bool NonzeroOnEntry(Value value, const Block* block, uint32_t excluded,
+	                    bool uniform) const {
 		// Every path into this use must cross an edge taken only when `value != excluded` (for
 		// all lanes). Joins are followed into each predecessor; a cycle or the entry without
 		// such an edge fails, so an unrelated comparison never counts as the bound.
