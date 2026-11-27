@@ -8,6 +8,7 @@
 #include "graphics/shader/recompiler/ir/ShaderIR.h"
 
 #include <string_view>
+#include <algorithm>
 #include <span>
 
 namespace Libs::Graphics::ShaderRecompiler::IR {
@@ -23,6 +24,7 @@ struct SrtRuntime {
 	void*                     userdata                   = nullptr;
 	SrtMemoryReader           read_specialization_memory = nullptr;
 	std::span<const uint32_t> workgroup_counts;
+	uint64_t                  indirect_args_address = 0;
 };
 
 class SrtReadCapture {
@@ -50,6 +52,9 @@ enum class RuntimeValueType { Any, Integer, ImmutableInteger };
 
 bool ValidateRuntimeValue(const ResourcePlan& program, Value value,
                           RuntimeValueType type = RuntimeValueType::Any);
+// Uniform across a compute wave, including values derived from its workgroup ID.
+// This does not imply that the host can evaluate the value.
+bool ValidateWaveUniformValue(const ResourcePlan& program, Value value);
 void CompileSrtWalker(ResourcePlan& program);
 // Uses the strict reader for values that affect shader specialization.
 SrtRuntime CleanRuntime(SrtRuntime runtime);
@@ -58,12 +63,63 @@ SrtRuntime CleanRuntime(SrtRuntime runtime);
 [[nodiscard]] std::string_view LastSrtFailedOpcode();
 [[nodiscard]] uint64_t         LastSrtFailedAddress();
 [[nodiscard]] bool             LastSrtFailedSpecialization();
+// Whether an image some reached block lists (or that no block lists) is active in the last walk.
+bool WalkedImageActive(const ResourcePlan& plan, uint32_t image);
+
+// Nonnegative affine coefficients: element zero is constant, remaining elements are
+// caller-selected leaves. Runtime range proofs must additionally exclude U32 wrap.
+template <size_t Size>
+std::optional<std::array<uint64_t, Size>> AffineIndex(
+    Value value, const auto& resolve, const auto& leaf, uint32_t depth = 0) {
+	value = resolve(value);
+	if (depth > 32u || value.GetType() != Type::U32) return {};
+	std::array<uint64_t, Size> result {};
+	if (value.IsImmediate()) {
+		result[0] = value.U32();
+		return result;
+	}
+	if (const auto index = leaf(value)) {
+		result[*index] = 1u;
+		return result;
+	}
+	const auto* inst = value.TryInstruction();
+	if (inst == nullptr) return {};
+	auto op = inst->GetOpcode();
+	// The sum of an add with carry out (PS4 V_ADD_I32): an ordinary add of the index terms.
+	if (op == ValueOpcode::CompositeExtractU32x2 && inst->Arg(1).Resolve() == Value(0u)) {
+		const auto* add = inst->Arg(0).Resolve().TryInstruction();
+		if (add == nullptr || add->GetOpcode() != ValueOpcode::IAddCarry32) return {};
+		inst = add;
+		op   = ValueOpcode::IAdd32;
+	}
+	if (op != ValueOpcode::IAdd32 && op != ValueOpcode::IMul32 &&
+	    op != ValueOpcode::ShiftLeftLogical32) return {};
+	auto left = AffineIndex<Size>(inst->Arg(0), resolve, leaf, depth + 1u);
+	auto right = AffineIndex<Size>(inst->Arg(1), resolve, leaf, depth + 1u);
+	if (!left || !right) return {};
+	const auto constant = [](const auto& coefficients) {
+		return std::ranges::all_of(std::span(coefficients).subspan(1u),
+		                          [](uint64_t coefficient) { return coefficient == 0u; });
+	};
+	if (op == ValueOpcode::IMul32 && !constant(*right)) std::swap(left, right);
+	if (op != ValueOpcode::IAdd32 && !constant(*right)) return {};
+	if (op == ValueOpcode::ShiftLeftLogical32) {
+		if ((*right)[0] >= 32u) return {};
+		(*right)[0] = uint64_t {1} << (*right)[0];
+	}
+	for (size_t index = 0; index < Size; ++index) {
+		(*left)[index] = op == ValueOpcode::IAdd32
+		    ? (*left)[index] + (*right)[index] : (*left)[index] * (*right)[0];
+		if ((*left)[index] > UINT32_MAX) return {};
+	}
+	return left;
+}
 
 // One memoized evaluation session shared by the entire shader resource refresh.
 class SrtWalker {
 public:
 	SrtWalker(const ResourcePlan& program, const SrtRuntime& runtime,
-	          SrtWalker* clean_evaluator = nullptr, Value active_mask = {});
+	          SrtWalker* clean_evaluator = nullptr);
 	~SrtWalker();
 	SrtWalker(const SrtWalker&)            = delete;
 	SrtWalker& operator=(const SrtWalker&) = delete;
@@ -76,7 +132,10 @@ public:
 	bool RefreshFlatBufferInterpreted(std::vector<uint32_t>& flat);
 
 private:
-	static ResourcePlan::EvaluationContext& AcquireContext(const ResourcePlan& program);
+	SrtWalker(SrtWalker& parent, Value active_mask, bool clean = false,
+	          SrtWalker* clean_evaluator = nullptr);
+	ResourcePlan::EvaluationContext& AcquireContext();
+	void ResetUnknowns();
 	static float Float32(uint64_t bits);
 	bool EvaluateWide(Value value, uint64_t& result);
 	bool Arg(const Inst& inst, size_t index, uint64_t& result);
@@ -89,6 +148,9 @@ private:
 	SrtRuntime                      m_runtime;
 	SrtWalker*                      m_clean_evaluator = nullptr;
 	Value                           m_active_mask;
+	const std::vector<uint8_t>*      m_reachable_blocks = nullptr;
+	const SrtWalker*                m_session;
+	uint8_t                         m_read_policy;
 	ResourcePlan::EvaluationContext& m_context;
 };
 

@@ -24,6 +24,7 @@
 #include <memory>
 #include <optional>
 #include <string_view>
+#include <unordered_map>
 #include <vector>
 
 namespace Xbyak {
@@ -31,6 +32,11 @@ class CodeGenerator;
 }
 
 namespace Libs::Graphics::ShaderRecompiler::IR {
+
+class SrtWalker;
+
+// Finite descriptor domains also bound the arithmetic used to prove their indices.
+constexpr uint32_t MaxIndirectDescriptorProbes = 65536u;
 
 enum class ResourceKind {
 	None,
@@ -76,19 +82,18 @@ struct MemoryInfo {
 	bool                    formatted                                             = false;
 	bool                    image_has_mip                                         = false;
 	bool                    image_r128                                            = false;
+	bool                    image_cube                                            = false;
 	bool                    idxen                                                 = false;
 	bool                    offen                                                 = false;
 	bool                    coherent                                              = false;
 	bool                    planning_only                                         = false;
 
 	[[nodiscard]] bool SupportsIndirectBufferLoad(ValueOpcode opcode) const {
-		return !typed && data_bits == 32u &&
-		       (formatted ? opcode == ValueOpcode::LoadBufferU32
-		                  : opcode == ValueOpcode::ReadConstBuffer ||
-		                        opcode == ValueOpcode::LoadBufferU32 ||
-		                        opcode == ValueOpcode::LoadBufferU32x2 ||
-		                        opcode == ValueOpcode::LoadBufferU32x3 ||
-		                        opcode == ValueOpcode::LoadBufferU32x4);
+		if (data_bits == 8u) return !formatted && opcode == ValueOpcode::LoadBufferU8;
+		if (data_bits == 16u) return !formatted && opcode == ValueOpcode::LoadBufferU16;
+		return data_bits == 32u && ((!formatted && opcode == ValueOpcode::ReadConstBuffer) ||
+		       opcode == ValueOpcode::LoadBufferU32 || opcode == ValueOpcode::LoadBufferU32x2 ||
+		       opcode == ValueOpcode::LoadBufferU32x3 || opcode == ValueOpcode::LoadBufferU32x4);
 	}
 
 	bool operator==(const MemoryInfo& other) const = default;
@@ -125,6 +130,7 @@ struct BufferResource {
 	bool                   atomic             = false;
 	bool                   formatted          = false;
 	bool                   scalar             = false;
+	bool                   live               = false;
 	uint32_t               indirect_root              = NoIndirectBuffer;
 	uint32_t               indirect_mapping_offset    = 0;
 	uint32_t               indirect_search_iterations = 0;
@@ -155,6 +161,7 @@ struct ImageResource {
 	bool                          atomic            = false;
 	bool                          atomic64          = false;
 	bool                          sample_access_only = true; // Every use is a sample.
+	bool                          unfiltered_access_only = true;
 	bool                          depth_compare     = false;
 	bool                          cube              = false;
 	bool                          r128              = false;
@@ -178,11 +185,33 @@ struct ImageResource {
 	            : format >= F::k32UInt && format <= F::k32Float;
 }
 
+[[nodiscard]] constexpr Prospero::BufferFormat
+RawSignedStorageFormat(const ImageResource& image, Prospero::BufferFormat format) {
+	if (image.resource_class != ImageResourceClass::Storage || !image.written)
+		return Prospero::BufferFormat::kInvalid;
+	if (format == Prospero::BufferFormat::k32SInt && (image.atomic ? !image.atomic64 : !image.read))
+		return Prospero::BufferFormat::k32UInt;
+	if (format == Prospero::BufferFormat::k16SInt && !image.read && !image.atomic)
+		return Prospero::BufferFormat::k16UInt;
+	return Prospero::BufferFormat::kInvalid;
+}
+
+// A raw load of a kDepth k16UInt T# reads a D16 surface's codes. Vulkan cannot view D16 as
+// R16Uint, so the host binds it as UNorm and the shader converts back.
+[[nodiscard]] constexpr bool ReadsDepthBits(const ImageResource& image) {
+	return image.conversion_format == Prospero::BufferFormat::k16UInt;
+}
+
 struct SamplerResource {
+	static constexpr uint32_t NoIndirectSampler = UINT32_MAX;
+
 	uint32_t source                = 0;
 	uint32_t first_use_pc          = 0;
 	// Native filtering/border variants share the original sampler's runtime descriptor.
 	uint32_t snapshot_index        = 0;
+	uint32_t indirect_root = NoIndirectSampler;
+	uint32_t indirect_mapping_offset = 0;
+	uint32_t indirect_search_iterations = 0;
 	std::vector<uint32_t> indirect_resources;
 	bool     force_point_filtering = false;
 	bool     depth_compare         = false;
@@ -529,10 +558,9 @@ struct Bindings {
 };
 
 struct ShaderInfo {
-	static constexpr uint32_t MaxBuffers      = 64;
+	static constexpr uint32_t MaxBufferRoots  = 64;
 	static constexpr uint32_t MaxImages       = 128;
 	static constexpr uint32_t MaxSamplers     = 32;
-	static constexpr uint32_t MaxSampledPairs = 64;
 
 	std::vector<BufferResource>      buffers;
 	std::vector<ImageResource>       images;
@@ -541,7 +569,6 @@ struct ShaderInfo {
 	std::vector<StageInput>          inputs;
 	std::vector<StageOutput>         outputs;
 	std::vector<uint32_t>            user_data_registers;
-	uint64_t                        live_buffers = 0;
 	std::array<uint8_t, 32>          vertex_fetch_components {};
 	int32_t                          vertex_offset_sgpr = -1;
 	int32_t                          instance_offset_sgpr = -1;
@@ -579,21 +606,65 @@ struct ShaderInfo {
 struct DescriptorSource {
 	struct IndirectDescriptor {
 		struct SelectorRead {
+			struct CountedRows {
+				uint32_t source = UINT32_MAX;
+				uint32_t stride = 0; // Byte spacing between selector rows, not their length.
+
+				bool operator==(const CountedRows& other) const = default;
+			};
+			struct MaskRanks {
+				uint32_t source = UINT32_MAX;
+				uint32_t stride = 0; // Byte spacing of the mask words its load can address.
+				uint32_t offset = 0;
+
+				bool operator==(const MaskRanks& other) const = default;
+			};
 			uint32_t source = UINT32_MAX;
 			uint32_t stride = 0;
 			uint32_t offset = 0;
+			// V#-strided reads select records first_record + k * record_step.
+			uint32_t first_record = 0;
+			uint32_t record_step = 1;
+			uint32_t maximum = UINT32_MAX;
+			uint32_t zero_above = UINT32_MAX; // Larger fields select row zero before the maximum.
+			uint32_t bit_offset = 0;
+			uint32_t bit_mask = UINT32_MAX;
+			bool global = false;
+			// Four or eight DWORD bitmap words per record; set ranks subtract from the last key.
+			bool bitset = false;
+			std::optional<CountedRows> rows;
+			std::vector<std::pair<uint32_t, uint32_t>> byte_ranges;
+			std::optional<uint32_t> excluded; // A guard keeps this key from the read.
+			std::optional<MaskRanks> ranks;   // Records are the bits some mask word sets.
 
 			bool operator==(const SelectorRead& other) const = default;
 		};
+		struct PointerTable {
+			uint32_t offset = 0;
+			uint32_t stride = 0;
+			uint32_t count = 1;
+			bool indexed = false; // Parent pointers use raw MUBUF record addressing.
+
+			bool operator==(const PointerTable& other) const = default;
+		};
 		std::optional<SelectorRead> selector;
+		std::optional<uint32_t> table_maximum;
+		std::optional<PointerTable> pointer_table;
 		uint32_t table_source    = 0;
 		uint32_t table_offset    = 0;
 		uint32_t table_immediate = 0;
 		uint32_t table_stride    = 0;
 		uint32_t table_record_bytes = 0;
 		bool     table_scalar = false;
+		bool     indexed = false;
+		bool     signed_count = false;
 		uint32_t workgroup_axis  = UINT32_MAX;
+		// Nonzero shift: workgroup keys are (selector_first + ID) * multiplier >> shift.
+		uint32_t workgroup_multiplier = 0;
+		uint32_t workgroup_shift      = 0;
 		Value    key_count;
+		// First selector index, workgroup key base, or first descriptor key for a direct or bitmap
+		// range.
 		Value                 selector_first;
 		Value    selector_mask;
 		std::vector<uint32_t> sources;
@@ -620,6 +691,7 @@ struct ResourceBlock {
 	Value                 condition;
 	std::vector<uint32_t> successors;
 	std::vector<uint32_t> sources;
+	std::vector<uint32_t> images;
 	std::vector<uint32_t> srt_reads;
 };
 
@@ -649,6 +721,12 @@ struct UniformFillPlan {
 // Resource analysis retained by the shader cache. It owns immutable descriptor/SRT,
 // condition and fill values without translated blocks, plus reusable evaluation scratch.
 struct ResourcePlan {
+	struct SelectorKeys {
+		uint32_t              source = UINT32_MAX;
+		std::vector<uint32_t> values;
+		bool                  resolved = false;
+	};
+
 	struct EvaluationContext {
 		struct Entry {
 			uint64_t value      = 0;
@@ -657,6 +735,9 @@ struct ResourcePlan {
 
 		std::vector<Entry> values;
 		uint64_t           generation = 0;
+		const SrtWalker*    session = nullptr;
+		Value              active_mask;
+		uint8_t            read_policy = 0;
 	};
 
 	ResourcePlan();
@@ -674,7 +755,12 @@ struct ResourcePlan {
 	std::list<Inst>                     value_storage;
 	std::vector<MemoryInfo>             memory_info;
 	std::vector<DescriptorSource>       descriptor_sources;
+	std::vector<uint32_t>               selector_groups;
+	// One entry per shared selector domain (its first source); the keys resolved for a
+	// materialization live in the evaluating thread's EvaluationScratch::selector_keys.
+	std::vector<SelectorKeys>           selector_keys;
 	std::vector<ResourceBlock>          control_flow;
+	std::unordered_map<const Inst*, std::vector<uint32_t>> control_phi_predecessors;
 	std::vector<SrtRead>                srt_reads;
 	bool                                requires_specialization_memory = false;
 	std::vector<std::pair<uint64_t, uint64_t>> source_reads;
@@ -706,11 +792,13 @@ struct ResourcePlan {
 	// plan, so both can materialize the same plan at once.
 	struct EvaluationScratch {
 		std::deque<EvaluationContext> evaluation_contexts;
-		uint32_t                      evaluation_depth = 0;
 		std::vector<uint8_t>          active_sources;
+		std::vector<uint8_t>          active_images;
 		std::vector<uint8_t>          visited_blocks;
+		std::vector<uint8_t>          reachable_blocks;
 		std::vector<uint32_t>         pending_blocks;
 		std::vector<uint32_t>         material_keys;
+		std::vector<SelectorKeys>     selector_keys;
 		std::vector<uint32_t>         flat_words;
 		std::vector<size_t>           flat_bases;
 	};
@@ -746,7 +834,7 @@ struct Program: ResourcePlan {
 	bool                          dispatcher_fallback = false;
 	CFG::FailureKind              cfg_failure_kind    = CFG::FailureKind::None;
 	std::string                   fallback_reason;
-	struct ScalarWrite { uint32_t pc; ScalarReg reg; };
+	struct ScalarWrite { uint32_t pc; ScalarReg reg; Value value; };
 	std::vector<ScalarWrite>      scalar_writes;
 	// Typed memory and export instructions reference shader-local metadata by dense index.
 	// Decoder-only details (such as NSA register numbers) have already become IR operands.
@@ -762,8 +850,10 @@ uint32_t StorageBufferElementBits(const Program& program, const MemoryInfo& memo
 std::string ProgramToString(const Program& program);
 
 void  ValidateProgram(const Program& program);
-void  ResolveControlFlowIdentities(Program& program);
 bool  EquivalentValue(const ResourcePlan& program, Value left, Value right);
+bool  EquivalentSelectorDomain(const ResourcePlan& program,
+                               const DescriptorSource::IndirectDescriptor& left,
+                               const DescriptorSource::IndirectDescriptor& right);
 Value ResolveInvariantPhi(const ResourcePlan& program, Value value);
 Value ResolveActiveU32(Value value, Value active);
 

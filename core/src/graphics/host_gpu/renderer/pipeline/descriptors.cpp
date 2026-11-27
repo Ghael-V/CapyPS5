@@ -323,9 +323,10 @@ void ValidateStorageTexture(const ShaderRecompiler::IR::ImageResource& resource,
 	const bool descriptor_ok = IsSupportedStorageTextureDescriptor(resource, descriptor);
 	const bool encoding_ok   = IsCanonicalTextureEncoding(descriptor, resource.r128);
 	const bool uint_resource    = resource.numeric_class == Prospero::TextureNumericClass::Uint;
-	const bool raw_sint_storage = format == Prospero::BufferFormat::k32SInt && uint_resource &&
-	                              resource.written && !resource.read && !resource.atomic;
-	const auto numeric_class = Prospero::SampledTextureNumericClass(format);
+	const bool raw_sint_storage = uint_resource &&
+	    ShaderRecompiler::IR::RawSignedStorageFormat(resource, format) != Prospero::BufferFormat::kInvalid;
+	const auto numeric_class =
+	    Prospero::SampledTextureNumericClass(Prospero::RemapTextureFormat(format));
 	// Atomics use the R32_UINT (R64_UINT) view every storage atomic gets, whatever the numeric type
 	// of the one (two) 32-bit channels: the opcode carries the signedness (a PS4 title's
 	// IMAGE_ATOMIC on an R32 SINT volume).
@@ -414,7 +415,7 @@ static ImageViewInfo TextureViewInfo(const ShaderRecompiler::IR::ImageResource& 
 	}
 	view.usage = storage ? vk::ImageUsageFlagBits::eStorage : vk::ImageUsageFlagBits::eSampled;
 	view.mapping =
-	    storage || surface_format.conversion_format != Prospero::BufferFormat::kInvalid
+	    storage || resource.conversion_format != Prospero::BufferFormat::kInvalid
 	        ? vk::ComponentMapping {}
 	        : TextureGetComponentMapping(descriptor.DstSelXYZW(), surface_format.host_to_storage);
 	switch (resource.dimension) {
@@ -605,10 +606,13 @@ TextureBinding RenderExecutor::ResolveTexture(const ShaderRecompiler::IR::ImageR
 	}
 	const auto samples = multisampled ? 1u << last_level : 1u;
 	const auto depth          = static_cast<uint32_t>(descriptor.Depth()) + 1u;
-	const auto format         = descriptor.Format();
+	const auto format         = ShaderRecompiler::IR::ReadsDepthBits(resource)
+	                                ? Prospero::BufferFormat::k16UNorm
+	                                : descriptor.Format();
 	const auto surface_format = TextureGetSurfaceFormatInfo(format);
 	const bool sampled_numeric_class =
-	    storage || resource.numeric_class == Prospero::SampledTextureNumericClass(format);
+	    storage || resource.numeric_class ==
+	                   Prospero::SampledTextureNumericClass(Prospero::RemapTextureFormat(format));
 	if (!storage && resource.resource_class == ShaderRecompiler::IR::ImageResourceClass::Sampled &&
 	    !sampled_numeric_class) {
 		EXIT("sampled image numeric class mismatch: numeric=%u format=%u addr=0x%016" PRIx64 "\n",
@@ -634,10 +638,11 @@ TextureBinding RenderExecutor::ResolveTexture(const ShaderRecompiler::IR::ImageR
 			pixel_format = depth_format->depth_attachment_format;
 		}
 	}
+	const auto raw_sint_format = ShaderRecompiler::IR::RawSignedStorageFormat(resource, format);
 	const auto storage_view_format = resource.atomic64 ? vk::Format::eR64Uint
-	                                 : storage && (resource.atomic ||
-	                                               format == Prospero::BufferFormat::k32SInt)
-	                                     ? vk::Format::eR32Uint
+	                                 : storage && resource.atomic ? vk::Format::eR32Uint
+	                                 : raw_sint_format != Prospero::BufferFormat::kInvalid
+	                                     ? VulkanFormat(raw_sint_format)
 	                                     : SrgbStorageViewFormat(pixel_format);
 	const auto view_format         = storage && storage_view_format != vk::Format::eUndefined
 	                                     ? storage_view_format
@@ -1053,7 +1058,11 @@ void RenderExecutor::FindBuffers(std::span<PreparedBindings* const> stages) {
 			auto& source = prepared.buffer_sources[metadata.descriptor_index];
 			const auto descriptor = DecodeNativeDescriptor<ShaderBufferResource>(snapshot.buffers[resource]);
 			const auto address = descriptor.Base48();
-			auto size = descriptor.GetSize();
+			// `setprop debug.capy.zero_stride_payload 0` binds only NumRecords bytes again for
+			// zero-stride OOB_SELECT=2 vector fetches (KytyPS5 fde0b98 semantics, via BufferBindingSize).
+			static Common::DebugFlags::CachedValue zero_stride_payload("debug.capy.zero_stride_payload", 1);
+			auto size = zero_stride_payload.Get() != 0 ? BufferBindingSize(metadata, descriptor)
+			                                           : descriptor.GetSize();
 			if (address == 0 || size == 0) {
 				Common::DebugFlags::FrameTrace("    buf[%u] dropped: addr=0x%llx size=%llu records=%u stride=%u",
 				                               resource, static_cast<unsigned long long>(address),

@@ -72,6 +72,18 @@ inline uint8_t GetDstSel(uint32_t swizzle, uint32_t channel) {
 	return (swizzle >> (channel * 3u)) & 0x7u;
 }
 
+[[nodiscard]] inline bool IsValidImageSwizzle(uint32_t swizzle,
+                                             uint32_t component_count = 4) noexcept {
+	if ((swizzle & ~0xfffu) != 0) {
+		return false;
+	}
+	for (uint32_t channel = 0; channel < 4; channel++) {
+		const auto selector = GetDstSel(swizzle, channel);
+		if (selector > 1 && (selector < 4 || selector >= 4 + component_count)) return false;
+	}
+	return true;
+}
+
 struct ShaderClipSpaceTransform {
 	float scale[2]       = {};
 	float offset[2]      = {};
@@ -197,6 +209,7 @@ struct ShaderComputeInputInfo: ShaderWorkgroupInputInfo {
 	uint8_t            float_mode                 = 0xc0;
 	uint32_t           dispatch_threads_num[3]    = {0, 0, 0};
 	uint32_t           workgroup_counts[3]        = {0, 0, 0};
+	uint64_t           indirect_args_address       = 0;
 	bool               group_id[3]                = {false, false, false};
 	bool               dispatch_thread_dimensions = false;
 	bool               lds_storage                = false;

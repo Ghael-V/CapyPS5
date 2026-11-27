@@ -242,6 +242,7 @@ VALUE_OPCODE(BpermuteU32, U32, U32, U32, U1)
 // dense bindings are assigned by resource tracking.
 VALUE_OPCODE(GetSrtResource, SrtResource)
 VALUE_OPCODE(GetBufferResource, BufferResource, U32, U32, U32, U32)
+VALUE_OPCODE(GetBufferResourceIndex, U32, U32)
 VALUE_OPCODE(GetAddressResource, AddressResource, U32, U32)
 VALUE_OPCODE(GetScratchResource, AddressResource)
 VALUE_OPCODE(GetImageResource, ImageResource, U32, U32, U32, U32, U32, U32, U32, U32)

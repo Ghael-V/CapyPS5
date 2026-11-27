@@ -17,6 +17,7 @@ struct ResourceSpecialization {
 		Prospero::BufferFormat descriptor_format               = Prospero::BufferFormat::kInvalid;
 		uint32_t               descriptor_swizzle              = DstSel(4, 5, 6, 7);
 		bool                   zero_stride_oob                 = false;
+		bool                   scalar_empty                    = false;
 		uint32_t               indirect_root                   = BufferResource::NoIndirectBuffer;
 		uint32_t               indirect_mapping_offset         = 0;
 		uint32_t               indirect_search_iterations      = 0;
@@ -40,12 +41,15 @@ struct ResourceSpecialization {
 		bool                          operator==(const Image&) const = default;
 	};
 
-	// Filled only for samplers paired with an emulated_compare image, so other shaders do not
-	// get a permutation per S# compare function.
+	// compare_func/linear are filled only for samplers paired with an emulated_compare image, so
+	// other shaders do not get a permutation per S# compare function.
 	struct Sampler {
-		uint8_t compare_func = 0;
-		bool    linear       = false;
-		bool    operator==(const Sampler&) const = default;
+		uint32_t indirect_root              = SamplerResource::NoIndirectSampler;
+		uint32_t indirect_mapping_offset    = 0;
+		uint32_t indirect_search_iterations = 0;
+		uint8_t  compare_func               = 0;
+		bool     linear                     = false;
+		bool     operator==(const Sampler&) const = default;
 	};
 
 	std::vector<Buffer>  buffers;
@@ -54,6 +58,8 @@ struct ResourceSpecialization {
 
 	bool operator==(const ResourceSpecialization&) const = default;
 };
+
+uint64_t BufferBindingSize(const BufferResource& resource, const ShaderBufferResource& descriptor);
 
 // Extracts the descriptor/SRT value graph before resource specialization. The returned plan owns
 // its values and is independent of the translated shader CFG.

@@ -120,7 +120,7 @@ struct EmitterState {
 	// Pixel shaders that kill write gl_FragDepth = gl_FragCoord.z at return (see DefineModule).
 	uint32_t                                         kill_depth_frag_coord   = 0;
 	std::array<BufferDefinition, 4>                  storage_buffers {};
-	std::array<uint32_t, IR::ShaderInfo::MaxBuffers> memory_byte_offsets {};
+	std::vector<uint32_t>                           memory_byte_offsets;
 	uint32_t                                         bda_pagetable_variable  = 0;
 	uint32_t                                         fault_buffer_variable   = 0;
 	uint32_t                                         bda_pointer_function    = 0;
@@ -128,6 +128,9 @@ struct EmitterState {
 	uint32_t                                         bda_fault_variable      = 0;
 	uint32_t                                         resolution_scale        = 0;
 	uint32_t                                         scaled_image_mask       = 0;
+	uint32_t                                         indirect_format_function = 0;
+	uint32_t                                         indirect_format_geometry_function = 0;
+	std::map<std::array<uint32_t, 5>, uint32_t>        indirect_buffer_load_functions;
 	uint32_t                                         bvh_intersect_function  = 0;
 	uint32_t                                         gds_variable            = 0;
 	uint32_t                                         gds_length              = 0;
@@ -347,7 +350,7 @@ uint32_t MakeSampledImage(EmitterState& state, uint32_t resource, uint32_t sampl
                           bool sampler_dynamic = false);
 
 void EmitStorageImageWrite(EmitterState& state, uint32_t resource, uint32_t mip_lod, uint32_t coord,
-                           uint32_t texel);
+                           uint32_t texel, uint32_t array_index);
 
 spv::ExecutionModel ExecutionModelForStage(ShaderType stage);
 
@@ -438,6 +441,8 @@ uint32_t StorageBufferPackedStride(const EmitterState& state, const IR::MemoryIn
 
 Prospero::BufferFormat StorageBufferFormat(const EmitterState& state, const IR::MemoryInfo& mem);
 
+uint32_t SharedIndirectBufferResource(const EmitterState& state, uint32_t resource);
+
 void EmitMemoryOffsets(EmitterState& state);
 
 uint32_t LdsDwordCount(const EmitterState& state);
@@ -449,16 +454,19 @@ struct MemoryResourceAccess {
 	uint32_t              length           = 0;
 	uint32_t              byte_offset      = 0;
 	uint32_t              element_bits     = 32;
+	bool                  non_uniform      = false;
 	spv::MemoryAccessMask memory_access    = spv::MemoryAccessMaskNone;
 };
 
 uint32_t EmitIndirectResourceIndex(EmitterState& state, uint32_t key, uint32_t mapping_offset,
                                    uint32_t search_iterations, uint32_t default_resource);
-MemoryResourceAccess PrepareMemoryResourceAccess(EmitterState& state, const IR::MemoryInfo& mem);
+MemoryResourceAccess PrepareMemoryResourceAccess(EmitterState& state, const IR::MemoryInfo& mem,
+                                                 uint32_t array_index = 0u);
 
 MemoryResourceAccess PrepareStorageBufferResourceAccess(EmitterState&         state,
                                                         const IR::MemoryInfo& mem,
-                                                        BufferDefinition& buffer);
+                                                        BufferDefinition& buffer,
+                                                        uint32_t array_index = 0);
 
 uint32_t EmitMemoryElementInBounds(EmitterState& state, const MemoryResourceAccess& access,
                                    uint32_t index);
@@ -480,6 +488,9 @@ uint32_t EmitUFloatToF32Bits(EmitterState& state, uint32_t raw, uint32_t bits);
 
 uint32_t NormalizeFormatComponent(EmitterState& state, const Format::BufferFormatInfo& info,
                                   uint32_t component, uint32_t raw);
+
+uint32_t EncodeFormattedStoreComponent(EmitterState& state, const Format::BufferFormatInfo& info,
+                                       uint32_t component, uint32_t data, uint32_t data_bits);
 
 spv::Op SpirvAtomicOpcode(IR::ValueOpcode opcode);
 
@@ -556,6 +567,7 @@ void EmitProgram(EmitterState& state);
 void DefineGetBdaPointer(EmitterState& state);
 void InitializeBdaFault(EmitterState& state);
 void FlushBdaFault(EmitterState& state);
+void DefineIndirectBufferLoads(ValueEmitContext& ctx);
 void DefineBvhIntersect(EmitterState& state);
 uint32_t GetBdaPointer(EmitterState& state, uint32_t address);
 

@@ -793,6 +793,7 @@ enum ImageSampleFlag : uint32_t {
 	ImageSampleFlagCd               = 1u << 8u,
 	ImageSampleFlagGatherHorizontal = 1u << 9u,
 	ImageSampleFlagAdjust           = 1u << 10u,
+	ImageSampleFlagUnnormalized     = 1u << 11u,
 };
 
 enum class ImageDimension : uint32_t {
@@ -874,6 +875,7 @@ struct Instruction {
 	bool           idxen                                        = false;
 	bool           offen                                        = false;
 	bool           image_r128                                   = false;
+	bool           image_cube                                   = false; // DIM is CUBE.
 	uint32_t       branch_target                                = 0;
 	struct {
 		uint32_t target = 0;
